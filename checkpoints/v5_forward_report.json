@@ -1,0 +1,125 @@
+{
+  "window_start": "2026-04-06",
+  "window_end": "2026-04-27",
+  "total_trades": 0,
+  "trades_per_day": 0.0,
+  "win_rate": 0.0,
+  "expectancy_r": 0.0,
+  "profit_factor": 0.0,
+  "max_drawdown_r": 0.0,
+  "avg_win_r": 0.0,
+  "avg_loss_r": 0.0,
+  "pct_tp": 0.0,
+  "pct_sl": 0.0,
+  "pct_exp": 0.0,
+  "sharpe": 0.0,
+  "total_r": 0.0,
+  "score_threshold": 0.0474160036064568,
+  "tp_mult": 3.0,
+  "sl_mult": 1.0,
+  "horizon": 48,
+  "cooldown": 0,
+  "ddt_diagnostics": null,
+  "ddt_blocked": 0,
+  "low_confidence": false,
+  "directional_balance": {
+    "stage_distributions": {
+      "pre": {
+        "total": 0,
+        "long": 0,
+        "short": 0,
+        "hold": 0,
+        "long_pct": 0.0,
+        "short_pct": 0.0,
+        "hold_pct": 0.0
+      },
+      "post_ema200": {
+        "total": 0,
+        "long": 0,
+        "short": 0,
+        "hold": 0,
+        "long_pct": 0.0,
+        "short_pct": 0.0,
+        "hold_pct": 0.0
+      },
+      "post_regime": {
+        "total": 0,
+        "long": 0,
+        "short": 0,
+        "hold": 0,
+        "long_pct": 0.0,
+        "short_pct": 0.0,
+        "hold_pct": 0.0
+      },
+      "final": {
+        "total": 0,
+        "long": 0,
+        "short": 0,
+        "hold": 0,
+        "long_pct": 0.0,
+        "short_pct": 0.0,
+        "hold_pct": 0.0
+      }
+    },
+    "gate_blocks": {}
+  },
+  "debias_spread_ratio": null,
+  "pct_calibration": [
+    {
+      "pct_label": "Top5%",
+      "threshold": 0.0143,
+      "n": 1,
+      "er": -1.0,
+      "pf": 0.0,
+      "wr": 0.0,
+      "maxdd": 0.0,
+      "tpd": 0.1,
+      "long_n": 0,
+      "long_er": 0.0,
+      "short_n": 1,
+      "short_er": -1.0
+    },
+    {
+      "pct_label": "Top10%",
+      "threshold": 0.0142,
+      "n": 1,
+      "er": -1.0,
+      "pf": 0.0,
+      "wr": 0.0,
+      "maxdd": 0.0,
+      "tpd": 0.1,
+      "long_n": 0,
+      "long_er": 0.0,
+      "short_n": 1,
+      "short_er": -1.0
+    },
+    {
+      "pct_label": "Top15%",
+      "threshold": 0.0141,
+      "n": 1,
+      "er": -1.0,
+      "pf": 0.0,
+      "wr": 0.0,
+      "maxdd": 0.0,
+      "tpd": 0.1,
+      "long_n": 0,
+      "long_er": 0.0,
+      "short_n": 1,
+      "short_er": -1.0
+    },
+    {
+      "pct_label": "Top20%",
+      "threshold": 0.014,
+      "n": 1,
+      "er": -1.0,
+      "pf": 0.0,
+      "wr": 0.0,
+      "maxdd": 0.0,
+      "tpd": 0.1,
+      "long_n": 0,
+      "long_er": 0.0,
+      "short_n": 1,
+      "short_er": -1.0
+    }
+  ]
+}

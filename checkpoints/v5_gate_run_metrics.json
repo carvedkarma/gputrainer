@@ -1,0 +1,14 @@
+{
+  "gate_mode_used": "ref_magnitude",
+  "mean_per_fold_total_r": 3.4697,
+  "mean_per_fold_expectancy_r": 0.157,
+  "monotonic_fold_count": 0,
+  "mean_score_disc_p90p50": 3.6033,
+  "relax_loop_total": 0,
+  "gate_pass_rate_std": 1.57,
+  "score_p10_mean": 0.012836,
+  "score_p50_mean": 0.049468,
+  "score_p90_mean": 0.169113,
+  "mean_gate_cutoff": 0.02,
+  "monotonic_pct": 0.0
+}

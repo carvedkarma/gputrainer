@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: btc_signals_db
+    environment:
+      POSTGRES_DB: btc_signals
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trading_password_123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d btc_signals"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: btc_signals_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: btc_gpu_trainer
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - DATABASE_URL=postgresql://trader:trading_password_123@postgres:5432/btc_signals
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./saved_models:/app/saved_models
+      - ./checkpoints:/app/checkpoints
+      - ./logs:/app/logs
+      - ./data_cache:/app/data_cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  tensorboard:
+    image: tensorflow/tensorflow:latest
+    container_name: btc_tensorboard
+    ports:
+      - "6006:6006"
+    volumes:
+      - ./logs:/logs
+    command: tensorboard --logdir=/logs --host=0.0.0.0 --port=6006
+
+volumes:
+  postgres_data:
+  redis_data:

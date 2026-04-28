@@ -1,0 +1,34 @@
+Fix 4 remaining issues from Task #45 second code review rejection
+
+1. quick_start.py — move `enter_threshold = 0.55` before the
+   `if is_v5 ...` block so it is always defined (was UnboundLocalError
+   in HOLD path when V5 model is loaded).
+
+2. validate_signals.py — full rewrite:
+   - _try_load_saved_report(): when --model-path points to a directory
+     containing v5_walkforward_report.json, load and display it WITHOUT
+     re-training.
+   - _print_per_symbol_thresholds(): reads per_symbol_thresholds from
+     each fold report and prints best threshold per symbol.
+   - Exit condition: requires BOTH ≥1 ACTIVE symbol (edge=="YES") AND
+     ≥1 fold with score_monotonic=True (was previously: any fold with
+     E[R]>0 AND monotonic, ignoring per-symbol edge status).
+   - Broken into _display_report() and _verdict() helpers.
+
+3. param_sweep.py — surface debias_spread_ratio:
+   - SweepResult gains avg_debias_spread_ratio and n_collapsed_debias.
+   - fold_details dict extended with debias_spread_ratio + score_monotonic.
+   - _extract_results computes these aggregates from live folds.
+   - print_results_table shows DebiasRatio and Collapsed columns.
+
+4. _run_per_symbol_sweep audit fix:
+   - Removed global-array per-symbol slice audit (used mixed-symbol rows).
+   - Replaced with per-symbol filtered audit: symbol_ids == sid mask
+     applied to scores, sides, safe_r, safe_outcomes before calling
+     _run_slice_audit per symbol. Skips symbols with <5 bars.
+
+5. run_v5_forward_test — added per_symbol_thresholds to fold report:
+   - Maps sym_id → sym_name and records threshold per symbol so
+     validate_signals.py and v5_walkforward_report.json can display them.
+
+All 242 tests pass (61 skipped, 0 failed).

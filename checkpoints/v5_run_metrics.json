@@ -1,0 +1,18 @@
+{
+  "total_r": 76.3334,
+  "mean_per_fold_total_r": 3.4697,
+  "avg_expectancy_r": 0.157,
+  "total_trades": 885,
+  "total_long": 293,
+  "total_short": 592,
+  "long_pct": 33.11,
+  "active_folds": 22,
+  "mean_mu_r_correlation": -0.0044,
+  "mean_action_accuracy": 0.5754,
+  "mean_win_rate": 0.3216,
+  "mean_p_side_winners": 0.5036,
+  "mean_p_side_losers": 0.5052,
+  "relax_loop_pct_folds": 0.0,
+  "mean_score_disc_p90p50": 3.6,
+  "mean_score_disc_p99p50": 10.57
+}
