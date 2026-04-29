@@ -272,6 +272,27 @@ class V4AdaptiveBrain:
         }
 
 
+def _counterfactual_pass(
+    analog_mem: AnalogMemory,
+    x: np.ndarray,
+    side: int,
+    edge: float,
+    uncertainty: float,
+    cfg: MythosConfig,
+) -> bool:
+    if side == 0:
+        return False
+    choose = analog_mem.query(x=x, side=side)
+    alt_side = -1 if side == 1 else 1
+    alt = analog_mem.query(x=x, side=alt_side)
+    min_adv = float(max(getattr(cfg, "counterfactual_min_advantage_r", 0.006), 0.0))
+    risk_pen = float(max(getattr(cfg, "counterfactual_risk_penalty", 0.6), 0.0))
+    # Advantage must remain positive after uncertainty drag.
+    adjusted_edge = float(edge - risk_pen * uncertainty)
+    analog_adv = float(choose["analog_edge"] - alt["analog_edge"])
+    return (adjusted_edge + analog_adv) >= min_adv
+
+
 def _select_fold_metric(fold: Dict[str, object], metric: str) -> float:
     metric = str(metric or "total_r").lower()
     if metric == "expectancy_r":
@@ -460,6 +481,7 @@ def _run_fold(
     X_te = test_feat[["ret_1", "ret_4", "ret_16", "vol_16", "vol_64", "zscore_64", "trend_ema"]].to_numpy(dtype=np.float64)
 
     trades: List[float] = []
+    cf_rejects = 0
     n_long = 0
     n_short = 0
     change_mode_bars = 0
@@ -506,6 +528,16 @@ def _run_fold(
         if edge < edge_floor:
             continue
         if not governor.allow_by_streak(i):
+            continue
+        if not _counterfactual_pass(
+            analog_mem=analog_mem,
+            x=x,
+            side=side,
+            edge=edge,
+            uncertainty=uncertainty,
+            cfg=cfg,
+        ):
+            cf_rejects += 1
             continue
         if not risk.allow_trade(ts_ms=int(timestamps[i]), side=side, edge=edge, uncertainty=uncertainty):
             continue
@@ -571,6 +603,7 @@ def _run_fold(
         "max_drawdown_r": round(max_drawdown_r, 4),
         "robust_score": round(robust_score, 6),
         "change_mode_bars": int(change_mode_bars),
+        "counterfactual_rejects": int(cf_rejects),
         "long_trades": n_long,
         "short_trades": n_short,
         "status": status,
@@ -660,7 +693,9 @@ def run_mythos_walk_forward(
     avg_max_drawdown = float(np.mean([r.get("max_drawdown_r", 0.0) for r in reports])) if reports else 0.0
     avg_robust_score = float(np.mean([r.get("robust_score", 0.0) for r in reports])) if reports else 0.0
     total_change_mode_bars = int(sum(r.get("change_mode_bars", 0) for r in reports))
+    total_cf_rejects = int(sum(r.get("counterfactual_rejects", 0) for r in reports))
     change_mode_rate = float(total_change_mode_bars / max(total_trades, 1))
+    cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
     act = sum(1 for r in reports if r["status"] == "ACTIVE")
     low = sum(1 for r in reports if r["status"] == "LOW_CONF")
     dead = sum(1 for r in reports if r["status"] == "DEAD")
@@ -681,6 +716,8 @@ def run_mythos_walk_forward(
         "avg_robust_score": round(avg_robust_score, 6),
         "change_mode_bars": total_change_mode_bars,
         "change_mode_rate": round(change_mode_rate, 4),
+        "counterfactual_rejects": total_cf_rejects,
+        "counterfactual_reject_rate": round(cf_reject_rate, 4),
         "active_folds": act,
         "low_conf_folds": low,
         "dead_folds": dead,

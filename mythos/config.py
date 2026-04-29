@@ -68,6 +68,9 @@ class MythosConfig:
     change_edge_floor_boost: float = 0.004
     change_confidence_boost: float = 0.03
     change_uncertainty_mult: float = 1.15
+    counterfactual_margin: float = 0.006
+    counterfactual_uncertainty_weight: float = 0.50
+    counterfactual_min_alt_hits: int = 8
 
     def __post_init__(self) -> None:
         # Keep legacy/new naming aligned for callers.

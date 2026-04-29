@@ -5315,6 +5315,10 @@ Examples:
                         help="MYTHOS v4: extra confidence requirement during change mode (default: 0.03)")
     parser.add_argument("--mythos-change-uncertainty-mult", type=float, default=1.15,
                         help="MYTHOS v4: uncertainty inflation during change mode (default: 1.15)")
+    parser.add_argument("--mythos-counterfactual-min-advantage-r", type=float, default=0.006,
+                        help="MYTHOS v5: minimum counterfactual edge advantage required to trade (default: 0.006)")
+    parser.add_argument("--mythos-counterfactual-risk-penalty", type=float, default=0.6,
+                        help="MYTHOS v5: uncertainty penalty in counterfactual gate (default: 0.6)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")
@@ -6332,6 +6336,8 @@ Examples:
                 change_edge_floor_boost=args.mythos_change_edge_floor_boost,
                 change_confidence_boost=args.mythos_change_confidence_boost,
                 change_uncertainty_mult=args.mythos_change_uncertainty_mult,
+                counterfactual_min_advantage_r=args.mythos_counterfactual_min_advantage_r,
+                counterfactual_risk_penalty=args.mythos_counterfactual_risk_penalty,
             )
             mythos_report = run_mythos_walk_forward(
                 data_dir=data_dir,
@@ -6343,10 +6349,11 @@ Examples:
             )
             agg = mythos_report.get("aggregate", {})
             log.info(
-                "[MYTHOS] Complete: trades=%s totalR=%s expectancy=%s win_rate=%s pf=%s avgDD=%s robust=%s change_rate=%s active_folds=%s/%s",
+                "[MYTHOS] Complete: trades=%s totalR=%s expectancy=%s win_rate=%s pf=%s avgDD=%s robust=%s change_rate=%s cf_reject_rate=%s active_folds=%s/%s",
                 agg.get("total_trades"), agg.get("total_r"), agg.get("expectancy_r"),
                 agg.get("win_rate"), agg.get("profit_factor"),
                 agg.get("avg_max_drawdown_r"), agg.get("avg_robust_score"), agg.get("change_mode_rate"),
+                agg.get("counterfactual_reject_rate"),
                 agg.get("active_folds"), agg.get("folds"),
             )
             if agg.get("best_model_path"):
