@@ -68,6 +68,8 @@ class MythosConfig:
     change_edge_floor_boost: float = 0.004
     change_confidence_boost: float = 0.03
     change_uncertainty_mult: float = 1.15
+    counterfactual_min_advantage_r: float = 0.006
+    counterfactual_risk_penalty: float = 0.6
     counterfactual_margin: float = 0.006
     counterfactual_uncertainty_weight: float = 0.50
     counterfactual_min_alt_hits: int = 8
