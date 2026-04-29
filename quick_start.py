@@ -6265,7 +6265,7 @@ Examples:
             log.info(
                 "[MYTHOS] Complete: trades=%s totalR=%s expectancy=%s active_folds=%s/%s",
                 agg.get("total_trades"), agg.get("total_r"), agg.get("expectancy_r"),
-                agg.get("active_folds"), agg.get("n_folds"),
+                agg.get("active_folds"), agg.get("folds"),
             )
             return
 

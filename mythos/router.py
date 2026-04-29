@@ -25,9 +25,16 @@ class MetaRouter:
     Regime- and confidence-aware expert selector with abstention support.
     """
 
-    def __init__(self, cfg: MythosConfig):
-        self.cfg = cfg
+    def __init__(self, cfg: MythosConfig | int | None = None):
+        # Backward compatibility: older call sites pass random_state (int).
+        if isinstance(cfg, MythosConfig):
+            self.cfg = cfg
+        elif isinstance(cfg, int):
+            self.cfg = MythosConfig(random_state=int(cfg))
+        else:
+            self.cfg = MythosConfig()
         self._reliability: Dict[str, List[float]] = {}
+        self._fitted = False
 
     def update_reliability(self, expert_name: str, realized_r: float) -> None:
         history = self._reliability.setdefault(expert_name, [])
@@ -42,7 +49,36 @@ class MetaRouter:
         arr = np.array(history, dtype=np.float64)
         return float(np.mean(arr) / (np.std(arr) + 1e-6))
 
-    def select(self, regime: str, predictions: List[ExpertPrediction]) -> RouterDecision:
+    def fit(self, train_feat, train_regime, experts) -> "MetaRouter":
+        # Keep fit hook so walkforward/tests can share a sklearn-like flow.
+        _ = (train_feat, train_regime, experts)
+        self._fitted = True
+        return self
+
+    def route_one(
+        self,
+        x: np.ndarray,
+        regime: int,
+        experts,
+        vol_16: float | None = None,
+        trend_ema: float | None = None,
+    ) -> Dict[str, float | int | str]:
+        _ = (vol_16, trend_ema)
+        if not self._fitted:
+            self._fitted = True
+        preds = [ex.predict_one(x, regime) for ex in experts]
+        decision = self.select(regime=int(regime), predictions=preds)
+        return {
+            "expert_name": decision.expert_name,
+            "side": int(decision.side),
+            "edge": float(decision.expected_r),
+            "confidence": float(decision.confidence),
+            "uncertainty": float(decision.uncertainty),
+            "abstain": bool(decision.abstain),
+            "reason": decision.reason,
+        }
+
+    def select(self, regime: int, predictions: List[ExpertPrediction]) -> RouterDecision:
         if not predictions:
             return RouterDecision(
                 expert_name="none",

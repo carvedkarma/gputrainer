@@ -47,4 +47,6 @@ class MythosConfig:
     def __post_init__(self) -> None:
         # Keep legacy/new naming aligned for callers.
         self.min_trades_per_fold = int(self.min_trades_for_confidence)
+        # Route confidence should honor the public router confidence knob.
+        self.min_confidence = float(self.min_router_confidence)
 

@@ -125,7 +125,7 @@ def _run_fold(
             "long_trades": 0,
             "short_trades": 0,
             "status": "DEAD",
-            "promotion": {"should_promote": False, "reasons": ["insufficient_data"]},
+            "promotion": {"promote": False, "reasons": ["insufficient_data"], "checks": {}},
         }
 
     wm = WorldModel(n_states=cfg.n_regimes, random_state=cfg.random_state)
@@ -141,7 +141,7 @@ def _run_fold(
     for ex in experts:
         ex.fit(X_tr, y1, y4, y16, train_regime)
 
-    router = MetaRouter(cfg.random_state)
+    router = MetaRouter(cfg)
     router.fit(train_feat, train_regime, experts)
 
     risk = RiskConstitution(cfg)
@@ -238,6 +238,8 @@ def run_mythos_walk_forward(
     first_ts = int(raw["timestamp"].min())
     last_ts = int(raw["timestamp"].max())
     folds = _monthly_folds(first_ts, last_ts, train_months=train_months, test_months=test_months)
+    if cfg.max_folds is not None:
+        folds = folds[: max(int(cfg.max_folds), 0)]
     log.info("[MYTHOS] Generated %d folds", len(folds))
     reports: List[Dict[str, object]] = []
     for i, (tr_s, tr_e, te_s, te_e) in enumerate(folds, start=1):
@@ -270,6 +272,7 @@ def run_mythos_walk_forward(
     aggregate = {
         "symbol": sym,
         "folds": len(reports),
+        "n_folds": len(reports),
         "total_trades": total_trades,
         "total_r": round(total_r, 4),
         "expectancy_r": round((total_r / total_trades) if total_trades else 0.0, 4),
