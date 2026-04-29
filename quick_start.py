@@ -5297,6 +5297,24 @@ Examples:
                         help="MYTHOS v3: consecutive losses before cooldown pause (default: 4)")
     parser.add_argument("--mythos-loss-streak-cooldown-bars", type=int, default=12,
                         help="MYTHOS v3: bars to pause after loss streak trigger (default: 12)")
+    parser.add_argument("--mythos-online-allocator-lr", type=float, default=0.06,
+                        help="MYTHOS v4: online expert allocator learning rate (default: 0.06)")
+    parser.add_argument("--mythos-online-allocator-min-mult", type=float, default=0.75,
+                        help="MYTHOS v4: min multiplier for expert utility scaling (default: 0.75)")
+    parser.add_argument("--mythos-online-allocator-max-mult", type=float, default=1.55,
+                        help="MYTHOS v4: max multiplier for expert utility scaling (default: 1.55)")
+    parser.add_argument("--mythos-change-detect-z-thresh", type=float, default=2.6,
+                        help="MYTHOS v4: z-score trigger threshold for change detection (default: 2.6)")
+    parser.add_argument("--mythos-change-detect-confirm-bars", type=int, default=2,
+                        help="MYTHOS v4: consecutive bars required to confirm change mode (default: 2)")
+    parser.add_argument("--mythos-change-detect-cooldown-bars", type=int, default=24,
+                        help="MYTHOS v4: cooldown bars while change mode is active (default: 24)")
+    parser.add_argument("--mythos-change-edge-floor-boost", type=float, default=0.004,
+                        help="MYTHOS v4: additional edge floor during confirmed change mode (default: 0.004)")
+    parser.add_argument("--mythos-change-confidence-boost", type=float, default=0.03,
+                        help="MYTHOS v4: extra confidence requirement during change mode (default: 0.03)")
+    parser.add_argument("--mythos-change-uncertainty-mult", type=float, default=1.15,
+                        help="MYTHOS v4: uncertainty inflation during change mode (default: 1.15)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")
@@ -6305,6 +6323,15 @@ Examples:
                 drawdown_edge_boost=args.mythos_drawdown_edge_boost,
                 loss_streak_trigger=args.mythos_loss_streak_trigger,
                 loss_streak_cooldown_bars=args.mythos_loss_streak_cooldown_bars,
+                online_allocator_lr=args.mythos_online_allocator_lr,
+                online_allocator_min_mult=args.mythos_online_allocator_min_mult,
+                online_allocator_max_mult=args.mythos_online_allocator_max_mult,
+                change_detect_z_thresh=args.mythos_change_detect_z_thresh,
+                change_detect_confirm_bars=args.mythos_change_detect_confirm_bars,
+                change_detect_cooldown_bars=args.mythos_change_detect_cooldown_bars,
+                change_edge_floor_boost=args.mythos_change_edge_floor_boost,
+                change_confidence_boost=args.mythos_change_confidence_boost,
+                change_uncertainty_mult=args.mythos_change_uncertainty_mult,
             )
             mythos_report = run_mythos_walk_forward(
                 data_dir=data_dir,
@@ -6316,10 +6343,10 @@ Examples:
             )
             agg = mythos_report.get("aggregate", {})
             log.info(
-                "[MYTHOS] Complete: trades=%s totalR=%s expectancy=%s win_rate=%s pf=%s avgDD=%s robust=%s active_folds=%s/%s",
+                "[MYTHOS] Complete: trades=%s totalR=%s expectancy=%s win_rate=%s pf=%s avgDD=%s robust=%s change_rate=%s active_folds=%s/%s",
                 agg.get("total_trades"), agg.get("total_r"), agg.get("expectancy_r"),
                 agg.get("win_rate"), agg.get("profit_factor"),
-                agg.get("avg_max_drawdown_r"), agg.get("avg_robust_score"),
+                agg.get("avg_max_drawdown_r"), agg.get("avg_robust_score"), agg.get("change_mode_rate"),
                 agg.get("active_folds"), agg.get("folds"),
             )
             if agg.get("best_model_path"):

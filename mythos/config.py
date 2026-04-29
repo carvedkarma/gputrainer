@@ -59,6 +59,15 @@ class MythosConfig:
     drawdown_edge_boost: float = 0.0025
     loss_streak_trigger: int = 4
     loss_streak_cooldown_bars: int = 12
+    online_allocator_lr: float = 0.06
+    online_allocator_min_mult: float = 0.75
+    online_allocator_max_mult: float = 1.55
+    change_detect_z_thresh: float = 2.6
+    change_detect_confirm_bars: int = 2
+    change_detect_cooldown_bars: int = 24
+    change_edge_floor_boost: float = 0.004
+    change_confidence_boost: float = 0.03
+    change_uncertainty_mult: float = 1.15
 
     def __post_init__(self) -> None:
         # Keep legacy/new naming aligned for callers.

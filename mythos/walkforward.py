@@ -133,6 +133,145 @@ class V3ExecutionGovernor:
             self.loss_streak = 0
 
 
+class V4AdaptiveBrain:
+    """
+    Online adaptation layer:
+    - detects abrupt local state changes (feature-space shock)
+    - reweights experts with regime-conditional EWMA utility
+    - hardens/relaxes confidence and edge based on detected instability
+    """
+
+    def __init__(self, cfg: MythosConfig):
+        self.cfg = cfg
+        self._recent_x: List[np.ndarray] = []
+        self._recent_rr: List[float] = []
+        self._recent_side: List[int] = []
+        self._recent_regime: List[int] = []
+        self._exp_global: Dict[str, float] = {}
+        self._exp_regime: Dict[Tuple[int, str], float] = {}
+        self._regime_streak = 0
+        self._prev_regime: Optional[int] = None
+        self._shock_streak = 0
+        self._change_cooldown_until = -1
+
+    def _shock_level(self, x: np.ndarray) -> float:
+        x = np.asarray(x, dtype=np.float64)
+        self._recent_x.append(x)
+        max_keep = int(max(getattr(self.cfg, "side_balance_window", 160), 32))
+        if len(self._recent_x) > max_keep:
+            del self._recent_x[0 : len(self._recent_x) - max_keep]
+        if len(self._recent_x) < 12:
+            return 0.0
+        recent = np.stack(self._recent_x, axis=0)
+        mu = np.mean(recent, axis=0)
+        sigma = np.std(recent, axis=0) + 1e-6
+        z = np.mean(np.abs((x - mu) / sigma))
+        trigger = float(max(getattr(self.cfg, "change_detect_z_thresh", 2.6), 0.5))
+        return float(max((z - trigger) / max(trigger, 1e-6), 0.0))
+
+    def _regime_flip_intensity(self, regime: int) -> float:
+        reg = int(regime)
+        if self._prev_regime is None:
+            self._prev_regime = reg
+            self._regime_streak = 1
+            return 0.0
+        if reg == self._prev_regime:
+            self._regime_streak += 1
+            self._prev_regime = reg
+            return 0.0
+        # Regime changed: short streak before flip indicates unstable transition.
+        streak = max(self._regime_streak, 1)
+        self._prev_regime = reg
+        self._regime_streak = 1
+        return float(np.clip(1.0 / streak, 0.0, 1.0))
+
+    def adapt_signal(
+        self,
+        bar_idx: int,
+        x: np.ndarray,
+        regime: int,
+        expert_name: str,
+        edge: float,
+        confidence: float,
+        uncertainty: float,
+    ) -> Dict[str, float]:
+        shock = self._shock_level(x)
+        flip = self._regime_flip_intensity(regime)
+        # Regime-aware expert utility weighting.
+        g = float(self._exp_global.get(expert_name, 0.0))
+        r = float(self._exp_regime.get((int(regime), expert_name), 0.0))
+        utility = 0.6 * g + 0.4 * r
+        utility_w = float(np.tanh(utility))  # bounded in [-1,1]
+        util_gain = float(max(getattr(self.cfg, "online_allocator_lr", 0.06), 0.0))
+        min_mult = float(max(getattr(self.cfg, "online_allocator_min_mult", 0.75), 0.1))
+        max_mult = float(max(getattr(self.cfg, "online_allocator_max_mult", 1.55), min_mult))
+        alloc_mult = float(np.clip(1.0 + util_gain * utility_w, min_mult, max_mult))
+        edge = float(edge * alloc_mult)
+        confidence = float(np.clip(confidence + 0.07 * utility_w, 0.0, 1.0))
+        # Instability hardening: tighten when shock/flip rises.
+        shock_w = 0.18
+        instability = np.clip(shock + flip, 0.0, 2.0)
+        harden = shock_w * instability
+        confidence = float(np.clip(confidence - 0.35 * harden, 0.0, 1.0))
+        edge = float(edge * (1.0 - 0.45 * harden))
+        uncertainty = float(np.clip(uncertainty * (1.0 + 0.60 * harden), 0.005, 1.5))
+        confirm_need = int(max(getattr(self.cfg, "change_detect_confirm_bars", 2), 1))
+        if shock > 0.0:
+            self._shock_streak += 1
+        else:
+            self._shock_streak = max(self._shock_streak - 1, 0)
+        cooldown = int(max(getattr(self.cfg, "change_detect_cooldown_bars", 24), 1))
+        change_mode = False
+        if self._shock_streak >= confirm_need and int(bar_idx) >= self._change_cooldown_until:
+            change_mode = True
+            self._change_cooldown_until = int(bar_idx + cooldown)
+            self._shock_streak = 0
+        if change_mode:
+            edge += float(max(getattr(self.cfg, "change_edge_floor_boost", 0.004), 0.0))
+            confidence = float(np.clip(confidence + float(getattr(self.cfg, "change_confidence_boost", 0.03)), 0.0, 1.0))
+            uncertainty = float(
+                np.clip(
+                    uncertainty * float(max(getattr(self.cfg, "change_uncertainty_mult", 1.15), 1.0)),
+                    0.005,
+                    2.0,
+                )
+            )
+        return {
+            "edge": edge,
+            "confidence": confidence,
+            "uncertainty": uncertainty,
+            "shock": float(shock),
+            "flip": float(flip),
+            "change_mode": float(1.0 if change_mode else 0.0),
+        }
+
+    def update_after_trade(self, expert_name: str, regime: int, realized_r: float, side: int) -> None:
+        rr = float(realized_r)
+        alpha = float(np.clip(getattr(self.cfg, "online_allocator_lr", 0.06), 0.001, 0.8))
+        prev_g = float(self._exp_global.get(expert_name, 0.0))
+        self._exp_global[expert_name] = (1.0 - alpha) * prev_g + alpha * rr
+        rk = (int(regime), expert_name)
+        prev_r = float(self._exp_regime.get(rk, 0.0))
+        self._exp_regime[rk] = (1.0 - alpha) * prev_r + alpha * rr
+        self._recent_rr.append(rr)
+        self._recent_side.append(int(side))
+        self._recent_regime.append(int(regime))
+        max_keep = int(max(getattr(self.cfg, "side_balance_window", 160), 32))
+        if len(self._recent_rr) > max_keep:
+            del self._recent_rr[0 : len(self._recent_rr) - max_keep]
+            del self._recent_side[0 : len(self._recent_side) - max_keep]
+            del self._recent_regime[0 : len(self._recent_regime) - max_keep]
+
+    def state_dict(self) -> Dict[str, object]:
+        return {
+            "exp_global": {k: float(v) for k, v in self._exp_global.items()},
+            "exp_regime": {f"{k[0]}::{k[1]}": float(v) for k, v in self._exp_regime.items()},
+            "recent_rr": [float(v) for v in self._recent_rr],
+            "recent_side": [int(v) for v in self._recent_side],
+            "recent_regime": [int(v) for v in self._recent_regime],
+        }
+
+
 def _select_fold_metric(fold: Dict[str, object], metric: str) -> float:
     metric = str(metric or "total_r").lower()
     if metric == "expectancy_r":
@@ -156,6 +295,7 @@ def _save_model_artifact(
     wm: WorldModel,
     experts,
     router: Optional[MetaRouter] = None,
+    brain: Optional[V4AdaptiveBrain] = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / f"mythos_best_{symbol}.json"
@@ -171,6 +311,7 @@ def _save_model_artifact(
         "world_model": wm.to_state_dict(),
         "experts": [ex.to_state_dict() for ex in experts],
         "router": router.to_state_dict() if router is not None else None,
+        "adaptive_brain": brain.state_dict() if brain is not None else None,
     }
     model_path.write_text(json.dumps(payload, indent=2))
     return model_path
@@ -308,6 +449,7 @@ def _run_fold(
     router.fit(train_feat, train_regime, experts)
     analog_mem = _build_analog_memory(train_feat, cfg)
     governor = V3ExecutionGovernor(cfg)
+    adaptive = V4AdaptiveBrain(cfg)
 
     risk = RiskConstitution(cfg)
     close = test_feat["close"].to_numpy(dtype=np.float64)
@@ -320,6 +462,7 @@ def _run_fold(
     trades: List[float] = []
     n_long = 0
     n_short = 0
+    change_mode_bars = 0
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
         x = X_te[i]
@@ -342,6 +485,19 @@ def _run_fold(
         hit_ratio = min(float(analog["analog_hits"]) / max(float(getattr(cfg, "analog_k", 48)), 1.0), 1.0)
         conf_lift = max(confidence - 0.5, 0.0)
         uncertainty = float(np.clip(uncertainty * (1.0 - 0.25 * conf_lift * hit_ratio), 0.005, 1.0))
+        adapted = adaptive.adapt_signal(
+            x=x,
+            regime=regime,
+            expert_name=expert_name,
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+        )
+        edge = float(adapted["edge"])
+        confidence = float(adapted["confidence"])
+        uncertainty = float(adapted["uncertainty"])
+        if float(adapted.get("change_mode", 0.0)) > 0.5:
+            change_mode_bars += 1
         edge_floor = governor.adjusted_edge_floor(risk.state.equity_r)
         edge -= governor.side_penalty(side)
         if confidence < cfg.min_confidence:
@@ -368,6 +524,7 @@ def _run_fold(
         risk.record_trade(rr, int(timestamps[i]), edge=edge, uncertainty=uncertainty)
         governor.record_trade(side=side, realized_r=rr, bar_idx=i)
         router.update_reliability(expert_name=expert_name, realized_r=rr, regime=regime)
+        adaptive.update_after_trade(expert_name=expert_name, regime=regime, realized_r=rr, side=side)
         trades.append(rr)
         if side == 1:
             n_long += 1
@@ -412,11 +569,12 @@ def _run_fold(
         "profit_factor": round(profit_factor, 4) if isfinite(profit_factor) else "inf",
         "max_drawdown_r": round(max_drawdown_r, 4),
         "robust_score": round(robust_score, 6),
+        "change_mode_bars": int(change_mode_bars),
         "long_trades": n_long,
         "short_trades": n_short,
         "status": status,
         "promotion": asdict(promotion),
-        "_model_state": {"world_model": wm, "experts": experts, "router": router},
+        "_model_state": {"world_model": wm, "experts": experts, "router": router, "adaptive": adaptive},
     }
 
 
@@ -478,6 +636,7 @@ def run_mythos_walk_forward(
                     wm=model_state["world_model"],
                     experts=model_state["experts"],
                     router=model_state.get("router"),
+                    brain=model_state.get("adaptive"),
                 )
         log.info(
             "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d",
@@ -499,6 +658,8 @@ def run_mythos_walk_forward(
     total_r = float(sum(r["total_r"] for r in reports))
     avg_max_drawdown = float(np.mean([r.get("max_drawdown_r", 0.0) for r in reports])) if reports else 0.0
     avg_robust_score = float(np.mean([r.get("robust_score", 0.0) for r in reports])) if reports else 0.0
+    total_change_mode_bars = int(sum(r.get("change_mode_bars", 0) for r in reports))
+    change_mode_rate = float(total_change_mode_bars / max(total_trades, 1))
     act = sum(1 for r in reports if r["status"] == "ACTIVE")
     low = sum(1 for r in reports if r["status"] == "LOW_CONF")
     dead = sum(1 for r in reports if r["status"] == "DEAD")
@@ -517,6 +678,8 @@ def run_mythos_walk_forward(
         "expectancy_r": round((total_r / total_trades) if total_trades else 0.0, 4),
         "avg_max_drawdown_r": round(avg_max_drawdown, 4),
         "avg_robust_score": round(avg_robust_score, 6),
+        "change_mode_bars": total_change_mode_bars,
+        "change_mode_rate": round(change_mode_rate, 4),
         "active_folds": act,
         "low_conf_folds": low,
         "dead_folds": dead,
