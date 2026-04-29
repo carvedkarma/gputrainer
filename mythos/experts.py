@@ -152,7 +152,13 @@ class _SklearnLikeExpert:
         self._sigma = 1.0
 
     def fit(self, X: np.ndarray, y1: np.ndarray, y4: np.ndarray, y16: np.ndarray, regime_ids: np.ndarray) -> None:
-        target = 0.5 * y4 + 0.5 * y16
+        _ = (y1, regime_ids)
+        # Convert raw forward returns into a volatility-normalized proxy so
+        # expected_r lives in a practical "R-like" range for downstream gates.
+        raw_target = 0.5 * y4 + 0.5 * y16
+        vol_proxy = np.maximum(0.5 * (X[:, 3] + X[:, 4]), 1e-5)
+        target = raw_target / (vol_proxy * np.sqrt(8.0))
+        target = np.clip(target, -4.0, 4.0)
         if self.side < 0:
             target = -target
         if X.size == 0:
@@ -171,18 +177,18 @@ class _SklearnLikeExpert:
             mu = 0.0
         else:
             mu = float(x @ self._coef + self._bias)
-        if self.side < 0:
-            mu = -mu
         expected = max(mu, 0.0)
-        uncertainty = float(np.clip(self._sigma, 0.05, 1.0))
-        confidence = float(np.clip(0.5 + expected / max(uncertainty, 1e-6), 0.0, 1.0))
+        # Keep uncertainty calibrated near the edge scale used by the router.
+        uncertainty = float(np.clip(self._sigma * 0.03, 0.005, 0.08))
+        snr = expected / max(uncertainty, 1e-6)
+        confidence = float(np.clip(0.55 + 0.30 * np.tanh(1.5 * snr), 0.0, 1.0))
         return ExpertPrediction(
             expert_name=self.name,
             side=self.side,
             expected_r=expected,
             confidence=confidence,
             uncertainty=uncertainty,
-            score=expected * confidence - uncertainty * 0.2,
+            score=expected * confidence - uncertainty * 0.15,
             regime_affinity=[max(regime - 1, 0), regime, regime + 1],
         )
 

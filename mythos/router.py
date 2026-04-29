@@ -111,7 +111,8 @@ class MetaRouter:
                 abstain=True,
                 reason="edge_below_floor",
             )
-        if best.confidence < self.cfg.min_confidence:
+        min_conf = float(np.clip(self.cfg.min_confidence, 0.0, 1.0))
+        if best.confidence < min_conf:
             return RouterDecision(
                 expert_name=best.expert_name,
                 side=0,
