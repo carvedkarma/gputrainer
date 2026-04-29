@@ -13,11 +13,13 @@ def run_mythos_walk_forward(
     cfg: MythosConfig,
     report_path: Optional[Path] = None,
 ) -> Dict[str, object]:
+    train_months = int(getattr(cfg, "train_months", 12))
+    test_months = int(getattr(cfg, "test_months", 1))
     return _run_wf(
         data_dir=data_dir,
         symbols=symbols,
-        train_months=cfg.train.train_months,
-        test_months=cfg.train.test_months,
+        train_months=train_months,
+        test_months=test_months,
         config=cfg,
         output_path=report_path,
     )

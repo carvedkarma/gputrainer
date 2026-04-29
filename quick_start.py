@@ -6256,8 +6256,10 @@ Examples:
             mythos_report = run_mythos_walk_forward(
                 data_dir=data_dir,
                 symbols=symbols_list,
-                cfg=mythos_cfg,
-                report_path=Path(args.mythos_report_path),
+                train_months=args.mythos_train_months,
+                test_months=args.mythos_test_months,
+                config=mythos_cfg,
+                output_path=Path(args.mythos_report_path),
             )
             agg = mythos_report.get("aggregate", {})
             log.info(
