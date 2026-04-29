@@ -5319,6 +5319,12 @@ Examples:
                         help="MYTHOS v5: minimum counterfactual edge advantage required to trade (default: 0.006)")
     parser.add_argument("--mythos-counterfactual-risk-penalty", type=float, default=0.6,
                         help="MYTHOS v5: uncertainty penalty in counterfactual gate (default: 0.6)")
+    parser.add_argument("--mythos-counterfactual-margin", type=float, default=0.006,
+                        help="MYTHOS v5: confidence margin bonus/penalty applied in counterfactual score (default: 0.006)")
+    parser.add_argument("--mythos-counterfactual-uncertainty-weight", type=float, default=0.50,
+                        help="MYTHOS v5: uncertainty penalty weight applied to alternative side score (default: 0.50)")
+    parser.add_argument("--mythos-counterfactual-min-alt-hits", type=int, default=8,
+                        help="MYTHOS v5: minimum analog hits per side before strict counterfactual filtering (default: 8)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")
@@ -6338,6 +6344,9 @@ Examples:
                 change_uncertainty_mult=args.mythos_change_uncertainty_mult,
                 counterfactual_min_advantage_r=args.mythos_counterfactual_min_advantage_r,
                 counterfactual_risk_penalty=args.mythos_counterfactual_risk_penalty,
+                counterfactual_margin=args.mythos_counterfactual_margin,
+                counterfactual_uncertainty_weight=args.mythos_counterfactual_uncertainty_weight,
+                counterfactual_min_alt_hits=args.mythos_counterfactual_min_alt_hits,
             )
             mythos_report = run_mythos_walk_forward(
                 data_dir=data_dir,

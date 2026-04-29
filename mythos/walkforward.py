@@ -287,9 +287,25 @@ def _counterfactual_pass(
     alt = analog_mem.query(x=x, side=alt_side)
     min_adv = float(max(getattr(cfg, "counterfactual_min_advantage_r", 0.006), 0.0))
     risk_pen = float(max(getattr(cfg, "counterfactual_risk_penalty", 0.6), 0.0))
+    margin = float(max(getattr(cfg, "counterfactual_margin", 0.006), 0.0))
+    unc_w = float(np.clip(getattr(cfg, "counterfactual_uncertainty_weight", 0.50), 0.0, 2.0))
+    min_alt_hits = int(max(getattr(cfg, "counterfactual_min_alt_hits", 8), 0))
+    choose_hits = float(choose.get("analog_hits", 0.0))
+    alt_hits = float(alt.get("analog_hits", 0.0))
     # Advantage must remain positive after uncertainty drag.
     adjusted_edge = float(edge - risk_pen * uncertainty)
-    analog_adv = float(choose["analog_edge"] - alt["analog_edge"])
+    if choose_hits < min_alt_hits or alt_hits < min_alt_hits:
+        # If analog support is sparse, rely on live edge instead of hard rejecting.
+        return adjusted_edge >= (0.5 * min_adv)
+    choose_score = float(
+        choose["analog_edge"] + margin * (float(choose.get("analog_conf", 0.5)) - 0.5)
+    )
+    alt_score = float(
+        alt["analog_edge"]
+        + margin * (float(alt.get("analog_conf", 0.5)) - 0.5)
+        + unc_w * uncertainty
+    )
+    analog_adv = float(choose_score - alt_score)
     return (adjusted_edge + analog_adv) >= min_adv
 
 
