@@ -51,6 +51,14 @@ class MythosConfig:
     online_reliability_alpha: float = 0.08
     reliability_regime_window: int = 80
     robust_score_dd_penalty: float = 0.35
+    side_balance_window: int = 160
+    side_imbalance_soft_cap: float = 0.82
+    side_imbalance_edge_penalty: float = 0.015
+    drawdown_edge_start_r: float = 8.0
+    drawdown_edge_step_r: float = 4.0
+    drawdown_edge_boost: float = 0.0025
+    loss_streak_trigger: int = 4
+    loss_streak_cooldown_bars: int = 12
 
     def __post_init__(self) -> None:
         # Keep legacy/new naming aligned for callers.

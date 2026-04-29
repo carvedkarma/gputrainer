@@ -5281,6 +5281,22 @@ Examples:
                         help="MYTHOS v2: rolling regime-specific reliability window (default: 80)")
     parser.add_argument("--mythos-robust-score-dd-penalty", type=float, default=0.35,
                         help="MYTHOS v2: drawdown penalty factor for robust_score metric (default: 0.35)")
+    parser.add_argument("--mythos-side-balance-window", type=int, default=160,
+                        help="MYTHOS v3: rolling window for side imbalance control (default: 160)")
+    parser.add_argument("--mythos-side-imbalance-soft-cap", type=float, default=0.82,
+                        help="MYTHOS v3: soft max side concentration before penalties (default: 0.82)")
+    parser.add_argument("--mythos-side-imbalance-edge-penalty", type=float, default=0.015,
+                        help="MYTHOS v3: edge penalty when one side dominates (default: 0.015)")
+    parser.add_argument("--mythos-drawdown-edge-start-r", type=float, default=8.0,
+                        help="MYTHOS v3: drawdown level where edge floor starts tightening (default: 8.0)")
+    parser.add_argument("--mythos-drawdown-edge-step-r", type=float, default=4.0,
+                        help="MYTHOS v3: drawdown step for incremental edge floor tightening (default: 4.0)")
+    parser.add_argument("--mythos-drawdown-edge-boost", type=float, default=0.0025,
+                        help="MYTHOS v3: added edge floor per drawdown step (default: 0.0025)")
+    parser.add_argument("--mythos-loss-streak-trigger", type=int, default=4,
+                        help="MYTHOS v3: consecutive losses before cooldown pause (default: 4)")
+    parser.add_argument("--mythos-loss-streak-cooldown-bars", type=int, default=12,
+                        help="MYTHOS v3: bars to pause after loss streak trigger (default: 12)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")
@@ -6281,6 +6297,14 @@ Examples:
                 online_reliability_alpha=args.mythos_online_reliability_alpha,
                 reliability_regime_window=args.mythos_reliability_regime_window,
                 robust_score_dd_penalty=args.mythos_robust_score_dd_penalty,
+                side_balance_window=args.mythos_side_balance_window,
+                side_imbalance_soft_cap=args.mythos_side_imbalance_soft_cap,
+                side_imbalance_edge_penalty=args.mythos_side_imbalance_edge_penalty,
+                drawdown_edge_start_r=args.mythos_drawdown_edge_start_r,
+                drawdown_edge_step_r=args.mythos_drawdown_edge_step_r,
+                drawdown_edge_boost=args.mythos_drawdown_edge_boost,
+                loss_streak_trigger=args.mythos_loss_streak_trigger,
+                loss_streak_cooldown_bars=args.mythos_loss_streak_cooldown_bars,
             )
             mythos_report = run_mythos_walk_forward(
                 data_dir=data_dir,

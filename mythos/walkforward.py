@@ -78,6 +78,61 @@ def _build_analog_memory(train_feat: pd.DataFrame, cfg: MythosConfig) -> AnalogM
     return AnalogMemory(X2, rr, sides, k=int(getattr(cfg, "analog_k", 48)))
 
 
+class V3ExecutionGovernor:
+    def __init__(self, cfg: MythosConfig):
+        self.cfg = cfg
+        self.side_hist: List[int] = []
+        self.loss_streak = 0
+        self.pause_until_bar = -1
+
+    def adjusted_edge_floor(self, equity_r: float) -> float:
+        base = float(self.cfg.abstain_edge_floor)
+        dd = max(-float(equity_r), 0.0)
+        start = float(max(getattr(self.cfg, "drawdown_edge_start_r", 8.0), 0.0))
+        step = float(max(getattr(self.cfg, "drawdown_edge_step_r", 4.0), 1e-6))
+        boost = float(max(getattr(self.cfg, "drawdown_edge_boost", 0.0025), 0.0))
+        if dd <= start:
+            return base
+        increments = int((dd - start) // step) + 1
+        return base + increments * boost
+
+    def side_penalty(self, side: int) -> float:
+        if side == 0:
+            return 0.0
+        w = int(max(getattr(self.cfg, "side_balance_window", 160), 8))
+        hist = self.side_hist[-w:]
+        if not hist:
+            return 0.0
+        long_frac = float(np.mean(np.array(hist) == 1))
+        short_frac = float(np.mean(np.array(hist) == -1))
+        dominant = max(long_frac, short_frac)
+        soft_cap = float(np.clip(getattr(self.cfg, "side_imbalance_soft_cap", 0.82), 0.5, 1.0))
+        if dominant <= soft_cap:
+            return 0.0
+        is_dominant_side = (side == 1 and long_frac >= short_frac) or (side == -1 and short_frac > long_frac)
+        if not is_dominant_side:
+            return 0.0
+        penalty = float(max(getattr(self.cfg, "side_imbalance_edge_penalty", 0.015), 0.0))
+        return penalty * (dominant - soft_cap) / max(1e-6, 1.0 - soft_cap)
+
+    def allow_by_streak(self, bar_idx: int) -> bool:
+        if bar_idx < self.pause_until_bar:
+            return False
+        return True
+
+    def record_trade(self, side: int, realized_r: float, bar_idx: int) -> None:
+        self.side_hist.append(int(side))
+        if float(realized_r) < 0.0:
+            self.loss_streak += 1
+        else:
+            self.loss_streak = 0
+        trig = int(max(getattr(self.cfg, "loss_streak_trigger", 4), 1))
+        cd = int(max(getattr(self.cfg, "loss_streak_cooldown_bars", 12), 1))
+        if self.loss_streak >= trig:
+            self.pause_until_bar = int(bar_idx + cd)
+            self.loss_streak = 0
+
+
 def _select_fold_metric(fold: Dict[str, object], metric: str) -> float:
     metric = str(metric or "total_r").lower()
     if metric == "expectancy_r":
@@ -252,6 +307,7 @@ def _run_fold(
     router = MetaRouter(cfg)
     router.fit(train_feat, train_regime, experts)
     analog_mem = _build_analog_memory(train_feat, cfg)
+    governor = V3ExecutionGovernor(cfg)
 
     risk = RiskConstitution(cfg)
     close = test_feat["close"].to_numpy(dtype=np.float64)
@@ -286,7 +342,13 @@ def _run_fold(
         hit_ratio = min(float(analog["analog_hits"]) / max(float(getattr(cfg, "analog_k", 48)), 1.0), 1.0)
         conf_lift = max(confidence - 0.5, 0.0)
         uncertainty = float(np.clip(uncertainty * (1.0 - 0.25 * conf_lift * hit_ratio), 0.005, 1.0))
+        edge_floor = governor.adjusted_edge_floor(risk.state.equity_r)
+        edge -= governor.side_penalty(side)
         if confidence < cfg.min_confidence:
+            continue
+        if edge < edge_floor:
+            continue
+        if not governor.allow_by_streak(i):
             continue
         if not risk.allow_trade(ts_ms=int(timestamps[i]), side=side, edge=edge, uncertainty=uncertainty):
             continue
@@ -304,6 +366,7 @@ def _run_fold(
         size = risk.position_size_multiplier(edge=edge, uncertainty=uncertainty, regime=regime)
         rr = float(realized * size)
         risk.record_trade(rr, int(timestamps[i]), edge=edge, uncertainty=uncertainty)
+        governor.record_trade(side=side, realized_r=rr, bar_idx=i)
         router.update_reliability(expert_name=expert_name, realized_r=rr, regime=regime)
         trades.append(rr)
         if side == 1:
