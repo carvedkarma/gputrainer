@@ -52,4 +52,6 @@ class MythosConfig:
         self.min_trades_per_fold = int(self.min_trades_for_confidence)
         # Route confidence should honor the public router confidence knob.
         self.min_confidence = float(self.min_router_confidence)
+        # Keep edge gate aligned with the exposed minimum expected-R control.
+        self.abstain_edge_floor = float(self.min_expected_r)
 

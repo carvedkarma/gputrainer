@@ -4,6 +4,7 @@ import json
 import logging
 from dataclasses import asdict
 from datetime import datetime
+from math import isfinite
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -161,6 +162,11 @@ def _run_fold(
             "total_r": 0.0,
             "expectancy_r": 0.0,
             "win_rate": 0.0,
+            "wins": 0,
+            "losses": 0,
+            "gross_profit_r": 0.0,
+            "gross_loss_r": 0.0,
+            "profit_factor": 0.0,
             "long_trades": 0,
             "short_trades": 0,
             "status": "DEAD",
@@ -231,6 +237,11 @@ def _run_fold(
             n_short += 1
 
     n = len(trades)
+    wins = int(np.sum(np.array(trades) > 0.0)) if n else 0
+    losses = int(np.sum(np.array(trades) < 0.0)) if n else 0
+    gross_profit = float(np.sum(np.array([t for t in trades if t > 0.0], dtype=np.float64))) if n else 0.0
+    gross_loss = float(-np.sum(np.array([t for t in trades if t < 0.0], dtype=np.float64))) if n else 0.0
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 1e-9 else (float("inf") if gross_profit > 0.0 else 0.0)
     total_r = float(np.sum(trades)) if n else 0.0
     expect = float(np.mean(trades)) if n else 0.0
     wr = float(np.mean(np.array(trades) > 0)) if n else 0.0
@@ -249,6 +260,11 @@ def _run_fold(
         "total_r": round(total_r, 4),
         "expectancy_r": round(expect, 4),
         "win_rate": round(wr, 4),
+        "wins": wins,
+        "losses": losses,
+        "gross_profit_r": round(gross_profit, 4),
+        "gross_loss_r": round(gross_loss, 4),
+        "profit_factor": round(profit_factor, 4) if isfinite(profit_factor) else "inf",
         "long_trades": n_long,
         "short_trades": n_short,
         "status": status,
@@ -326,6 +342,12 @@ def run_mythos_walk_forward(
         )
 
     total_trades = int(sum(r["total_trades"] for r in reports))
+    total_wins = int(sum(r.get("wins", 0) for r in reports))
+    total_losses = int(sum(r.get("losses", 0) for r in reports))
+    gross_profit = float(sum(r.get("gross_profit_r", 0.0) for r in reports))
+    gross_loss = float(sum(r.get("gross_loss_r", 0.0) for r in reports))
+    agg_win_rate = (total_wins / total_trades) if total_trades else 0.0
+    agg_pf = (gross_profit / gross_loss) if gross_loss > 1e-9 else (float("inf") if gross_profit > 0.0 else 0.0)
     total_r = float(sum(r["total_r"] for r in reports))
     act = sum(1 for r in reports if r["status"] == "ACTIVE")
     low = sum(1 for r in reports if r["status"] == "LOW_CONF")
@@ -335,6 +357,12 @@ def run_mythos_walk_forward(
         "folds": len(reports),
         "n_folds": len(reports),
         "total_trades": total_trades,
+        "wins": total_wins,
+        "losses": total_losses,
+        "win_rate": round(agg_win_rate, 4),
+        "gross_profit_r": round(gross_profit, 4),
+        "gross_loss_r": round(gross_loss, 4),
+        "profit_factor": round(agg_pf, 4) if isfinite(agg_pf) else "inf",
         "total_r": round(total_r, 4),
         "expectancy_r": round((total_r / total_trades) if total_trades else 0.0, 4),
         "active_folds": act,

@@ -6248,6 +6248,8 @@ Examples:
             mythos_cfg = MythosConfig(
                 train_months=args.mythos_train_months,
                 test_months=args.mythos_test_months,
+                tp_mult=args.tp_mult,
+                sl_mult=args.sl_mult,
                 n_regimes=args.mythos_n_regimes,
                 min_regime_confidence=args.mythos_min_regime_confidence,
                 min_router_confidence=args.mythos_min_confidence,
@@ -6275,8 +6277,9 @@ Examples:
             )
             agg = mythos_report.get("aggregate", {})
             log.info(
-                "[MYTHOS] Complete: trades=%s totalR=%s expectancy=%s active_folds=%s/%s",
+                "[MYTHOS] Complete: trades=%s totalR=%s expectancy=%s win_rate=%s pf=%s active_folds=%s/%s",
                 agg.get("total_trades"), agg.get("total_r"), agg.get("expectancy_r"),
+                agg.get("win_rate"), agg.get("profit_factor"),
                 agg.get("active_folds"), agg.get("folds"),
             )
             if agg.get("best_model_path"):
