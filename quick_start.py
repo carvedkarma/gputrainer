@@ -5228,6 +5228,40 @@ Examples:
 
     parser.add_argument("--train-v5", action="store_true", default=False,
                         help="v5.0: Train V5 Forecaster (continuous market predictions + decision layer)")
+    parser.add_argument("--train-mythos", action="store_true", default=False,
+                        help="Train MYTHOS stack (world model + expert council + router) with walk-forward evaluation")
+    parser.add_argument("--mythos-train-months", type=int, default=12,
+                        help="MYTHOS walk-forward training window in months (default: 12)")
+    parser.add_argument("--mythos-test-months", type=int, default=1,
+                        help="MYTHOS walk-forward test window in months (default: 1)")
+    parser.add_argument("--mythos-max-folds", type=int, default=None,
+                        help="MYTHOS: optional max number of most recent folds to run")
+    parser.add_argument("--mythos-n-regimes", type=int, default=4,
+                        help="MYTHOS world-model latent regime count (default: 4)")
+    parser.add_argument("--mythos-min-regime-confidence", type=float, default=0.45,
+                        help="MYTHOS minimum regime posterior confidence to allow routing (default: 0.45)")
+    parser.add_argument("--mythos-min-confidence", type=float, default=0.55,
+                        help="MYTHOS minimum router confidence to allow trading (default: 0.55)")
+    parser.add_argument("--mythos-min-expected-r", type=float, default=0.01,
+                        help="MYTHOS minimum expected R per trade to allow execution (default: 0.01)")
+    parser.add_argument("--mythos-edge-threshold", type=float, default=0.02,
+                        help="MYTHOS minimum edge threshold for promotion gate (default: 0.02)")
+    parser.add_argument("--mythos-daily-loss-cap", type=float, default=-4.0,
+                        help="MYTHOS daily loss cap in R (default: -4.0)")
+    parser.add_argument("--mythos-weekly-loss-cap", type=float, default=-12.0,
+                        help="MYTHOS weekly loss cap in R (default: -12.0)")
+    parser.add_argument("--mythos-cooldown-bars", type=int, default=4,
+                        help="MYTHOS bars of cooldown after each executed trade (default: 4)")
+    parser.add_argument("--mythos-max-trades-per-day", type=int, default=8,
+                        help="MYTHOS max trades/day before throttling (default: 8)")
+    parser.add_argument("--mythos-max-leverage", type=float, default=1.8,
+                        help="MYTHOS maximum leverage multiplier (default: 1.8)")
+    parser.add_argument("--mythos-vol-target", type=float, default=0.012,
+                        help="MYTHOS daily volatility target for sizing (default: 0.012)")
+    parser.add_argument("--mythos-min-trades", type=int, default=25,
+                        help="MYTHOS minimum trades for confidence classification (default: 25)")
+    parser.add_argument("--mythos-report-path", type=str, default="checkpoints/mythos_walkforward_report.json",
+                        help="MYTHOS output report path (default: checkpoints/mythos_walkforward_report.json)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")
@@ -6196,6 +6230,42 @@ Examples:
         )
 
         data_path = data_dir / f"{symbols_list[0]}_15m.parquet"
+
+        if args.train_mythos:
+            log.info("[MODE] MYTHOS Walk-Forward Intelligence Stack")
+            from mythos.config import MythosConfig
+            from mythos.walkforward import run_mythos_walk_forward
+
+            mythos_cfg = MythosConfig(
+                train_months=args.mythos_train_months,
+                test_months=args.mythos_test_months,
+                n_regimes=args.mythos_n_regimes,
+                min_regime_confidence=args.mythos_min_regime_confidence,
+                min_router_confidence=args.mythos_min_confidence,
+                min_expected_r=args.mythos_min_expected_r,
+                min_edge_threshold=args.mythos_edge_threshold,
+                daily_loss_cap_r=args.mythos_daily_loss_cap,
+                weekly_loss_cap_r=args.mythos_weekly_loss_cap,
+                cooldown_bars=args.mythos_cooldown_bars,
+                max_trades_per_day=args.mythos_max_trades_per_day,
+                max_leverage=args.mythos_max_leverage,
+                vol_target=args.mythos_vol_target,
+                min_trades_for_confidence=args.mythos_min_trades,
+                max_folds=args.mythos_max_folds,
+            )
+            mythos_report = run_mythos_walk_forward(
+                data_dir=data_dir,
+                symbols=symbols_list,
+                cfg=mythos_cfg,
+                report_path=Path(args.mythos_report_path),
+            )
+            agg = mythos_report.get("aggregate", {})
+            log.info(
+                "[MYTHOS] Complete: trades=%s totalR=%s expectancy=%s active_folds=%s/%s",
+                agg.get("total_trades"), agg.get("total_r"), agg.get("expectancy_r"),
+                agg.get("active_folds"), agg.get("n_folds"),
+            )
+            return
 
         if args.train_v5:
             log.info("[MODE] v5.0 Forecaster training (continuous predictions + decision layer)")
