@@ -21,6 +21,45 @@ from .world_model import WorldModel
 log = logging.getLogger("mythos")
 
 
+def _select_fold_metric(fold: Dict[str, object], metric: str) -> float:
+    metric = str(metric or "total_r").lower()
+    if metric == "expectancy_r":
+        return float(fold.get("expectancy_r", 0.0))
+    if metric == "win_rate":
+        return float(fold.get("win_rate", 0.0))
+    return float(fold.get("total_r", 0.0))
+
+
+def _save_model_artifact(
+    output_dir: Path,
+    symbol: str,
+    fold_idx: int,
+    window_start: str,
+    window_end: str,
+    metric_name: str,
+    metric_value: float,
+    cfg: MythosConfig,
+    wm: WorldModel,
+    experts,
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model_path = output_dir / f"mythos_best_{symbol}.json"
+    payload = {
+        "kind": "mythos_best_fold_model",
+        "symbol": symbol,
+        "fold": int(fold_idx),
+        "window_start": window_start,
+        "window_end": window_end,
+        "selection_metric": metric_name,
+        "selection_value": float(metric_value),
+        "config": asdict(cfg),
+        "world_model": wm.to_state_dict(),
+        "experts": [ex.to_state_dict() for ex in experts],
+    }
+    model_path.write_text(json.dumps(payload, indent=2))
+    return model_path
+
+
 def _monthly_folds(
     first_ts_ms: int,
     last_ts_ms: int,
@@ -126,6 +165,7 @@ def _run_fold(
             "short_trades": 0,
             "status": "DEAD",
             "promotion": {"promote": False, "reasons": ["insufficient_data"], "checks": {}},
+            "_model_state": None,
         }
 
     wm = WorldModel(n_states=cfg.n_regimes, random_state=cfg.random_state)
@@ -213,6 +253,7 @@ def _run_fold(
         "short_trades": n_short,
         "status": status,
         "promotion": asdict(promotion),
+        "_model_state": {"world_model": wm, "experts": experts},
     }
 
 
@@ -242,10 +283,14 @@ def run_mythos_walk_forward(
         folds = folds[: max(int(cfg.max_folds), 0)]
     log.info("[MYTHOS] Generated %d folds", len(folds))
     reports: List[Dict[str, object]] = []
+    best_metric = float("-inf")
+    best_fold_artifact: Optional[Path] = None
+    metric_name = str(getattr(cfg, "best_model_metric", "total_r"))
     for i, (tr_s, tr_e, te_s, te_e) in enumerate(folds, start=1):
         train_df = _slice_by_dates(raw, tr_s, tr_e)
         test_df = _slice_by_dates(raw, te_s, te_e)
         fold = _run_fold(train_df, test_df, cfg)
+        model_state = fold.pop("_model_state", None)
         fold.update(
             {
                 "fold": i,
@@ -254,6 +299,22 @@ def run_mythos_walk_forward(
             }
         )
         reports.append(fold)
+        if cfg.save_best_model and model_state is not None:
+            fold_metric = _select_fold_metric(fold, metric_name)
+            if fold_metric > best_metric:
+                best_metric = fold_metric
+                best_fold_artifact = _save_model_artifact(
+                    output_dir=Path(cfg.model_output_dir),
+                    symbol=sym,
+                    fold_idx=i,
+                    window_start=te_s,
+                    window_end=te_e,
+                    metric_name=metric_name,
+                    metric_value=fold_metric,
+                    cfg=cfg,
+                    wm=model_state["world_model"],
+                    experts=model_state["experts"],
+                )
         log.info(
             "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d",
             i,
@@ -279,6 +340,9 @@ def run_mythos_walk_forward(
         "active_folds": act,
         "low_conf_folds": low,
         "dead_folds": dead,
+        "best_model_metric": metric_name,
+        "best_model_metric_value": round(best_metric, 6) if best_metric > float("-inf") else None,
+        "best_model_path": str(best_fold_artifact) if best_fold_artifact is not None else None,
     }
     result = {"folds": reports, "aggregate": aggregate, "config": asdict(cfg)}
     out = output_path or (Path("checkpoints") / "mythos_walkforward_report.json")

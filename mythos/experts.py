@@ -192,6 +192,16 @@ class _SklearnLikeExpert:
             regime_affinity=[max(regime - 1, 0), regime, regime + 1],
         )
 
+    def to_state_dict(self) -> Dict[str, object]:
+        coef = self._coef if self._coef is not None else np.zeros(7, dtype=np.float64)
+        return {
+            "name": self.name,
+            "side": int(self.side),
+            "coef": coef.tolist(),
+            "bias": float(self._bias),
+            "sigma": float(self._sigma),
+        }
+
 
 def build_experts(random_state: int | None = None) -> List[_SklearnLikeExpert]:
     _ = random_state

@@ -43,6 +43,9 @@ class MythosConfig:
     max_size_mult: float = 1.8
     min_trades_for_confidence: int = 25
     min_trades_per_fold: int = 25
+    save_best_model: bool = True
+    best_model_metric: str = "total_r"
+    model_output_dir: str = "checkpoints/mythos_models"
 
     def __post_init__(self) -> None:
         # Keep legacy/new naming aligned for callers.

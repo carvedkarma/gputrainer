@@ -5262,6 +5262,15 @@ Examples:
                         help="MYTHOS minimum trades for confidence classification (default: 25)")
     parser.add_argument("--mythos-report-path", type=str, default="checkpoints/mythos_walkforward_report.json",
                         help="MYTHOS output report path (default: checkpoints/mythos_walkforward_report.json)")
+    parser.add_argument("--mythos-save-best-model", action="store_true", default=True,
+                        help="MYTHOS: persist best fold model artifact (default: enabled)")
+    parser.add_argument("--mythos-no-save-best-model", dest="mythos_save_best_model", action="store_false",
+                        help="MYTHOS: disable best-model artifact persistence")
+    parser.add_argument("--mythos-best-model-metric", type=str, default="total_r",
+                        choices=["total_r", "expectancy_r", "win_rate"],
+                        help="MYTHOS: metric for selecting best fold model (default: total_r)")
+    parser.add_argument("--mythos-model-output-dir", type=str, default="checkpoints/mythos_models",
+                        help="MYTHOS: directory to save exported model artifacts")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")
@@ -6252,6 +6261,9 @@ Examples:
                 vol_target=args.mythos_vol_target,
                 min_trades_for_confidence=args.mythos_min_trades,
                 max_folds=args.mythos_max_folds,
+                save_best_model=args.mythos_save_best_model,
+                best_model_metric=args.mythos_best_model_metric,
+                model_output_dir=args.mythos_model_output_dir,
             )
             mythos_report = run_mythos_walk_forward(
                 data_dir=data_dir,
@@ -6267,6 +6279,13 @@ Examples:
                 agg.get("total_trades"), agg.get("total_r"), agg.get("expectancy_r"),
                 agg.get("active_folds"), agg.get("folds"),
             )
+            if agg.get("best_model_path"):
+                log.info(
+                    "[MYTHOS] Best model: metric=%s value=%s path=%s",
+                    agg.get("best_model_metric"),
+                    agg.get("best_model_metric_value"),
+                    agg.get("best_model_path"),
+                )
             return
 
         if args.train_v5:

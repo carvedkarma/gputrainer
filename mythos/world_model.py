@@ -94,3 +94,14 @@ class WorldModel:
         if arr.ndim != 2:
             raise ValueError("WorldModel input must be 2D")
         return arr
+
+    def to_state_dict(self) -> Dict[str, object]:
+        self._check_fitted()
+        return {
+            "random_state": int(self.random_state),
+            "n_states": int(self.n_states),
+            "scaler_mean": self.scaler.mean_.tolist(),
+            "scaler_scale": self.scaler.scale_.tolist(),
+            "kmeans_centers": self.model.cluster_centers_.tolist(),
+            "transition_matrix": self.transition_matrix_.tolist() if self.transition_matrix_ is not None else None,
+        }
