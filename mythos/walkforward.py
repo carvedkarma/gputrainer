@@ -486,6 +486,7 @@ def _run_fold(
         conf_lift = max(confidence - 0.5, 0.0)
         uncertainty = float(np.clip(uncertainty * (1.0 - 0.25 * conf_lift * hit_ratio), 0.005, 1.0))
         adapted = adaptive.adapt_signal(
+            bar_idx=i,
             x=x,
             regime=regime,
             expert_name=expert_name,
