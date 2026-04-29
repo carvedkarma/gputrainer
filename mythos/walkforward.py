@@ -22,12 +22,70 @@ from .world_model import WorldModel
 log = logging.getLogger("mythos")
 
 
+class AnalogMemory:
+    def __init__(self, X: np.ndarray, realized_r: np.ndarray, sides: np.ndarray, k: int = 48):
+        self.X = np.asarray(X, dtype=np.float64)
+        self.realized_r = np.asarray(realized_r, dtype=np.float64)
+        self.sides = np.asarray(sides, dtype=np.int64)
+        self.k = int(max(k, 4))
+        self._mu = np.mean(self.X, axis=0) if self.X.size else np.zeros(1, dtype=np.float64)
+        self._sigma = np.std(self.X, axis=0) + 1e-6 if self.X.size else np.ones(1, dtype=np.float64)
+        self.Xn = (self.X - self._mu) / self._sigma if self.X.size else self.X
+
+    def query(self, x: np.ndarray, side: int) -> Dict[str, float]:
+        if self.Xn.size == 0:
+            return {"analog_edge": 0.0, "analog_conf": 0.5, "analog_hits": 0.0}
+        xn = (np.asarray(x, dtype=np.float64) - self._mu) / self._sigma
+        d2 = np.sum((self.Xn - xn) ** 2, axis=1)
+        order = np.argsort(d2)
+        k = min(self.k, len(order))
+        idx = order[:k]
+        mask = self.sides[idx] == int(side)
+        if np.any(mask):
+            idx = idx[mask]
+        rr = self.realized_r[idx]
+        if rr.size == 0:
+            return {"analog_edge": 0.0, "analog_conf": 0.5, "analog_hits": 0.0}
+        analog_edge = float(np.mean(rr))
+        analog_conf = float(np.clip(np.mean(rr > 0.0), 0.0, 1.0))
+        return {"analog_edge": analog_edge, "analog_conf": analog_conf, "analog_hits": float(rr.size)}
+
+
+def _build_analog_memory(train_feat: pd.DataFrame, cfg: MythosConfig) -> AnalogMemory:
+    X = train_feat[["ret_1", "ret_4", "ret_16", "vol_16", "vol_64", "zscore_64", "trend_ema"]].to_numpy(dtype=np.float64)
+    # Fast proxy target (vectorized): avoids expensive per-bar barrier simulation
+    # while still giving a useful analog retrieval memory.
+    raw = (
+        0.55 * train_feat["fwd_ret_4"].to_numpy(dtype=np.float64)
+        + 0.45 * train_feat["fwd_ret_16"].to_numpy(dtype=np.float64)
+    )
+    vol = np.maximum(
+        0.5
+        * (
+            train_feat["vol_16"].to_numpy(dtype=np.float64)
+            + train_feat["vol_64"].to_numpy(dtype=np.float64)
+        ),
+        1e-6,
+    )
+    long_r = np.clip(raw / (vol * np.sqrt(8.0)), -cfg.sl_mult, cfg.tp_mult)
+    short_r = -long_r
+    usable = len(train_feat)
+    X2 = np.concatenate([X[:usable], X[:usable]], axis=0)
+    rr = np.concatenate([long_r[:usable], short_r[:usable]], axis=0)
+    sides = np.concatenate(
+        [np.ones(usable, dtype=np.int64), -np.ones(usable, dtype=np.int64)], axis=0
+    )
+    return AnalogMemory(X2, rr, sides, k=int(getattr(cfg, "analog_k", 48)))
+
+
 def _select_fold_metric(fold: Dict[str, object], metric: str) -> float:
     metric = str(metric or "total_r").lower()
     if metric == "expectancy_r":
         return float(fold.get("expectancy_r", 0.0))
     if metric == "win_rate":
         return float(fold.get("win_rate", 0.0))
+    if metric == "robust_score":
+        return float(fold.get("robust_score", 0.0))
     return float(fold.get("total_r", 0.0))
 
 
@@ -42,6 +100,7 @@ def _save_model_artifact(
     cfg: MythosConfig,
     wm: WorldModel,
     experts,
+    router: Optional[MetaRouter] = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / f"mythos_best_{symbol}.json"
@@ -56,6 +115,7 @@ def _save_model_artifact(
         "config": asdict(cfg),
         "world_model": wm.to_state_dict(),
         "experts": [ex.to_state_dict() for ex in experts],
+        "router": router.to_state_dict() if router is not None else None,
     }
     model_path.write_text(json.dumps(payload, indent=2))
     return model_path
@@ -171,6 +231,8 @@ def _run_fold(
             "short_trades": 0,
             "status": "DEAD",
             "promotion": {"promote": False, "reasons": ["insufficient_data"], "checks": {}},
+            "max_drawdown_r": 0.0,
+            "robust_score": 0.0,
             "_model_state": None,
         }
 
@@ -189,6 +251,7 @@ def _run_fold(
 
     router = MetaRouter(cfg)
     router.fit(train_feat, train_regime, experts)
+    analog_mem = _build_analog_memory(train_feat, cfg)
 
     risk = RiskConstitution(cfg)
     close = test_feat["close"].to_numpy(dtype=np.float64)
@@ -211,9 +274,20 @@ def _run_fold(
             vol_16=float(test_feat.iloc[i]["vol_16"]),
             trend_ema=float(test_feat.iloc[i]["trend_ema"]),
         )
+        expert_name = str(routed.get("expert_name", "none"))
         side = int(routed.get("side", 0))
         edge = float(routed.get("edge", 0.0))
+        confidence = float(routed.get("confidence", 0.0))
         uncertainty = float(routed.get("uncertainty", 0.2))
+        analog = analog_mem.query(x=x, side=side) if side != 0 else {"analog_edge": 0.0, "analog_conf": 0.5, "analog_hits": 0.0}
+        blend = float(np.clip(getattr(cfg, "analog_blend", 0.35), 0.0, 0.95))
+        edge = (1.0 - blend) * edge + blend * float(analog["analog_edge"])
+        confidence = (1.0 - blend) * confidence + blend * float(analog["analog_conf"])
+        hit_ratio = min(float(analog["analog_hits"]) / max(float(getattr(cfg, "analog_k", 48)), 1.0), 1.0)
+        conf_lift = max(confidence - 0.5, 0.0)
+        uncertainty = float(np.clip(uncertainty * (1.0 - 0.25 * conf_lift * hit_ratio), 0.005, 1.0))
+        if confidence < cfg.min_confidence:
+            continue
         if not risk.allow_trade(ts_ms=int(timestamps[i]), side=side, edge=edge, uncertainty=uncertainty):
             continue
         realized = _barrier_outcome(
@@ -230,6 +304,7 @@ def _run_fold(
         size = risk.position_size_multiplier(edge=edge, uncertainty=uncertainty, regime=regime)
         rr = float(realized * size)
         risk.record_trade(rr, int(timestamps[i]), edge=edge, uncertainty=uncertainty)
+        router.update_reliability(expert_name=expert_name, realized_r=rr, regime=regime)
         trades.append(rr)
         if side == 1:
             n_long += 1
@@ -245,6 +320,13 @@ def _run_fold(
     total_r = float(np.sum(trades)) if n else 0.0
     expect = float(np.mean(trades)) if n else 0.0
     wr = float(np.mean(np.array(trades) > 0)) if n else 0.0
+    eq = np.cumsum(np.array(trades, dtype=np.float64)) if n else np.array([0.0], dtype=np.float64)
+    peak = np.maximum.accumulate(eq)
+    dd = eq - peak
+    max_drawdown_r = float(np.min(dd)) if dd.size else 0.0
+    dd_pen = float(np.clip(getattr(cfg, "robust_score_dd_penalty", 0.35), 0.0, 5.0))
+    pf_for_score = profit_factor if isfinite(profit_factor) else 3.0
+    robust_score = float(expect * 100.0 + (pf_for_score - 1.0) * 5.0 - dd_pen * abs(max_drawdown_r))
     status = "ACTIVE" if n >= cfg.min_trades_per_fold else ("LOW_CONF" if n > 0 else "DEAD")
     promotion = evaluate_promotion(
         expectancy=expect,
@@ -265,11 +347,13 @@ def _run_fold(
         "gross_profit_r": round(gross_profit, 4),
         "gross_loss_r": round(gross_loss, 4),
         "profit_factor": round(profit_factor, 4) if isfinite(profit_factor) else "inf",
+        "max_drawdown_r": round(max_drawdown_r, 4),
+        "robust_score": round(robust_score, 6),
         "long_trades": n_long,
         "short_trades": n_short,
         "status": status,
         "promotion": asdict(promotion),
-        "_model_state": {"world_model": wm, "experts": experts},
+        "_model_state": {"world_model": wm, "experts": experts, "router": router},
     }
 
 
@@ -301,7 +385,7 @@ def run_mythos_walk_forward(
     reports: List[Dict[str, object]] = []
     best_metric = float("-inf")
     best_fold_artifact: Optional[Path] = None
-    metric_name = str(getattr(cfg, "best_model_metric", "total_r"))
+    metric_name = str(getattr(cfg, "best_model_metric", "total_r")).lower()
     for i, (tr_s, tr_e, te_s, te_e) in enumerate(folds, start=1):
         train_df = _slice_by_dates(raw, tr_s, tr_e)
         test_df = _slice_by_dates(raw, te_s, te_e)
@@ -330,6 +414,7 @@ def run_mythos_walk_forward(
                     cfg=cfg,
                     wm=model_state["world_model"],
                     experts=model_state["experts"],
+                    router=model_state.get("router"),
                 )
         log.info(
             "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d",
@@ -349,6 +434,8 @@ def run_mythos_walk_forward(
     agg_win_rate = (total_wins / total_trades) if total_trades else 0.0
     agg_pf = (gross_profit / gross_loss) if gross_loss > 1e-9 else (float("inf") if gross_profit > 0.0 else 0.0)
     total_r = float(sum(r["total_r"] for r in reports))
+    avg_max_drawdown = float(np.mean([r.get("max_drawdown_r", 0.0) for r in reports])) if reports else 0.0
+    avg_robust_score = float(np.mean([r.get("robust_score", 0.0) for r in reports])) if reports else 0.0
     act = sum(1 for r in reports if r["status"] == "ACTIVE")
     low = sum(1 for r in reports if r["status"] == "LOW_CONF")
     dead = sum(1 for r in reports if r["status"] == "DEAD")
@@ -365,6 +452,8 @@ def run_mythos_walk_forward(
         "profit_factor": round(agg_pf, 4) if isfinite(agg_pf) else "inf",
         "total_r": round(total_r, 4),
         "expectancy_r": round((total_r / total_trades) if total_trades else 0.0, 4),
+        "avg_max_drawdown_r": round(avg_max_drawdown, 4),
+        "avg_robust_score": round(avg_robust_score, 6),
         "active_folds": act,
         "low_conf_folds": low,
         "dead_folds": dead,

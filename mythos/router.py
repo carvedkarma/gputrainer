@@ -34,20 +34,42 @@ class MetaRouter:
         else:
             self.cfg = MythosConfig()
         self._reliability: Dict[str, List[float]] = {}
+        self._regime_reliability: Dict[int, Dict[str, List[float]]] = {}
+        self._ema_reliability: Dict[str, float] = {}
         self._fitted = False
 
-    def update_reliability(self, expert_name: str, realized_r: float) -> None:
+    def update_reliability(self, expert_name: str, realized_r: float, regime: int | None = None) -> None:
         history = self._reliability.setdefault(expert_name, [])
         history.append(float(realized_r))
         if len(history) > self.cfg.reliability_window:
             del history[0 : len(history) - self.cfg.reliability_window]
+        alpha = float(np.clip(getattr(self.cfg, "online_reliability_alpha", 0.08), 0.001, 0.95))
+        prev_ema = float(self._ema_reliability.get(expert_name, 0.0))
+        self._ema_reliability[expert_name] = (1.0 - alpha) * prev_ema + alpha * float(realized_r)
+        if regime is not None:
+            reg_key = int(regime)
+            reg_map = self._regime_reliability.setdefault(reg_key, {})
+            reg_hist = reg_map.setdefault(expert_name, [])
+            reg_hist.append(float(realized_r))
+            max_len = int(max(getattr(self.cfg, "reliability_regime_window", 80), 5))
+            if len(reg_hist) > max_len:
+                del reg_hist[0 : len(reg_hist) - max_len]
 
-    def _reliability_score(self, expert_name: str) -> float:
+    def _reliability_score(self, expert_name: str, regime: int | None = None) -> float:
         history = self._reliability.get(expert_name, [])
         if len(history) < 5:
-            return 0.0
-        arr = np.array(history, dtype=np.float64)
-        return float(np.mean(arr) / (np.std(arr) + 1e-6))
+            base = 0.0
+        else:
+            arr = np.array(history, dtype=np.float64)
+            base = float(np.mean(arr) / (np.std(arr) + 1e-6))
+        ema = float(self._ema_reliability.get(expert_name, 0.0))
+        reg_score = 0.0
+        if regime is not None:
+            reg_hist = self._regime_reliability.get(int(regime), {}).get(expert_name, [])
+            if len(reg_hist) >= 4:
+                reg_arr = np.array(reg_hist, dtype=np.float64)
+                reg_score = float(np.mean(reg_arr) / (np.std(reg_arr) + 1e-6))
+        return 0.55 * base + 0.25 * ema + 0.20 * reg_score
 
     def fit(self, train_feat, train_regime, experts) -> "MetaRouter":
         # Keep fit hook so walkforward/tests can share a sklearn-like flow.
@@ -92,7 +114,7 @@ class MetaRouter:
         scored: List[Tuple[float, ExpertPrediction]] = []
         for pred in predictions:
             regime_fit = 1.0 if regime in pred.regime_affinity else 0.7
-            rel = self._reliability_score(pred.expert_name)
+            rel = self._reliability_score(pred.expert_name, regime=regime)
             score = (
                 pred.expected_r
                 - self.cfg.uncertainty_penalty * pred.uncertainty
@@ -141,4 +163,14 @@ class MetaRouter:
             abstain=False,
             reason="selected",
         )
+
+    def to_state_dict(self) -> Dict[str, object]:
+        return {
+            "reliability": {k: [float(v) for v in vals] for k, vals in self._reliability.items()},
+            "ema_reliability": {k: float(v) for k, v in self._ema_reliability.items()},
+            "regime_reliability": {
+                int(reg): {k: [float(v) for v in vals] for k, vals in reg_map.items()}
+                for reg, reg_map in self._regime_reliability.items()
+            },
+        }
 

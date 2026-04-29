@@ -46,6 +46,11 @@ class MythosConfig:
     save_best_model: bool = True
     best_model_metric: str = "total_r"
     model_output_dir: str = "checkpoints/mythos_models"
+    analog_k: int = 48
+    analog_blend: float = 0.35
+    online_reliability_alpha: float = 0.08
+    reliability_regime_window: int = 80
+    robust_score_dd_penalty: float = 0.35
 
     def __post_init__(self) -> None:
         # Keep legacy/new naming aligned for callers.
