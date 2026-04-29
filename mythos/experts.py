@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, List
 
 import numpy as np
 
@@ -15,6 +15,17 @@ class ExpertOutput:
     confidence: float
     uncertainty: float
     score: float
+
+
+@dataclass
+class ExpertPrediction:
+    expert_name: str
+    side: int
+    expected_r: float
+    confidence: float
+    uncertainty: float
+    score: float
+    regime_affinity: List[int]
 
 
 def _safe_mean(x: np.ndarray) -> float:
@@ -33,9 +44,9 @@ class TrendLongExpert:
     name = "trend_long"
 
     def infer(self, row: Dict[str, float], cfg: MythosConfig) -> ExpertOutput:
-        mu = max(row.get("ret_96", 0.0), 0.0)
-        mom = max(row.get("mom_16", 0.0), 0.0)
-        vol_pen = max(row.get("vol_96", 0.0) - row.get("vol_384", 0.0), 0.0)
+        mu = max(row.get("ret_16", 0.0), 0.0)
+        mom = max(row.get("ret_4", 0.0), 0.0)
+        vol_pen = max(row.get("vol_16", 0.0) - row.get("vol_64", 0.0), 0.0)
         exp_r = 12.0 * mu + 4.0 * mom - 2.5 * vol_pen
         conf = float(np.clip(0.45 + 20.0 * mu + 8.0 * mom, 0.0, 1.0))
         unc = float(np.clip(0.20 + 6.0 * vol_pen, 0.0, 1.0))
@@ -47,9 +58,9 @@ class TrendShortExpert:
     name = "trend_short"
 
     def infer(self, row: Dict[str, float], cfg: MythosConfig) -> ExpertOutput:
-        mu = max(-row.get("ret_96", 0.0), 0.0)
-        mom = max(-row.get("mom_16", 0.0), 0.0)
-        vol_pen = max(row.get("vol_96", 0.0) - row.get("vol_384", 0.0), 0.0)
+        mu = max(-row.get("ret_16", 0.0), 0.0)
+        mom = max(-row.get("ret_4", 0.0), 0.0)
+        vol_pen = max(row.get("vol_16", 0.0) - row.get("vol_64", 0.0), 0.0)
         exp_r = 12.0 * mu + 4.0 * mom - 2.5 * vol_pen
         conf = float(np.clip(0.45 + 20.0 * mu + 8.0 * mom, 0.0, 1.0))
         unc = float(np.clip(0.20 + 6.0 * vol_pen, 0.0, 1.0))
@@ -130,4 +141,58 @@ class ExpertCouncil:
                 score=calibrated_score,
             )
         return outputs
+
+
+class _SklearnLikeExpert:
+    def __init__(self, name: str, side: int):
+        self.name = name
+        self.side = side
+        self._coef = None
+        self._bias = 0.0
+        self._sigma = 1.0
+
+    def fit(self, X: np.ndarray, y1: np.ndarray, y4: np.ndarray, y16: np.ndarray, regime_ids: np.ndarray) -> None:
+        target = 0.5 * y4 + 0.5 * y16
+        if self.side < 0:
+            target = -target
+        if X.size == 0:
+            self._coef = np.zeros(7, dtype=np.float64)
+            self._bias = 0.0
+            self._sigma = 1.0
+            return
+        XtX = X.T @ X + np.eye(X.shape[1]) * 1e-4
+        self._coef = np.linalg.solve(XtX, X.T @ target)
+        pred = X @ self._coef
+        self._bias = float(np.mean(target - pred))
+        self._sigma = float(np.std(target - pred) + 1e-4)
+
+    def predict_one(self, x: np.ndarray, regime: int) -> ExpertPrediction:
+        if self._coef is None:
+            mu = 0.0
+        else:
+            mu = float(x @ self._coef + self._bias)
+        if self.side < 0:
+            mu = -mu
+        expected = max(mu, 0.0)
+        uncertainty = float(np.clip(self._sigma, 0.05, 1.0))
+        confidence = float(np.clip(0.5 + expected / max(uncertainty, 1e-6), 0.0, 1.0))
+        return ExpertPrediction(
+            expert_name=self.name,
+            side=self.side,
+            expected_r=expected,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            score=expected * confidence - uncertainty * 0.2,
+            regime_affinity=[max(regime - 1, 0), regime, regime + 1],
+        )
+
+
+def build_experts(random_state: int | None = None) -> List[_SklearnLikeExpert]:
+    _ = random_state
+    return [
+        _SklearnLikeExpert("trend_long", side=1),
+        _SklearnLikeExpert("trend_short", side=-1),
+        _SklearnLikeExpert("mean_revert", side=1),
+        _SklearnLikeExpert("breakout", side=1),
+    ]
 

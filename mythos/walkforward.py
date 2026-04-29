@@ -128,7 +128,7 @@ def _run_fold(
             "promotion": {"should_promote": False, "reasons": ["insufficient_data"]},
         }
 
-    wm = WorldModel(cfg.random_state)
+    wm = WorldModel(n_states=cfg.n_regimes, random_state=cfg.random_state)
     wm.fit(train_feat)
     train_regime = wm.predict_regime(train_feat)
     test_regime = wm.predict_regime(test_feat)

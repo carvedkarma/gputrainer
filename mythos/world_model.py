@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Iterable
 
 import numpy as np
 from sklearn.cluster import KMeans
@@ -23,25 +23,30 @@ class WorldModel:
     probabilities between those states for short-horizon regime awareness.
     """
 
-    def __init__(self, n_states: int = 6, random_state: int = 42) -> None:
-        self.n_states = int(n_states)
+    def __init__(self, random_state: int = 42, n_states: int = 4) -> None:
         self.random_state = int(random_state)
+        self.n_states = int(n_states)
         self.scaler = StandardScaler()
         self.model = KMeans(n_clusters=self.n_states, n_init=20, random_state=self.random_state)
         self.transition_matrix_: np.ndarray | None = None
         self.fitted_ = False
 
-    def fit(self, x: np.ndarray) -> "WorldModel":
-        x_s = self.scaler.fit_transform(x)
+    def fit(self, x) -> "WorldModel":
+        xx = self._to_array(x)
+        x_s = self.scaler.fit_transform(xx)
         states = self.model.fit_predict(x_s)
         self.transition_matrix_ = self._build_transition_matrix(states)
         self.fitted_ = True
         return self
 
-    def transform(self, x: np.ndarray) -> np.ndarray:
+    def transform(self, x) -> np.ndarray:
         self._check_fitted()
-        x_s = self.scaler.transform(x)
+        xx = self._to_array(x)
+        x_s = self.scaler.transform(xx)
         return self.model.predict(x_s)
+
+    def predict_regime(self, x) -> np.ndarray:
+        return self.transform(x)
 
     def snapshot(self, recent_states: np.ndarray) -> WorldStateSnapshot:
         self._check_fitted()
@@ -74,3 +79,18 @@ class WorldModel:
     def _check_fitted(self) -> None:
         if not self.fitted_:
             raise RuntimeError("WorldModel must be fitted before use.")
+
+    def _to_array(self, x) -> np.ndarray:
+        if hasattr(x, "columns"):
+            # DataFrame path
+            cols = [c for c in ["ret_1", "ret_4", "ret_16", "vol_16", "vol_64", "zscore_64", "trend_ema"] if c in x.columns]
+            if not cols:
+                cols = list(x.select_dtypes(include=["number"]).columns)
+            arr = x[cols].to_numpy(dtype=np.float64)
+        else:
+            arr = np.asarray(x, dtype=np.float64)
+            if arr.ndim == 1:
+                arr = arr.reshape(-1, 1)
+        if arr.ndim != 2:
+            raise ValueError("WorldModel input must be 2D")
+        return arr

@@ -16,6 +16,8 @@ class MythosConfig:
     lookback: int = 96
     threshold_quantile: float = 0.75
     random_state: int = 42
+    tp_mult: float = 3.0
+    sl_mult: float = 1.0
 
     # World model / router
     n_regimes: int = 4
@@ -41,4 +43,8 @@ class MythosConfig:
     max_size_mult: float = 1.8
     min_trades_for_confidence: int = 25
     min_trades_per_fold: int = 25
+
+    def __post_init__(self) -> None:
+        # Keep legacy/new naming aligned for callers.
+        self.min_trades_per_fold = int(self.min_trades_for_confidence)
 
