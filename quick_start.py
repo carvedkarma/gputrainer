@@ -6403,6 +6403,11 @@ Examples:
                 counterfactual_margin=args.mythos_counterfactual_margin,
                 counterfactual_uncertainty_weight=args.mythos_counterfactual_uncertainty_weight,
                 counterfactual_min_alt_hits=args.mythos_counterfactual_min_alt_hits,
+                enable_gpu_neural_experts=args.mythos_use_neural_expert,
+                neural_expert_hidden=args.mythos_neural_hidden,
+                neural_expert_epochs=args.mythos_neural_epochs,
+                neural_expert_lr=args.mythos_neural_lr,
+                neural_expert_batch_size=args.mythos_neural_batch_size,
             )
             mythos_report = run_mythos_walk_forward(
                 data_dir=data_dir,

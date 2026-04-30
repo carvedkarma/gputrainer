@@ -123,4 +123,12 @@ class MythosConfig:
         self.transition_memory_edge_scale = float(self.transition_edge_gain)
         self.transition_memory_confidence_scale = float(self.transition_confidence_gain)
         self.transition_memory_uncertainty_scale = float(self.transition_uncertainty_gain)
+        # Keep neural-expert naming aligned across revisions.
+        self.use_gpu_neural_expert = bool(self.enable_gpu_neural_experts)
+        self.neural_expert_hidden_dim = int(self.neural_expert_hidden)
+        dev = str(self.neural_expert_device or "auto").strip().lower()
+        if dev not in {"auto", "cuda", "cpu"}:
+            dev = "auto"
+        self.neural_expert_device = dev
+        self.allow_cpu_neural_expert = bool(dev in {"auto", "cpu"})
 
