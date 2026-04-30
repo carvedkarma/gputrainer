@@ -70,6 +70,12 @@ class MythosConfig:
     instability_confidence_drop: float = 0.08
     instability_uncertainty_mult: float = 1.35
     transition_min_samples: int = 6
+    # Canonical transition learner knobs (wired from CLI).
+    transition_learn_rate: float = 0.12
+    transition_edge_gain: float = 0.35
+    transition_confidence_gain: float = 0.06
+    transition_uncertainty_gain: float = 0.30
+    # Backward-compatible aliases (older revisions/checkpoints).
     transition_memory_alpha: float = 0.12
     transition_memory_edge_scale: float = 0.25
     transition_memory_confidence_scale: float = 0.06
@@ -98,4 +104,9 @@ class MythosConfig:
         self.min_confidence = float(self.min_router_confidence)
         # Keep edge gate aligned with the exposed minimum expected-R control.
         self.abstain_edge_floor = float(self.min_expected_r)
+        # Keep transition learner legacy/new naming aligned.
+        self.transition_memory_alpha = float(self.transition_learn_rate)
+        self.transition_memory_edge_scale = float(self.transition_edge_gain)
+        self.transition_memory_confidence_scale = float(self.transition_confidence_gain)
+        self.transition_memory_uncertainty_scale = float(self.transition_uncertainty_gain)
 

@@ -318,7 +318,7 @@ class V4AdaptiveBrain:
         self._exp_regime[rk] = (1.0 - alpha) * prev_r + alpha * rr
         trans = self._last_transition
         if trans is not None:
-            t_alpha = float(np.clip(getattr(self.cfg, "transition_memory_alpha", 0.12), 0.001, 0.95))
+            t_alpha = float(np.clip(getattr(self.cfg, "transition_learn_rate", 0.12), 0.001, 0.95))
             prev_t = float(self._transition_outcome.get(trans, 0.0))
             self._transition_outcome[trans] = (1.0 - t_alpha) * prev_t + t_alpha * rr
             self._transition_count[trans] = int(self._transition_count.get(trans, 0)) + 1
