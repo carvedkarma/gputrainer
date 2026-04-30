@@ -83,7 +83,27 @@ class WorldModel:
     def _to_array(self, x) -> np.ndarray:
         if hasattr(x, "columns"):
             # DataFrame path
-            cols = [c for c in ["ret_1", "ret_4", "ret_16", "vol_16", "vol_64", "zscore_64", "trend_ema"] if c in x.columns]
+            cols = [
+                c
+                for c in [
+                    "ret_1",
+                    "ret_4",
+                    "ret_16",
+                    "ret_64",
+                    "vol_16",
+                    "vol_64",
+                    "vol_256",
+                    "zscore_64",
+                    "trend_ema",
+                    "trend_slope_8",
+                    "range_break_48",
+                    "atr_pct",
+                    "rsi_14",
+                    "adx_14",
+                    "vol_z_128",
+                ]
+                if c in x.columns
+            ]
             if not cols:
                 cols = list(x.select_dtypes(include=["number"]).columns)
             arr = x[cols].to_numpy(dtype=np.float64)

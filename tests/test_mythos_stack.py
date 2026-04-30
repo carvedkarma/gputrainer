@@ -1,4 +1,8 @@
 import numpy as np
+import pytest
+
+pytest.importorskip("pandas")
+pytest.importorskip("sklearn")
 
 from mythos.config import MythosConfig
 from mythos.experts import build_experts
@@ -46,7 +50,23 @@ def test_mythos_components_pipeline_shapes_and_types():
     assert np.all(reg >= 0)
 
     experts = build_experts(cfg.random_state)
-    xcols = ["ret_1", "ret_4", "ret_16", "vol_16", "vol_64", "zscore_64", "trend_ema"]
+    xcols = [
+        "ret_1",
+        "ret_4",
+        "ret_16",
+        "ret_64",
+        "vol_16",
+        "vol_64",
+        "vol_256",
+        "zscore_64",
+        "trend_ema",
+        "trend_slope_8",
+        "range_break_48",
+        "atr_pct",
+        "rsi_14",
+        "adx_14",
+        "vol_z_128",
+    ]
     X = feat[xcols].to_numpy(dtype=np.float64)
     y1 = feat["fwd_ret_1"].to_numpy(dtype=np.float64)
     y4 = feat["fwd_ret_4"].to_numpy(dtype=np.float64)

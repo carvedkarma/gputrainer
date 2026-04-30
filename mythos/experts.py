@@ -203,6 +203,30 @@ class _SklearnLikeExpert:
         }
 
 
+def _infer_feature_columns_from_fit_matrix(X: np.ndarray) -> List[str]:
+    # Keep backward compatibility for older 7-factor layouts.
+    if X.shape[1] <= 7:
+        return ["ret_1", "ret_4", "ret_16", "vol_16", "vol_64", "zscore_64", "trend_ema"][: X.shape[1]]
+    # Rich multi-factor layout from mythos.features.MYTHOS_FEATURE_COLUMNS.
+    return [
+        "ret_1",
+        "ret_4",
+        "ret_16",
+        "ret_64",
+        "vol_16",
+        "vol_64",
+        "vol_ratio_16_64",
+        "zscore_64",
+        "zscore_128",
+        "trend_ema",
+        "trend_strength",
+        "range_break_48",
+        "atr_pct_14",
+        "rsi_14",
+        "adx_14",
+    ][: X.shape[1]]
+
+
 def build_experts(random_state: int | None = None) -> List[_SklearnLikeExpert]:
     _ = random_state
     return [

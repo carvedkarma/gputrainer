@@ -13,13 +13,16 @@ import pandas as pd
 
 from .config import MythosConfig
 from .experts import build_experts
-from .features import build_feature_frame
+from .features import MYTHOS_FEATURE_COLUMNS, build_feature_frame
 from .promotion import evaluate_promotion
 from .risk import RiskConstitution
 from .router import MetaRouter
 from .world_model import WorldModel
 
 log = logging.getLogger("mythos")
+
+
+MYTHOS_STATE_COLS = list(MYTHOS_FEATURE_COLUMNS)
 
 
 class AnalogMemory:
@@ -52,7 +55,8 @@ class AnalogMemory:
 
 
 def _build_analog_memory(train_feat: pd.DataFrame, cfg: MythosConfig) -> AnalogMemory:
-    X = train_feat[["ret_1", "ret_4", "ret_16", "vol_16", "vol_64", "zscore_64", "trend_ema"]].to_numpy(dtype=np.float64)
+    cols = [c for c in MYTHOS_STATE_COLS if c in train_feat.columns]
+    X = train_feat[cols].to_numpy(dtype=np.float64)
     # Fast proxy target (vectorized): avoids expensive per-bar barrier simulation
     # while still giving a useful analog retrieval memory.
     raw = (
@@ -546,7 +550,8 @@ def _run_fold(
     test_regime = wm.predict_regime(test_feat)
 
     experts = build_experts(cfg.random_state)
-    X_tr = train_feat[["ret_1", "ret_4", "ret_16", "vol_16", "vol_64", "zscore_64", "trend_ema"]].to_numpy(dtype=np.float64)
+    xcols = [c for c in MYTHOS_STATE_COLS if c in train_feat.columns]
+    X_tr = train_feat[xcols].to_numpy(dtype=np.float64)
     y1 = train_feat["fwd_ret_1"].to_numpy(dtype=np.float64)
     y4 = train_feat["fwd_ret_4"].to_numpy(dtype=np.float64)
     y16 = train_feat["fwd_ret_16"].to_numpy(dtype=np.float64)
@@ -565,7 +570,7 @@ def _run_fold(
     low = test_feat["low"].to_numpy(dtype=np.float64)
     timestamps = test_feat["timestamp"].to_numpy(dtype=np.int64)
     atr = _compute_atr(close, high, low, period=14)
-    X_te = test_feat[["ret_1", "ret_4", "ret_16", "vol_16", "vol_64", "zscore_64", "trend_ema"]].to_numpy(dtype=np.float64)
+    X_te = test_feat[xcols].to_numpy(dtype=np.float64)
 
     trades: List[float] = []
     skip_counts = {

@@ -6,6 +6,31 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
+MYTHOS_FEATURE_COLUMNS: List[str] = [
+    "ret_1",
+    "ret_4",
+    "ret_16",
+    "ret_64",
+    "vol_16",
+    "vol_64",
+    "vol_256",
+    "vol_ratio_16_64",
+    "ret_vol_ratio",
+    "zscore_64",
+    "zscore_128",
+    "trend_ema",
+    "trend_accel_4",
+    "trend_slope_8",
+    "range_break_48",
+    "atr_pct_14",
+    "rsi_14",
+    "adx_14",
+    "volume_z_64",
+    "volume_z_128",
+    "mom_64",
+    "drawdown_96",
+]
+
 
 def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
     delta = close.diff()
@@ -66,16 +91,37 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     ret1 = close.pct_change().fillna(0.0)
     ret4 = close.pct_change(4).fillna(0.0)
     ret16 = close.pct_change(16).fillna(0.0)
+    ret64 = close.pct_change(64).fillna(0.0)
     fwd1 = close.shift(-1) / close - 1.0
     fwd4 = close.shift(-4) / close - 1.0
     fwd16 = close.shift(-16) / close - 1.0
     vol16 = ret1.rolling(16).std().fillna(0.0)
     vol64 = ret1.rolling(64).std().fillna(0.0)
+    vol256 = ret1.rolling(256).std().fillna(0.0)
+    vol_ratio = (vol16 / (vol64 + 1e-8) - 1.0).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    ret_vol_ratio = (ret16 / (vol64 + 1e-8)).replace([np.inf, -np.inf], 0.0).fillna(0.0)
     z64 = ((close - close.rolling(64).mean()) / close.rolling(64).std().replace(0.0, np.nan)).fillna(0.0)
+    z128 = ((close - close.rolling(128).mean()) / close.rolling(128).std().replace(0.0, np.nan)).fillna(0.0)
     ema20 = close.ewm(span=20, adjust=False).mean()
     ema100 = close.ewm(span=100, adjust=False).mean()
     trend = (ema20 / ema100 - 1.0).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    trend_accel = (trend - trend.shift(4)).fillna(0.0)
+    trend_slope_8 = (trend - trend.shift(8)).fillna(0.0)
     range_break = ((data["high"] - data["low"]) / close.replace(0.0, np.nan)).fillna(0.0)
+    rsi_14 = ((_rsi(close, period=14).fillna(50.0) - 50.0) / 50.0).clip(-1.0, 1.0)
+    adx_14 = (_adx(data, period=14).fillna(20.0) / 100.0).clip(0.0, 1.0)
+    atr_pct_14 = (_atr(data, period=14) / close.replace(0.0, np.nan)).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    volume_z_64 = (
+        (data["volume"] - data["volume"].rolling(64).mean())
+        / data["volume"].rolling(64).std().replace(0.0, np.nan)
+    ).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    volume_z_128 = (
+        (data["volume"] - data["volume"].rolling(128).mean())
+        / data["volume"].rolling(128).std().replace(0.0, np.nan)
+    ).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    rolling_peak = close.rolling(96, min_periods=1).max()
+    drawdown_96 = (close / rolling_peak - 1.0).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    mom_64 = ret64
     out = pd.DataFrame(
         {
             "timestamp": data["timestamp"].astype(np.int64),
@@ -86,14 +132,33 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
             "ret_1": ret1,
             "ret_4": ret4,
             "ret_16": ret16,
+            "ret_64": ret64,
             "fwd_ret_1": fwd1.fillna(0.0),
             "fwd_ret_4": fwd4.fillna(0.0),
             "fwd_ret_16": fwd16.fillna(0.0),
             "vol_16": vol16,
             "vol_64": vol64,
+            "vol_256": vol256,
             "zscore_64": z64,
+            "zscore_128": z128,
             "trend_ema": trend,
             "range_break_48": range_break,
+            "rsi_14": rsi_14,
+            "adx_14": adx_14,
+            "atr_pct_14": atr_pct_14,
+            "volume_z_64": volume_z_64,
+            "volume_z_128": volume_z_128,
+            "vol_ratio_16_64": vol_ratio,
+            "ret_vol_ratio": ret_vol_ratio,
+            "trend_accel_4": trend_accel,
+            "trend_slope_8": trend_slope_8,
+            "mom_64": mom_64,
+            "drawdown_96": drawdown_96,
+            # Alias columns used by earlier world-model or diagnostic variants.
+            "atr_pct": atr_pct_14,
+            "vol_ratio": vol_ratio,
+            "trend_accel": trend_accel,
+            "vol_z_128": volume_z_128,
         }
     )
     return out.replace([np.inf, -np.inf], 0.0).fillna(0.0)
@@ -117,8 +182,7 @@ def build_mythos_features(ohlcv: np.ndarray) -> np.ndarray:
         }
     )
     feat = build_feature_frame(df)
-    cols = ["ret_1", "ret_4", "ret_16", "vol_16", "vol_64", "zscore_64", "trend_ema", "range_break_48"]
-    return feat[cols].to_numpy(dtype=np.float64)
+    return feat[MYTHOS_FEATURE_COLUMNS].to_numpy(dtype=np.float64)
 
 
 def build_mythos_frame(df: pd.DataFrame, horizon: int = 48, score_quantile: float = 0.75) -> MythosFrame:
