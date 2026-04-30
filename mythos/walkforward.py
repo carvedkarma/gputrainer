@@ -84,6 +84,8 @@ class V3ExecutionGovernor:
         self.side_hist: List[int] = []
         self.loss_streak = 0
         self.pause_until_bar = -1
+        self.side_recent_rr: Dict[int, List[float]] = {1: [], -1: []}
+        self.side_pause_until: Dict[int, int] = {1: -1, -1: -1}
 
     def adjusted_edge_floor(self, equity_r: float) -> float:
         base = float(self.cfg.abstain_edge_floor)
@@ -115,13 +117,37 @@ class V3ExecutionGovernor:
         penalty = float(max(getattr(self.cfg, "side_imbalance_edge_penalty", 0.015), 0.0))
         return penalty * (dominant - soft_cap) / max(1e-6, 1.0 - soft_cap)
 
-    def allow_by_streak(self, bar_idx: int) -> bool:
+    def allow_by_streak(self, bar_idx: int, side: int = 0) -> bool:
         if bar_idx < self.pause_until_bar:
+            return False
+        if int(side) in (-1, 1) and bar_idx < int(self.side_pause_until.get(int(side), -1)):
             return False
         return True
 
+    def _update_side_health(self, side: int, bar_idx: int) -> None:
+        side = int(side)
+        if side not in (-1, 1):
+            return
+        hist = self.side_recent_rr.setdefault(side, [])
+        w = int(max(getattr(self.cfg, "side_fail_window", 48), 8))
+        if len(hist) > w:
+            del hist[0 : len(hist) - w]
+        min_n = int(max(getattr(self.cfg, "side_fail_min_trades", 10), 1))
+        if len(hist) < min_n:
+            return
+        fail_expect = float(getattr(self.cfg, "side_fail_expectancy_r", -0.12))
+        if float(np.mean(np.array(hist, dtype=np.float64))) > fail_expect:
+            return
+        cd = int(max(getattr(self.cfg, "side_fail_cooldown_bars", 24), 1))
+        self.side_pause_until[side] = max(int(self.side_pause_until.get(side, -1)), int(bar_idx + cd))
+        # Reset side-local buffer after triggering to avoid repetitive pauses from stale history.
+        self.side_recent_rr[side] = []
+
     def record_trade(self, side: int, realized_r: float, bar_idx: int) -> None:
         self.side_hist.append(int(side))
+        s = int(side)
+        if s in (-1, 1):
+            self.side_recent_rr.setdefault(s, []).append(float(realized_r))
         if float(realized_r) < 0.0:
             self.loss_streak += 1
         else:
@@ -131,6 +157,7 @@ class V3ExecutionGovernor:
         if self.loss_streak >= trig:
             self.pause_until_bar = int(bar_idx + cd)
             self.loss_streak = 0
+        self._update_side_health(side=s, bar_idx=bar_idx)
 
 
 class V4AdaptiveBrain:
@@ -497,6 +524,13 @@ def _run_fold(
     X_te = test_feat[["ret_1", "ret_4", "ret_16", "vol_16", "vol_64", "zscore_64", "trend_ema"]].to_numpy(dtype=np.float64)
 
     trades: List[float] = []
+    skip_counts = {
+        "low_confidence": 0,
+        "edge_below_floor": 0,
+        "streak_pause": 0,
+        "counterfactual_reject": 0,
+        "risk_reject": 0,
+    }
     cf_rejects = 0
     n_long = 0
     n_short = 0
@@ -540,10 +574,13 @@ def _run_fold(
         edge_floor = governor.adjusted_edge_floor(risk.state.equity_r)
         edge -= governor.side_penalty(side)
         if confidence < cfg.min_confidence:
+            skip_counts["low_confidence"] += 1
             continue
         if edge < edge_floor:
+            skip_counts["edge_below_floor"] += 1
             continue
-        if not governor.allow_by_streak(i):
+        if not governor.allow_by_streak(i, side=side):
+            skip_counts["streak_pause"] += 1
             continue
         if not _counterfactual_pass(
             analog_mem=analog_mem,
@@ -554,8 +591,10 @@ def _run_fold(
             cfg=cfg,
         ):
             cf_rejects += 1
+            skip_counts["counterfactual_reject"] += 1
             continue
         if not risk.allow_trade(ts_ms=int(timestamps[i]), side=side, edge=edge, uncertainty=uncertainty):
+            skip_counts["risk_reject"] += 1
             continue
         realized = _barrier_outcome(
             close=close,
@@ -620,6 +659,7 @@ def _run_fold(
         "robust_score": round(robust_score, 6),
         "change_mode_bars": int(change_mode_bars),
         "counterfactual_rejects": int(cf_rejects),
+        "skip_reasons": {k: int(v) for k, v in skip_counts.items()},
         "long_trades": n_long,
         "short_trades": n_short,
         "status": status,

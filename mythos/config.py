@@ -59,6 +59,10 @@ class MythosConfig:
     drawdown_edge_boost: float = 0.0025
     loss_streak_trigger: int = 4
     loss_streak_cooldown_bars: int = 12
+    side_fail_window: int = 48
+    side_fail_min_trades: int = 10
+    side_fail_expectancy_r: float = -0.12
+    side_fail_cooldown_bars: int = 24
     online_allocator_lr: float = 0.06
     online_allocator_min_mult: float = 0.75
     online_allocator_max_mult: float = 1.55

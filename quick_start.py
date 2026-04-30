@@ -5297,6 +5297,14 @@ Examples:
                         help="MYTHOS v3: consecutive losses before cooldown pause (default: 4)")
     parser.add_argument("--mythos-loss-streak-cooldown-bars", type=int, default=12,
                         help="MYTHOS v3: bars to pause after loss streak trigger (default: 12)")
+    parser.add_argument("--mythos-side-fail-window", type=int, default=48,
+                        help="MYTHOS v5: rolling trades window used to detect failing long/short side (default: 48)")
+    parser.add_argument("--mythos-side-fail-min-trades", type=int, default=10,
+                        help="MYTHOS v5: minimum side trades in window before side-fail cooldown can trigger (default: 10)")
+    parser.add_argument("--mythos-side-fail-expectancy-r", type=float, default=-0.12,
+                        help="MYTHOS v5: side expectancy threshold that triggers side cooldown (default: -0.12)")
+    parser.add_argument("--mythos-side-fail-cooldown-bars", type=int, default=24,
+                        help="MYTHOS v5: bars to pause entries for a failing side (default: 24)")
     parser.add_argument("--mythos-online-allocator-lr", type=float, default=0.06,
                         help="MYTHOS v4: online expert allocator learning rate (default: 0.06)")
     parser.add_argument("--mythos-online-allocator-min-mult", type=float, default=0.75,
@@ -6333,6 +6341,10 @@ Examples:
                 drawdown_edge_boost=args.mythos_drawdown_edge_boost,
                 loss_streak_trigger=args.mythos_loss_streak_trigger,
                 loss_streak_cooldown_bars=args.mythos_loss_streak_cooldown_bars,
+                side_fail_window=args.mythos_side_fail_window,
+                side_fail_min_trades=args.mythos_side_fail_min_trades,
+                side_fail_expectancy_r=args.mythos_side_fail_expectancy_r,
+                side_fail_cooldown_bars=args.mythos_side_fail_cooldown_bars,
                 online_allocator_lr=args.mythos_online_allocator_lr,
                 online_allocator_min_mult=args.mythos_online_allocator_min_mult,
                 online_allocator_max_mult=args.mythos_online_allocator_max_mult,
