@@ -180,6 +180,7 @@ class V4AdaptiveBrain:
         self._prev_regime: Optional[int] = None
         self._shock_streak = 0
         self._change_cooldown_until = -1
+        self._flip_pressure_until = -1
 
     def _shock_level(self, x: np.ndarray) -> float:
         x = np.asarray(x, dtype=np.float64)
@@ -235,13 +236,22 @@ class V4AdaptiveBrain:
         alloc_mult = float(np.clip(1.0 + util_gain * utility_w, min_mult, max_mult))
         edge = float(edge * alloc_mult)
         confidence = float(np.clip(confidence + 0.07 * utility_w, 0.0, 1.0))
+        # Regime flip pressure: aggressively harden for a short window after abrupt flips.
+        flip_trig = float(max(getattr(self.cfg, "regime_flip_trigger", 0.35), 0.0))
+        if flip >= flip_trig:
+            hold = int(max(getattr(self.cfg, "regime_flip_window", 24), 1))
+            self._flip_pressure_until = max(self._flip_pressure_until, int(bar_idx + hold))
+        flip_pressure = 1.0 if int(bar_idx) < int(self._flip_pressure_until) else 0.0
         # Instability hardening: tighten when shock/flip rises.
         shock_w = 0.18
-        instability = np.clip(shock + flip, 0.0, 2.0)
+        instability = np.clip(shock + flip + 0.75 * flip_pressure, 0.0, 2.5)
         harden = shock_w * instability
-        confidence = float(np.clip(confidence - 0.35 * harden, 0.0, 1.0))
-        edge = float(edge * (1.0 - 0.45 * harden))
-        uncertainty = float(np.clip(uncertainty * (1.0 + 0.60 * harden), 0.005, 1.5))
+        inst_edge_mult = float(np.clip(getattr(self.cfg, "instability_edge_mult", 0.70), 0.1, 1.0))
+        inst_conf_drop = float(np.clip(getattr(self.cfg, "instability_confidence_drop", 0.08), 0.0, 0.5))
+        inst_unc_mult = float(max(getattr(self.cfg, "instability_uncertainty_mult", 1.35), 1.0))
+        confidence = float(np.clip(confidence - inst_conf_drop * harden, 0.0, 1.0))
+        edge = float(edge * (1.0 - (1.0 - inst_edge_mult) * harden))
+        uncertainty = float(np.clip(uncertainty * (1.0 + (inst_unc_mult - 1.0) * harden), 0.005, 1.5))
         confirm_need = int(max(getattr(self.cfg, "change_detect_confirm_bars", 2), 1))
         if shock > 0.0:
             self._shock_streak += 1
@@ -269,6 +279,7 @@ class V4AdaptiveBrain:
             "uncertainty": uncertainty,
             "shock": float(shock),
             "flip": float(flip),
+            "flip_pressure": float(flip_pressure),
             "change_mode": float(1.0 if change_mode else 0.0),
         }
 
@@ -535,6 +546,9 @@ def _run_fold(
     n_long = 0
     n_short = 0
     change_mode_bars = 0
+    flip_pressure_bars = 0
+    chaos_pause_until = -1
+    recent_trade_rr: List[float] = []
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
         x = X_te[i]
@@ -571,6 +585,18 @@ def _run_fold(
         uncertainty = float(adapted["uncertainty"])
         if float(adapted.get("change_mode", 0.0)) > 0.5:
             change_mode_bars += 1
+        if float(adapted.get("flip_pressure", 0.0)) > 0.5:
+            flip_pressure_bars += 1
+        chaos_window = int(max(getattr(cfg, "chaos_pause_window", 10), 4))
+        chaos_trigger = float(getattr(cfg, "chaos_pause_threshold_r", -0.18))
+        if len(recent_trade_rr) >= chaos_window:
+            local_expect = float(np.mean(np.array(recent_trade_rr[-chaos_window:], dtype=np.float64)))
+            if local_expect <= chaos_trigger and (float(adapted.get("change_mode", 0.0)) > 0.5 or float(adapted.get("flip_pressure", 0.0)) > 0.5):
+                cd = int(max(getattr(cfg, "chaos_pause_bars", 20), 1))
+                chaos_pause_until = max(int(chaos_pause_until), int(i + cd))
+        if i < chaos_pause_until:
+            skip_counts["streak_pause"] += 1
+            continue
         edge_floor = governor.adjusted_edge_floor(risk.state.equity_r)
         edge -= governor.side_penalty(side)
         if confidence < cfg.min_confidence:
@@ -614,6 +640,10 @@ def _run_fold(
         router.update_reliability(expert_name=expert_name, realized_r=rr, regime=regime)
         adaptive.update_after_trade(expert_name=expert_name, regime=regime, realized_r=rr, side=side)
         trades.append(rr)
+        recent_trade_rr.append(rr)
+        max_recent = int(max(getattr(cfg, "chaos_pause_window", 10) * 2, 16))
+        if len(recent_trade_rr) > max_recent:
+            del recent_trade_rr[0 : len(recent_trade_rr) - max_recent]
         if side == 1:
             n_long += 1
         else:
@@ -658,6 +688,7 @@ def _run_fold(
         "max_drawdown_r": round(max_drawdown_r, 4),
         "robust_score": round(robust_score, 6),
         "change_mode_bars": int(change_mode_bars),
+        "flip_pressure_bars": int(flip_pressure_bars),
         "counterfactual_rejects": int(cf_rejects),
         "skip_reasons": {k: int(v) for k, v in skip_counts.items()},
         "long_trades": n_long,
@@ -749,7 +780,15 @@ def run_mythos_walk_forward(
     avg_max_drawdown = float(np.mean([r.get("max_drawdown_r", 0.0) for r in reports])) if reports else 0.0
     avg_robust_score = float(np.mean([r.get("robust_score", 0.0) for r in reports])) if reports else 0.0
     total_change_mode_bars = int(sum(r.get("change_mode_bars", 0) for r in reports))
+    total_flip_pressure_bars = int(sum(r.get("flip_pressure_bars", 0) for r in reports))
     total_cf_rejects = int(sum(r.get("counterfactual_rejects", 0) for r in reports))
+    total_skip_reasons = {
+        "low_confidence": int(sum(int(r.get("skip_reasons", {}).get("low_confidence", 0)) for r in reports)),
+        "edge_below_floor": int(sum(int(r.get("skip_reasons", {}).get("edge_below_floor", 0)) for r in reports)),
+        "streak_pause": int(sum(int(r.get("skip_reasons", {}).get("streak_pause", 0)) for r in reports)),
+        "counterfactual_reject": int(sum(int(r.get("skip_reasons", {}).get("counterfactual_reject", 0)) for r in reports)),
+        "risk_reject": int(sum(int(r.get("skip_reasons", {}).get("risk_reject", 0)) for r in reports)),
+    }
     change_mode_rate = float(total_change_mode_bars / max(total_trades, 1))
     cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
     act = sum(1 for r in reports if r["status"] == "ACTIVE")
@@ -772,8 +811,11 @@ def run_mythos_walk_forward(
         "avg_robust_score": round(avg_robust_score, 6),
         "change_mode_bars": total_change_mode_bars,
         "change_mode_rate": round(change_mode_rate, 4),
+        "flip_pressure_bars": total_flip_pressure_bars,
+        "flip_pressure_rate": round(float(total_flip_pressure_bars / max(total_trades, 1)), 4),
         "counterfactual_rejects": total_cf_rejects,
         "counterfactual_reject_rate": round(cf_reject_rate, 4),
+        "skip_reasons": total_skip_reasons,
         "active_folds": act,
         "low_conf_folds": low,
         "dead_folds": dead,

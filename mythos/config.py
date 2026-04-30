@@ -63,6 +63,17 @@ class MythosConfig:
     side_fail_min_trades: int = 10
     side_fail_expectancy_r: float = -0.12
     side_fail_cooldown_bars: int = 24
+    side_fail_ema_alpha: float = 0.25
+    flip_intensity_trigger: float = 0.35
+    flip_harden_hold_bars: int = 24
+    instability_edge_mult: float = 0.70
+    instability_confidence_drop: float = 0.08
+    instability_uncertainty_mult: float = 1.35
+    instability_pause_window: int = 10
+    instability_pause_expectancy_r: float = -0.18
+    instability_pause_bars: int = 20
+    regime_flip_confidence_boost: float = 0.05
+    regime_flip_min_analog_edge: float = 0.0
     online_allocator_lr: float = 0.06
     online_allocator_min_mult: float = 0.75
     online_allocator_max_mult: float = 1.55

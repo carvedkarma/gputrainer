@@ -5323,6 +5323,24 @@ Examples:
                         help="MYTHOS v4: extra confidence requirement during change mode (default: 0.03)")
     parser.add_argument("--mythos-change-uncertainty-mult", type=float, default=1.15,
                         help="MYTHOS v4: uncertainty inflation during change mode (default: 1.15)")
+    parser.add_argument("--mythos-regime-flip-window", type=int, default=24,
+                        help="MYTHOS v5: bars used to track fast regime flip intensity (default: 24)")
+    parser.add_argument("--mythos-regime-flip-trigger", type=float, default=0.35,
+                        help="MYTHOS v5: flip intensity threshold to trigger instability mode (default: 0.35)")
+    parser.add_argument("--mythos-instability-edge-mult", type=float, default=0.70,
+                        help="MYTHOS v5: edge multiplier during instability mode (default: 0.70)")
+    parser.add_argument("--mythos-instability-confidence-drop", type=float, default=0.08,
+                        help="MYTHOS v5: confidence drop applied during instability mode (default: 0.08)")
+    parser.add_argument("--mythos-instability-uncertainty-mult", type=float, default=1.35,
+                        help="MYTHOS v5: uncertainty multiplier during instability mode (default: 1.35)")
+    parser.add_argument("--mythos-chaos-pause-window", type=int, default=10,
+                        help="MYTHOS v5: recent trade window to detect chaos mode (default: 10)")
+    parser.add_argument("--mythos-chaos-pause-threshold-r", type=float, default=-0.18,
+                        help="MYTHOS v5: avg R threshold in chaos window that triggers pause (default: -0.18)")
+    parser.add_argument("--mythos-chaos-pause-bars", type=int, default=20,
+                        help="MYTHOS v5: bars to pause entries after chaos trigger (default: 20)")
+    parser.add_argument("--mythos-flip-harden-hold-bars", type=int, default=18,
+                        help="MYTHOS v5: bars to keep strict guard after flip trigger (default: 18)")
     parser.add_argument("--mythos-counterfactual-min-advantage-r", type=float, default=0.006,
                         help="MYTHOS v5: minimum counterfactual edge advantage required to trade (default: 0.006)")
     parser.add_argument("--mythos-counterfactual-risk-penalty", type=float, default=0.6,
@@ -6354,6 +6372,14 @@ Examples:
                 change_edge_floor_boost=args.mythos_change_edge_floor_boost,
                 change_confidence_boost=args.mythos_change_confidence_boost,
                 change_uncertainty_mult=args.mythos_change_uncertainty_mult,
+                flip_intensity_trigger=args.mythos_regime_flip_trigger,
+                flip_harden_hold_bars=args.mythos_flip_harden_hold_bars,
+                instability_edge_mult=args.mythos_instability_edge_mult,
+                instability_confidence_drop=args.mythos_instability_confidence_drop,
+                instability_uncertainty_mult=args.mythos_instability_uncertainty_mult,
+                instability_pause_window=args.mythos_chaos_pause_window,
+                instability_pause_expectancy_r=args.mythos_chaos_pause_threshold_r,
+                instability_pause_bars=args.mythos_chaos_pause_bars,
                 counterfactual_min_advantage_r=args.mythos_counterfactual_min_advantage_r,
                 counterfactual_risk_penalty=args.mythos_counterfactual_risk_penalty,
                 counterfactual_margin=args.mythos_counterfactual_margin,
