@@ -69,9 +69,11 @@ class MythosConfig:
     instability_edge_mult: float = 0.70
     instability_confidence_drop: float = 0.08
     instability_uncertainty_mult: float = 1.35
-    instability_pause_window: int = 10
-    instability_pause_expectancy_r: float = -0.18
-    instability_pause_bars: int = 20
+    transition_min_samples: int = 6
+    transition_memory_alpha: float = 0.12
+    transition_memory_edge_scale: float = 0.25
+    transition_memory_confidence_scale: float = 0.06
+    transition_memory_uncertainty_scale: float = 0.45
     regime_flip_confidence_boost: float = 0.05
     regime_flip_min_analog_edge: float = 0.0
     online_allocator_lr: float = 0.06

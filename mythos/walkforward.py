@@ -176,8 +176,11 @@ class V4AdaptiveBrain:
         self._recent_regime: List[int] = []
         self._exp_global: Dict[str, float] = {}
         self._exp_regime: Dict[Tuple[int, str], float] = {}
+        self._transition_outcome: Dict[Tuple[int, int], float] = {}
+        self._transition_count: Dict[Tuple[int, int], int] = {}
         self._regime_streak = 0
         self._prev_regime: Optional[int] = None
+        self._last_transition: Tuple[int, int] | None = None
         self._shock_streak = 0
         self._change_cooldown_until = -1
         self._flip_pressure_until = -1
@@ -206,11 +209,14 @@ class V4AdaptiveBrain:
         if reg == self._prev_regime:
             self._regime_streak += 1
             self._prev_regime = reg
+            self._last_transition = None
             return 0.0
         # Regime changed: short streak before flip indicates unstable transition.
+        prev_reg = int(self._prev_regime)
         streak = max(self._regime_streak, 1)
         self._prev_regime = reg
         self._regime_streak = 1
+        self._last_transition = (prev_reg, reg)
         return float(np.clip(1.0 / streak, 0.0, 1.0))
 
     def adapt_signal(
@@ -236,10 +242,28 @@ class V4AdaptiveBrain:
         alloc_mult = float(np.clip(1.0 + util_gain * utility_w, min_mult, max_mult))
         edge = float(edge * alloc_mult)
         confidence = float(np.clip(confidence + 0.07 * utility_w, 0.0, 1.0))
+        # Transition learner: learn online which regime transitions are favorable/unfavorable.
+        trans_min_n = int(max(getattr(self.cfg, "transition_min_samples", 6), 1))
+        trans_edge_scale = float(np.clip(getattr(self.cfg, "transition_edge_gain", 0.35), 0.0, 2.0))
+        trans_conf_scale = float(np.clip(getattr(self.cfg, "transition_confidence_gain", 0.06), 0.0, 1.0))
+        trans_unc_scale = float(np.clip(getattr(self.cfg, "transition_uncertainty_gain", 0.30), 0.0, 2.0))
+        trans = self._last_transition
+        if trans is not None:
+            trans_mean = float(self._transition_outcome.get(trans, 0.0))
+            trans_n = int(self._transition_count.get(trans, 0))
+            if trans_n >= trans_min_n:
+                trans_score = float(np.clip(trans_mean, -1.0, 1.0))
+                edge = float(edge * (1.0 + trans_edge_scale * trans_score))
+                confidence = float(np.clip(confidence + trans_conf_scale * trans_score, 0.0, 1.0))
+                uncertainty = float(np.clip(uncertainty * (1.0 - trans_unc_scale * trans_score), 0.005, 1.5))
+            else:
+                trans_score = 0.0
+        else:
+            trans_score = 0.0
         # Regime flip pressure: aggressively harden for a short window after abrupt flips.
-        flip_trig = float(max(getattr(self.cfg, "regime_flip_trigger", 0.35), 0.0))
+        flip_trig = float(max(getattr(self.cfg, "flip_intensity_trigger", 0.35), 0.0))
         if flip >= flip_trig:
-            hold = int(max(getattr(self.cfg, "regime_flip_window", 24), 1))
+            hold = int(max(getattr(self.cfg, "flip_harden_hold_bars", 24), 1))
             self._flip_pressure_until = max(self._flip_pressure_until, int(bar_idx + hold))
         flip_pressure = 1.0 if int(bar_idx) < int(self._flip_pressure_until) else 0.0
         # Instability hardening: tighten when shock/flip rises.
@@ -280,6 +304,7 @@ class V4AdaptiveBrain:
             "shock": float(shock),
             "flip": float(flip),
             "flip_pressure": float(flip_pressure),
+            "transition_score": float(trans_score),
             "change_mode": float(1.0 if change_mode else 0.0),
         }
 
@@ -291,6 +316,12 @@ class V4AdaptiveBrain:
         rk = (int(regime), expert_name)
         prev_r = float(self._exp_regime.get(rk, 0.0))
         self._exp_regime[rk] = (1.0 - alpha) * prev_r + alpha * rr
+        trans = self._last_transition
+        if trans is not None:
+            t_alpha = float(np.clip(getattr(self.cfg, "transition_memory_alpha", 0.12), 0.001, 0.95))
+            prev_t = float(self._transition_outcome.get(trans, 0.0))
+            self._transition_outcome[trans] = (1.0 - t_alpha) * prev_t + t_alpha * rr
+            self._transition_count[trans] = int(self._transition_count.get(trans, 0)) + 1
         self._recent_rr.append(rr)
         self._recent_side.append(int(side))
         self._recent_regime.append(int(regime))
@@ -304,6 +335,8 @@ class V4AdaptiveBrain:
         return {
             "exp_global": {k: float(v) for k, v in self._exp_global.items()},
             "exp_regime": {f"{k[0]}::{k[1]}": float(v) for k, v in self._exp_regime.items()},
+            "transition_outcome": {f"{k[0]}->{k[1]}": float(v) for k, v in self._transition_outcome.items()},
+            "transition_count": {f"{k[0]}->{k[1]}": int(v) for k, v in self._transition_count.items()},
             "recent_rr": [float(v) for v in self._recent_rr],
             "recent_side": [int(v) for v in self._recent_side],
             "recent_regime": [int(v) for v in self._recent_regime],
@@ -547,7 +580,7 @@ def _run_fold(
     n_short = 0
     change_mode_bars = 0
     flip_pressure_bars = 0
-    chaos_pause_until = -1
+    transition_mode_bars = 0
     recent_trade_rr: List[float] = []
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
@@ -587,16 +620,8 @@ def _run_fold(
             change_mode_bars += 1
         if float(adapted.get("flip_pressure", 0.0)) > 0.5:
             flip_pressure_bars += 1
-        chaos_window = int(max(getattr(cfg, "chaos_pause_window", 10), 4))
-        chaos_trigger = float(getattr(cfg, "chaos_pause_threshold_r", -0.18))
-        if len(recent_trade_rr) >= chaos_window:
-            local_expect = float(np.mean(np.array(recent_trade_rr[-chaos_window:], dtype=np.float64)))
-            if local_expect <= chaos_trigger and (float(adapted.get("change_mode", 0.0)) > 0.5 or float(adapted.get("flip_pressure", 0.0)) > 0.5):
-                cd = int(max(getattr(cfg, "chaos_pause_bars", 20), 1))
-                chaos_pause_until = max(int(chaos_pause_until), int(i + cd))
-        if i < chaos_pause_until:
-            skip_counts["streak_pause"] += 1
-            continue
+        if abs(float(adapted.get("transition_score", 0.0))) > 1e-9:
+            transition_mode_bars += 1
         edge_floor = governor.adjusted_edge_floor(risk.state.equity_r)
         edge -= governor.side_penalty(side)
         if confidence < cfg.min_confidence:
@@ -641,7 +666,7 @@ def _run_fold(
         adaptive.update_after_trade(expert_name=expert_name, regime=regime, realized_r=rr, side=side)
         trades.append(rr)
         recent_trade_rr.append(rr)
-        max_recent = int(max(getattr(cfg, "chaos_pause_window", 10) * 2, 16))
+        max_recent = int(max(getattr(cfg, "transition_min_samples", 6) * 4, 16))
         if len(recent_trade_rr) > max_recent:
             del recent_trade_rr[0 : len(recent_trade_rr) - max_recent]
         if side == 1:
@@ -689,6 +714,7 @@ def _run_fold(
         "robust_score": round(robust_score, 6),
         "change_mode_bars": int(change_mode_bars),
         "flip_pressure_bars": int(flip_pressure_bars),
+        "transition_mode_bars": int(transition_mode_bars),
         "counterfactual_rejects": int(cf_rejects),
         "skip_reasons": {k: int(v) for k, v in skip_counts.items()},
         "long_trades": n_long,
@@ -790,6 +816,7 @@ def run_mythos_walk_forward(
         "risk_reject": int(sum(int(r.get("skip_reasons", {}).get("risk_reject", 0)) for r in reports)),
     }
     change_mode_rate = float(total_change_mode_bars / max(total_trades, 1))
+    total_transition_mode_bars = int(sum(r.get("transition_mode_bars", 0) for r in reports))
     cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
     act = sum(1 for r in reports if r["status"] == "ACTIVE")
     low = sum(1 for r in reports if r["status"] == "LOW_CONF")
@@ -811,6 +838,8 @@ def run_mythos_walk_forward(
         "avg_robust_score": round(avg_robust_score, 6),
         "change_mode_bars": total_change_mode_bars,
         "change_mode_rate": round(change_mode_rate, 4),
+        "transition_mode_bars": total_transition_mode_bars,
+        "transition_mode_rate": round(float(total_transition_mode_bars / max(total_trades, 1)), 4),
         "flip_pressure_bars": total_flip_pressure_bars,
         "flip_pressure_rate": round(float(total_flip_pressure_bars / max(total_trades, 1)), 4),
         "counterfactual_rejects": total_cf_rejects,

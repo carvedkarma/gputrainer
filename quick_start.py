@@ -5333,12 +5333,16 @@ Examples:
                         help="MYTHOS v5: confidence drop applied during instability mode (default: 0.08)")
     parser.add_argument("--mythos-instability-uncertainty-mult", type=float, default=1.35,
                         help="MYTHOS v5: uncertainty multiplier during instability mode (default: 1.35)")
-    parser.add_argument("--mythos-chaos-pause-window", type=int, default=10,
-                        help="MYTHOS v5: recent trade window to detect chaos mode (default: 10)")
-    parser.add_argument("--mythos-chaos-pause-threshold-r", type=float, default=-0.18,
-                        help="MYTHOS v5: avg R threshold in chaos window that triggers pause (default: -0.18)")
-    parser.add_argument("--mythos-chaos-pause-bars", type=int, default=20,
-                        help="MYTHOS v5: bars to pause entries after chaos trigger (default: 20)")
+    parser.add_argument("--mythos-transition-learn-rate", type=float, default=0.12,
+                        help="MYTHOS v5: EMA learning rate for transition-state memory (default: 0.12)")
+    parser.add_argument("--mythos-transition-min-samples", type=int, default=6,
+                        help="MYTHOS v5: minimum observations before transition-state adjustments activate (default: 6)")
+    parser.add_argument("--mythos-transition-edge-gain", type=float, default=0.35,
+                        help="MYTHOS v5: transition-memory gain applied to edge scaling (default: 0.35)")
+    parser.add_argument("--mythos-transition-confidence-gain", type=float, default=0.06,
+                        help="MYTHOS v5: transition-memory gain applied to confidence adjustment (default: 0.06)")
+    parser.add_argument("--mythos-transition-uncertainty-gain", type=float, default=0.30,
+                        help="MYTHOS v5: transition-memory gain applied to uncertainty adjustment (default: 0.30)")
     parser.add_argument("--mythos-flip-harden-hold-bars", type=int, default=18,
                         help="MYTHOS v5: bars to keep strict guard after flip trigger (default: 18)")
     parser.add_argument("--mythos-counterfactual-min-advantage-r", type=float, default=0.006,
@@ -6377,9 +6381,11 @@ Examples:
                 instability_edge_mult=args.mythos_instability_edge_mult,
                 instability_confidence_drop=args.mythos_instability_confidence_drop,
                 instability_uncertainty_mult=args.mythos_instability_uncertainty_mult,
-                instability_pause_window=args.mythos_chaos_pause_window,
-                instability_pause_expectancy_r=args.mythos_chaos_pause_threshold_r,
-                instability_pause_bars=args.mythos_chaos_pause_bars,
+                transition_learn_rate=args.mythos_transition_learn_rate,
+                transition_min_samples=args.mythos_transition_min_samples,
+                transition_edge_gain=args.mythos_transition_edge_gain,
+                transition_confidence_gain=args.mythos_transition_confidence_gain,
+                transition_uncertainty_gain=args.mythos_transition_uncertainty_gain,
                 counterfactual_min_advantage_r=args.mythos_counterfactual_min_advantage_r,
                 counterfactual_risk_penalty=args.mythos_counterfactual_risk_penalty,
                 counterfactual_margin=args.mythos_counterfactual_margin,
