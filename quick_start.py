@@ -5355,6 +5355,18 @@ Examples:
                         help="MYTHOS v5: uncertainty penalty weight applied to alternative side score (default: 0.50)")
     parser.add_argument("--mythos-counterfactual-min-alt-hits", type=int, default=8,
                         help="MYTHOS v5: minimum analog hits per side before strict counterfactual filtering (default: 8)")
+    parser.add_argument("--mythos-use-neural-expert", action="store_true", default=True,
+                        help="MYTHOS v6: enable GPU neural expert in expert council (default: enabled)")
+    parser.add_argument("--mythos-no-use-neural-expert", dest="mythos_use_neural_expert", action="store_false",
+                        help="MYTHOS v6: disable GPU neural expert and use classic linear-only council")
+    parser.add_argument("--mythos-neural-hidden", type=int, default=64,
+                        help="MYTHOS v6: hidden width for neural expert MLP (default: 64)")
+    parser.add_argument("--mythos-neural-epochs", type=int, default=8,
+                        help="MYTHOS v6: training epochs for neural expert per fold (default: 8)")
+    parser.add_argument("--mythos-neural-lr", type=float, default=0.0015,
+                        help="MYTHOS v6: learning rate for neural expert optimizer (default: 0.0015)")
+    parser.add_argument("--mythos-neural-batch-size", type=int, default=512,
+                        help="MYTHOS v6: batch size for neural expert training (default: 512)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")

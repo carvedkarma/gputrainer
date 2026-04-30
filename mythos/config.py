@@ -75,11 +75,25 @@ class MythosConfig:
     transition_edge_gain: float = 0.35
     transition_confidence_gain: float = 0.06
     transition_uncertainty_gain: float = 0.30
+    # Optional GPU-backed neural experts (v6 evolution).
+    use_gpu_expert: bool = True
+    gpu_expert_hidden: int = 64
+    gpu_expert_dropout: float = 0.05
+    gpu_expert_epochs: int = 10
+    gpu_expert_batch_size: int = 1024
+    gpu_expert_lr: float = 1e-3
     # Backward-compatible aliases (older revisions/checkpoints).
     transition_memory_alpha: float = 0.12
     transition_memory_edge_scale: float = 0.25
     transition_memory_confidence_scale: float = 0.06
     transition_memory_uncertainty_scale: float = 0.45
+    enable_gpu_neural_experts: bool = True
+    neural_expert_hidden: int = 96
+    neural_expert_epochs: int = 8
+    neural_expert_lr: float = 8e-4
+    neural_expert_batch_size: int = 2048
+    neural_expert_dropout: float = 0.10
+    neural_expert_device: str = "auto"
     regime_flip_confidence_boost: float = 0.05
     regime_flip_min_analog_edge: float = 0.0
     online_allocator_lr: float = 0.06

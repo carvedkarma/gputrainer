@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -203,6 +203,114 @@ class _SklearnLikeExpert:
         }
 
 
+class _TorchNeuralExpert:
+    def __init__(self, name: str, side: int, cfg: MythosConfig):
+        self.name = name
+        self.side = int(side)
+        self.cfg = cfg
+        self._model = None
+        self._sigma = 0.03
+        self._device = "cpu"
+        self._active = False
+        self._fallback = _SklearnLikeExpert(name=name, side=side)
+
+    def fit(self, X: np.ndarray, y1: np.ndarray, y4: np.ndarray, y16: np.ndarray, regime_ids: np.ndarray) -> None:
+        self._fallback.fit(X, y1, y4, y16, regime_ids)
+        if X.size == 0:
+            self._active = False
+            return
+        try:
+            import torch
+            import torch.nn as nn
+        except Exception:
+            self._active = False
+            return
+        if not bool(getattr(self.cfg, "use_gpu_neural_expert", True)):
+            self._active = False
+            return
+        has_cuda = bool(torch.cuda.is_available())
+        if not has_cuda and not bool(getattr(self.cfg, "allow_cpu_neural_expert", False)):
+            self._active = False
+            return
+        self._device = "cuda" if has_cuda else "cpu"
+        x = torch.tensor(X, dtype=torch.float32, device=self._device)
+        raw_target = 0.5 * y4 + 0.5 * y16
+        vol_proxy = np.maximum(0.5 * (X[:, 3] + X[:, 4]), 1e-5)
+        target = raw_target / (vol_proxy * np.sqrt(8.0))
+        target = np.clip(target, -4.0, 4.0)
+        if self.side < 0:
+            target = -target
+        y = torch.tensor(target.reshape(-1, 1), dtype=torch.float32, device=self._device)
+        hidden = int(max(getattr(self.cfg, "neural_expert_hidden_dim", 64), 8))
+        dropout = float(np.clip(getattr(self.cfg, "neural_expert_dropout", 0.1), 0.0, 0.8))
+        self._model = nn.Sequential(
+            nn.Linear(X.shape[1], hidden),
+            nn.ReLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Linear(hidden // 2, 1),
+        ).to(self._device)
+        lr = float(max(getattr(self.cfg, "neural_expert_lr", 0.001), 1e-6))
+        epochs = int(max(getattr(self.cfg, "neural_expert_epochs", 8), 1))
+        weight_decay = float(max(getattr(self.cfg, "neural_expert_weight_decay", 1e-6), 0.0))
+        optimizer = torch.optim.AdamW(self._model.parameters(), lr=lr, weight_decay=weight_decay)
+        loss_fn = nn.HuberLoss(delta=1.0)
+        batch_size = int(max(getattr(self.cfg, "neural_expert_batch_size", 1024), 32))
+        n = x.shape[0]
+        for _ in range(epochs):
+            perm = torch.randperm(n, device=self._device)
+            for s in range(0, n, batch_size):
+                idx = perm[s : s + batch_size]
+                xb = x[idx]
+                yb = y[idx]
+                pred = self._model(xb)
+                loss = loss_fn(pred, yb)
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+        with torch.no_grad():
+            pred = self._model(x).squeeze(-1)
+            resid = y.squeeze(-1) - pred
+            self._sigma = float(torch.std(resid).item() + 1e-4)
+        self._active = True
+
+    def predict_one(self, x: np.ndarray, regime: int) -> ExpertPrediction:
+        if not self._active or self._model is None:
+            return self._fallback.predict_one(x, regime)
+        try:
+            import torch
+            xx = torch.tensor(x.reshape(1, -1), dtype=torch.float32, device=self._device)
+            with torch.no_grad():
+                mu = float(self._model(xx).item())
+        except Exception:
+            return self._fallback.predict_one(x, regime)
+        expected = max(mu, 0.0)
+        uncertainty = float(np.clip(self._sigma * 0.03, 0.005, 0.12))
+        snr = expected / max(uncertainty, 1e-6)
+        confidence = float(np.clip(0.55 + 0.30 * np.tanh(1.5 * snr), 0.0, 1.0))
+        return ExpertPrediction(
+            expert_name=self.name,
+            side=self.side,
+            expected_r=expected,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            score=expected * confidence - uncertainty * 0.15,
+            regime_affinity=[max(regime - 1, 0), regime, regime + 1],
+        )
+
+    def to_state_dict(self) -> Dict[str, object]:
+        fallback = self._fallback.to_state_dict()
+        return {
+            "name": self.name,
+            "side": int(self.side),
+            "active": bool(self._active),
+            "device": self._device,
+            "sigma": float(self._sigma),
+            "fallback": fallback,
+        }
+
+
 def _infer_feature_columns_from_fit_matrix(X: np.ndarray) -> List[str]:
     # Keep backward compatibility for older 7-factor layouts.
     if X.shape[1] <= 7:
@@ -227,12 +335,21 @@ def _infer_feature_columns_from_fit_matrix(X: np.ndarray) -> List[str]:
     ][: X.shape[1]]
 
 
-def build_experts(random_state: int | None = None) -> List[_SklearnLikeExpert]:
+def build_experts(random_state: int | None = None, cfg: Optional[MythosConfig] = None):
     _ = random_state
+    cfg = cfg or MythosConfig()
+    ExpertCls = _TorchNeuralExpert if bool(getattr(cfg, "use_gpu_neural_expert", True)) else _SklearnLikeExpert
+    if ExpertCls is _TorchNeuralExpert:
+        return [
+            ExpertCls("trend_long", side=1, cfg=cfg),
+            ExpertCls("trend_short", side=-1, cfg=cfg),
+            ExpertCls("mean_revert", side=1, cfg=cfg),
+            ExpertCls("breakout", side=1, cfg=cfg),
+        ]
     return [
-        _SklearnLikeExpert("trend_long", side=1),
-        _SklearnLikeExpert("trend_short", side=-1),
-        _SklearnLikeExpert("mean_revert", side=1),
-        _SklearnLikeExpert("breakout", side=1),
+        ExpertCls("trend_long", side=1),
+        ExpertCls("trend_short", side=-1),
+        ExpertCls("mean_revert", side=1),
+        ExpertCls("breakout", side=1),
     ]
 

@@ -549,7 +549,7 @@ def _run_fold(
     train_regime = wm.predict_regime(train_feat)
     test_regime = wm.predict_regime(test_feat)
 
-    experts = build_experts(cfg.random_state)
+    experts = build_experts(cfg.random_state, cfg=cfg)
     xcols = [c for c in MYTHOS_STATE_COLS if c in train_feat.columns]
     X_tr = train_feat[xcols].to_numpy(dtype=np.float64)
     y1 = train_feat["fwd_ret_1"].to_numpy(dtype=np.float64)
