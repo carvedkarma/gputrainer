@@ -347,6 +347,146 @@ class V4AdaptiveBrain:
         }
 
 
+class NeuralMetaLearner:
+    """
+    Online neural quality scorer for final trade gating.
+    Learns whether routed decisions convert into positive R in current context.
+    """
+
+    def __init__(self, cfg: MythosConfig, n_features: int):
+        self.cfg = cfg
+        self.n_features = int(max(n_features, 1))
+        self.enabled = bool(getattr(cfg, "meta_learner_enable", True))
+        self.device = "cpu"
+        self._active = False
+        self._torch = None
+        self._nn = None
+        self._model = None
+        self._optimizer = None
+        self._loss_fn = None
+        self._buffer_x: List[np.ndarray] = []
+        self._buffer_y: List[float] = []
+        self._max_buffer = int(max(getattr(cfg, "meta_learner_buffer_size", 6000), 256))
+        self._init_model()
+
+    def _init_model(self) -> None:
+        if not self.enabled:
+            return
+        try:
+            import torch
+            import torch.nn as nn
+        except Exception:
+            return
+        requested = str(getattr(self.cfg, "meta_learner_device", "auto")).strip().lower()
+        has_cuda = bool(torch.cuda.is_available())
+        if requested == "cuda":
+            if not has_cuda:
+                return
+            self.device = "cuda"
+        elif requested == "cpu":
+            self.device = "cpu"
+        else:
+            self.device = "cuda" if has_cuda else "cpu"
+        hidden = int(max(getattr(self.cfg, "meta_learner_hidden", 96), 8))
+        dropout = float(np.clip(getattr(self.cfg, "meta_learner_dropout", 0.10), 0.0, 0.9))
+        self._model = nn.Sequential(
+            nn.Linear(self.n_features + 5, hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Linear(hidden // 2, 1),
+            nn.Sigmoid(),
+        ).to(self.device)
+        lr = float(max(getattr(self.cfg, "meta_learner_lr", 7e-4), 1e-6))
+        wd = float(max(getattr(self.cfg, "meta_learner_weight_decay", 1e-6), 0.0))
+        self._optimizer = torch.optim.AdamW(self._model.parameters(), lr=lr, weight_decay=wd)
+        self._loss_fn = nn.BCELoss()
+        self._torch = torch
+        self._nn = nn
+        self._active = True
+
+    def is_active(self) -> bool:
+        return bool(self._active and self._model is not None and self._torch is not None)
+
+    def _meta_vector(
+        self,
+        x: np.ndarray,
+        edge: float,
+        confidence: float,
+        uncertainty: float,
+        regime: int,
+        side: int,
+    ) -> np.ndarray:
+        core = np.asarray(x, dtype=np.float64).reshape(-1)
+        aux = np.array(
+            [
+                float(edge),
+                float(confidence),
+                float(uncertainty),
+                float(regime),
+                float(side),
+            ],
+            dtype=np.float64,
+        )
+        return np.concatenate([core, aux], axis=0)
+
+    def score(
+        self,
+        x: np.ndarray,
+        edge: float,
+        confidence: float,
+        uncertainty: float,
+        regime: int,
+        side: int,
+    ) -> float:
+        if not self.is_active():
+            return 0.5
+        vec = self._meta_vector(x=x, edge=edge, confidence=confidence, uncertainty=uncertainty, regime=regime, side=side)
+        t = self._torch.tensor(vec.reshape(1, -1), dtype=self._torch.float32, device=self.device)
+        with self._torch.no_grad():
+            p = float(self._model(t).item())
+        return float(np.clip(p, 0.0, 1.0))
+
+    def update(
+        self,
+        x: np.ndarray,
+        edge: float,
+        confidence: float,
+        uncertainty: float,
+        regime: int,
+        side: int,
+        realized_r: float,
+    ) -> None:
+        if not self.is_active():
+            return
+        vec = self._meta_vector(x=x, edge=edge, confidence=confidence, uncertainty=uncertainty, regime=regime, side=side)
+        y = 1.0 if float(realized_r) > 0.0 else 0.0
+        self._buffer_x.append(vec)
+        self._buffer_y.append(y)
+        if len(self._buffer_x) > self._max_buffer:
+            trim = len(self._buffer_x) - self._max_buffer
+            del self._buffer_x[:trim]
+            del self._buffer_y[:trim]
+        min_n = int(max(getattr(self.cfg, "meta_learner_min_samples", 256), 16))
+        if len(self._buffer_x) < min_n:
+            return
+        batch_size = int(max(getattr(self.cfg, "meta_learner_batch_size", 1024), 16))
+        train_steps = int(max(getattr(self.cfg, "meta_learner_train_steps", 2), 1))
+        x_np = np.asarray(self._buffer_x, dtype=np.float32)
+        y_np = np.asarray(self._buffer_y, dtype=np.float32)
+        n = len(x_np)
+        for _ in range(train_steps):
+            idx = np.random.choice(n, size=min(batch_size, n), replace=False)
+            xb = self._torch.tensor(x_np[idx], dtype=self._torch.float32, device=self.device)
+            yb = self._torch.tensor(y_np[idx].reshape(-1, 1), dtype=self._torch.float32, device=self.device)
+            pred = self._model(xb)
+            loss = self._loss_fn(pred, yb)
+            self._optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            self._optimizer.step()
+
+
 def _counterfactual_pass(
     analog_mem: AnalogMemory,
     x: np.ndarray,
@@ -563,6 +703,7 @@ def _run_fold(
     analog_mem = _build_analog_memory(train_feat, cfg)
     governor = V3ExecutionGovernor(cfg)
     adaptive = V4AdaptiveBrain(cfg)
+    meta = NeuralMetaLearner(cfg=cfg, n_features=X_tr.shape[1])
 
     risk = RiskConstitution(cfg)
     close = test_feat["close"].to_numpy(dtype=np.float64)
@@ -586,6 +727,7 @@ def _run_fold(
     change_mode_bars = 0
     flip_pressure_bars = 0
     transition_mode_bars = 0
+    meta_mode_bars = 0
     recent_trade_rr: List[float] = []
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
@@ -627,6 +769,21 @@ def _run_fold(
             flip_pressure_bars += 1
         if abs(float(adapted.get("transition_score", 0.0))) > 1e-9:
             transition_mode_bars += 1
+        meta_p = meta.score(
+            x=x,
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            regime=regime,
+            side=side,
+        )
+        meta_gain = float(np.clip(getattr(cfg, "meta_learner_edge_gain", 0.30), 0.0, 2.0))
+        meta_conf_gain = float(np.clip(getattr(cfg, "meta_learner_confidence_gain", 0.08), 0.0, 1.0))
+        if abs(meta_p - 0.5) > 1e-9:
+            meta_mode_bars += 1
+        signed = float((meta_p - 0.5) * 2.0)
+        edge = float(edge * (1.0 + meta_gain * signed))
+        confidence = float(np.clip(confidence + meta_conf_gain * signed, 0.0, 1.0))
         edge_floor = governor.adjusted_edge_floor(risk.state.equity_r)
         edge -= governor.side_penalty(side)
         if confidence < cfg.min_confidence:
@@ -669,6 +826,15 @@ def _run_fold(
         governor.record_trade(side=side, realized_r=rr, bar_idx=i)
         router.update_reliability(expert_name=expert_name, realized_r=rr, regime=regime)
         adaptive.update_after_trade(expert_name=expert_name, regime=regime, realized_r=rr, side=side)
+        meta.update(
+            x=x,
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            regime=regime,
+            side=side,
+            realized_r=rr,
+        )
         trades.append(rr)
         recent_trade_rr.append(rr)
         max_recent = int(max(getattr(cfg, "transition_min_samples", 6) * 4, 16))
@@ -720,6 +886,7 @@ def _run_fold(
         "change_mode_bars": int(change_mode_bars),
         "flip_pressure_bars": int(flip_pressure_bars),
         "transition_mode_bars": int(transition_mode_bars),
+        "meta_mode_bars": int(meta_mode_bars),
         "counterfactual_rejects": int(cf_rejects),
         "skip_reasons": {k: int(v) for k, v in skip_counts.items()},
         "long_trades": n_long,
@@ -822,6 +989,7 @@ def run_mythos_walk_forward(
     }
     change_mode_rate = float(total_change_mode_bars / max(total_trades, 1))
     total_transition_mode_bars = int(sum(r.get("transition_mode_bars", 0) for r in reports))
+    total_meta_mode_bars = int(sum(r.get("meta_mode_bars", 0) for r in reports))
     cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
     act = sum(1 for r in reports if r["status"] == "ACTIVE")
     low = sum(1 for r in reports if r["status"] == "LOW_CONF")
@@ -845,6 +1013,8 @@ def run_mythos_walk_forward(
         "change_mode_rate": round(change_mode_rate, 4),
         "transition_mode_bars": total_transition_mode_bars,
         "transition_mode_rate": round(float(total_transition_mode_bars / max(total_trades, 1)), 4),
+        "meta_mode_bars": total_meta_mode_bars,
+        "meta_mode_rate": round(float(total_meta_mode_bars / max(total_trades, 1)), 4),
         "flip_pressure_bars": total_flip_pressure_bars,
         "flip_pressure_rate": round(float(total_flip_pressure_bars / max(total_trades, 1)), 4),
         "counterfactual_rejects": total_cf_rejects,

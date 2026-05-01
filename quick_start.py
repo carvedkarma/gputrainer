@@ -5373,6 +5373,26 @@ Examples:
                         help="MYTHOS v6: learning rate for neural expert optimizer (default: 0.0015)")
     parser.add_argument("--mythos-neural-batch-size", type=int, default=512,
                         help="MYTHOS v6: batch size for neural expert training (default: 512)")
+    parser.add_argument("--mythos-meta-learner", action="store_true", default=True,
+                        help="MYTHOS v7: enable neural meta-learner for trade quality modulation (default: enabled)")
+    parser.add_argument("--mythos-no-meta-learner", dest="mythos_meta_learner", action="store_false",
+                        help="MYTHOS v7: disable neural meta-learner and use base decision stack")
+    parser.add_argument("--mythos-meta-device", type=str, default="auto", choices=["auto", "cuda", "cpu"],
+                        help="MYTHOS v7: meta-learner runtime device preference (default: auto)")
+    parser.add_argument("--mythos-meta-hidden", type=int, default=64,
+                        help="MYTHOS v7: hidden width for meta-learner MLP (default: 64)")
+    parser.add_argument("--mythos-meta-epochs", type=int, default=6,
+                        help="MYTHOS v7: training epochs for meta-learner per fold (default: 6)")
+    parser.add_argument("--mythos-meta-lr", type=float, default=0.001,
+                        help="MYTHOS v7: learning rate for meta-learner optimizer (default: 0.001)")
+    parser.add_argument("--mythos-meta-batch-size", type=int, default=1024,
+                        help="MYTHOS v7: batch size for meta-learner training (default: 1024)")
+    parser.add_argument("--mythos-meta-edge-gain", type=float, default=0.45,
+                        help="MYTHOS v7: edge scaling gain from meta quality score (default: 0.45)")
+    parser.add_argument("--mythos-meta-confidence-gain", type=float, default=0.08,
+                        help="MYTHOS v7: confidence adjustment gain from meta quality score (default: 0.08)")
+    parser.add_argument("--mythos-meta-uncertainty-gain", type=float, default=0.25,
+                        help="MYTHOS v7: uncertainty damping gain from meta quality score (default: 0.25)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")

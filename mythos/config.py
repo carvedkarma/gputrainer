@@ -94,6 +94,20 @@ class MythosConfig:
     neural_expert_batch_size: int = 2048
     neural_expert_dropout: float = 0.10
     neural_expert_device: str = "auto"
+    # Deep meta-learner (decision quality model on top of expert outputs).
+    use_meta_learner: bool = True
+    meta_learner_device: str = "auto"
+    meta_learner_hidden: int = 96
+    meta_learner_epochs: int = 6
+    meta_learner_batch_size: int = 1024
+    meta_learner_lr: float = 8e-4
+    meta_learner_dropout: float = 0.10
+    meta_learner_reg_weight: float = 0.25
+    meta_learner_edge_blend: float = 0.30
+    meta_learner_conf_blend: float = 0.20
+    meta_learner_uncertainty_penalty: float = 0.80
+    meta_learner_min_side_prob: float = 0.50
+    meta_learner_min_train_samples: int = 512
     regime_flip_confidence_boost: float = 0.05
     regime_flip_min_analog_edge: float = 0.0
     online_allocator_lr: float = 0.06
@@ -131,4 +145,9 @@ class MythosConfig:
             dev = "auto"
         self.neural_expert_device = dev
         self.allow_cpu_neural_expert = bool(dev in {"auto", "cpu"})
+        meta_dev = str(self.meta_learner_device or "auto").strip().lower()
+        if meta_dev not in {"auto", "cuda", "cpu"}:
+            meta_dev = "auto"
+        self.meta_learner_device = meta_dev
+        self.allow_cpu_meta_learner = bool(meta_dev in {"auto", "cpu"})
 
