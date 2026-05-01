@@ -56,6 +56,12 @@ class MythosConfig:
     side_balance_window: int = 160
     side_imbalance_soft_cap: float = 0.82
     side_imbalance_edge_penalty: float = 0.015
+    adaptive_side_target_strength: float = 0.22
+    adaptive_side_target_min: float = 0.35
+    adaptive_side_target_max: float = 0.65
+    side_health_penalty: float = 0.02
+    side_health_boost: float = 0.008
+    side_health_decay: float = 0.97
     drawdown_edge_start_r: float = 8.0
     drawdown_edge_step_r: float = 4.0
     drawdown_edge_boost: float = 0.0025
@@ -66,6 +72,7 @@ class MythosConfig:
     side_fail_expectancy_r: float = -0.12
     side_fail_cooldown_bars: int = 24
     side_fail_ema_alpha: float = 0.25
+    side_fail_hard_pause: bool = False
     flip_intensity_trigger: float = 0.35
     flip_harden_hold_bars: int = 24
     instability_edge_mult: float = 0.70
@@ -145,6 +152,19 @@ class MythosConfig:
         self.transition_memory_edge_scale = float(self.transition_edge_gain)
         self.transition_memory_confidence_scale = float(self.transition_confidence_gain)
         self.transition_memory_uncertainty_scale = float(self.transition_uncertainty_gain)
+        self.adaptive_side_target_strength = float(
+            np.clip(getattr(self, "adaptive_side_target_strength", 0.22), 0.0, 1.0)
+        )
+        tmin = float(np.clip(getattr(self, "adaptive_side_target_min", 0.35), 0.05, 0.95))
+        tmax = float(np.clip(getattr(self, "adaptive_side_target_max", 0.65), 0.05, 0.95))
+        if tmin > tmax:
+            tmin, tmax = tmax, tmin
+        self.adaptive_side_target_min = tmin
+        self.adaptive_side_target_max = tmax
+        self.side_health_penalty = float(max(getattr(self, "side_health_penalty", 0.02), 0.0))
+        self.side_health_boost = float(max(getattr(self, "side_health_boost", 0.008), 0.0))
+        self.side_health_decay = float(np.clip(getattr(self, "side_health_decay", 0.97), 0.80, 0.999))
+        self.side_fail_hard_pause = bool(getattr(self, "side_fail_hard_pause", False))
         # Keep neural-expert naming aligned across revisions.
         self.use_gpu_neural_expert = bool(self.enable_gpu_neural_experts)
         self.neural_expert_hidden_dim = int(self.neural_expert_hidden)

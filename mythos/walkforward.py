@@ -90,6 +90,19 @@ class V3ExecutionGovernor:
         self.pause_until_bar = -1
         self.side_recent_rr: Dict[int, List[float]] = {1: [], -1: []}
         self.side_pause_until: Dict[int, int] = {1: -1, -1: -1}
+        self.side_health: Dict[int, float] = {1: 0.0, -1: 0.0}
+        self.side_health_ema: Dict[int, float] = {1: 0.0, -1: 0.0}
+
+    def _adaptive_long_target(self) -> float:
+        strength = float(np.clip(getattr(self.cfg, "adaptive_side_target_strength", 0.22), 0.0, 1.0))
+        target_min = float(np.clip(getattr(self.cfg, "adaptive_side_target_min", 0.35), 0.05, 0.95))
+        target_max = float(np.clip(getattr(self.cfg, "adaptive_side_target_max", 0.65), 0.05, 0.95))
+        if target_min > target_max:
+            target_min, target_max = target_max, target_min
+        long_h = float(np.tanh(self.side_health.get(1, 0.0)))
+        short_h = float(np.tanh(self.side_health.get(-1, 0.0)))
+        target = 0.5 + 0.5 * strength * (long_h - short_h)
+        return float(np.clip(target, target_min, target_max))
 
     def adjusted_edge_floor(self, equity_r: float) -> float:
         base = float(self.cfg.abstain_edge_floor)
@@ -114,17 +127,38 @@ class V3ExecutionGovernor:
         dominant = max(long_frac, short_frac)
         soft_cap = float(np.clip(getattr(self.cfg, "side_imbalance_soft_cap", 0.82), 0.5, 1.0))
         if dominant <= soft_cap:
-            return 0.0
-        is_dominant_side = (side == 1 and long_frac >= short_frac) or (side == -1 and short_frac > long_frac)
-        if not is_dominant_side:
-            return 0.0
-        penalty = float(max(getattr(self.cfg, "side_imbalance_edge_penalty", 0.015), 0.0))
-        return penalty * (dominant - soft_cap) / max(1e-6, 1.0 - soft_cap)
+            concentration_penalty = 0.0
+        else:
+            is_dominant_side = (side == 1 and long_frac >= short_frac) or (side == -1 and short_frac > long_frac)
+            if not is_dominant_side:
+                concentration_penalty = 0.0
+            else:
+                penalty = float(max(getattr(self.cfg, "side_imbalance_edge_penalty", 0.015), 0.0))
+                concentration_penalty = penalty * (dominant - soft_cap) / max(1e-6, 1.0 - soft_cap)
+
+        # Adaptive side allocator: keeps trading active while nudging side mix
+        # toward whichever side is currently healthier.
+        target_long = self._adaptive_long_target()
+        target_side = target_long if int(side) == 1 else (1.0 - target_long)
+        side_frac = long_frac if int(side) == 1 else short_frac
+        frac_gap = float(side_frac - target_side)
+        own_health = float(np.tanh(self.side_health.get(int(side), 0.0)))
+        opp_health = float(np.tanh(self.side_health.get(-int(side), 0.0)))
+        health_gap = own_health - opp_health
+        dyn_penalty_scale = float(max(getattr(self.cfg, "side_health_penalty", 0.02), 0.0))
+        dyn_boost_scale = float(max(getattr(self.cfg, "side_health_boost", 0.008), 0.0))
+        if frac_gap > 0.0:
+            adaptive_term = dyn_penalty_scale * frac_gap * (1.0 + max(-health_gap, 0.0))
+        else:
+            adaptive_term = -dyn_boost_scale * (-frac_gap) * (1.0 + max(-health_gap, 0.0))
+        return float(concentration_penalty + adaptive_term)
 
     def allow_by_streak(self, bar_idx: int, side: int = 0) -> bool:
         if bar_idx < self.pause_until_bar:
             return False
-        if int(side) in (-1, 1) and bar_idx < int(self.side_pause_until.get(int(side), -1)):
+        if bool(getattr(self.cfg, "side_fail_hard_pause", False)) and int(side) in (-1, 1) and bar_idx < int(
+            self.side_pause_until.get(int(side), -1)
+        ):
             return False
         return True
 
@@ -140,11 +174,15 @@ class V3ExecutionGovernor:
         if len(hist) < min_n:
             return
         fail_expect = float(getattr(self.cfg, "side_fail_expectancy_r", -0.12))
-        if float(np.mean(np.array(hist, dtype=np.float64))) > fail_expect:
+        side_expect = float(np.mean(np.array(hist, dtype=np.float64)))
+        if side_expect > fail_expect:
             return
-        cd = int(max(getattr(self.cfg, "side_fail_cooldown_bars", 24), 1))
-        self.side_pause_until[side] = max(int(self.side_pause_until.get(side, -1)), int(bar_idx + cd))
-        # Reset side-local buffer after triggering to avoid repetitive pauses from stale history.
+        shortfall = float(max(fail_expect - side_expect, 0.0))
+        self.side_health[side] = float(self.side_health.get(side, 0.0) - shortfall)
+        if bool(getattr(self.cfg, "side_fail_hard_pause", False)):
+            cd = int(max(getattr(self.cfg, "side_fail_cooldown_bars", 24), 1))
+            self.side_pause_until[side] = max(int(self.side_pause_until.get(side, -1)), int(bar_idx + cd))
+        # Reset side-local buffer after triggering to avoid repetitive stale signals.
         self.side_recent_rr[side] = []
 
     def record_trade(self, side: int, realized_r: float, bar_idx: int) -> None:
@@ -152,6 +190,13 @@ class V3ExecutionGovernor:
         s = int(side)
         if s in (-1, 1):
             self.side_recent_rr.setdefault(s, []).append(float(realized_r))
+            decay = float(np.clip(getattr(self.cfg, "side_health_decay", 0.97), 0.7, 0.999))
+            rr = float(np.clip(realized_r, -2.0, 2.0))
+            prev_h = float(self.side_health.get(s, 0.0))
+            self.side_health[s] = decay * prev_h + (1.0 - decay) * rr
+            ema_alpha = float(np.clip(getattr(self.cfg, "side_fail_ema_alpha", 0.25), 0.01, 1.0))
+            prev_ema = float(self.side_health_ema.get(s, 0.0))
+            self.side_health_ema[s] = (1.0 - ema_alpha) * prev_ema + ema_alpha * rr
         if float(realized_r) < 0.0:
             self.loss_streak += 1
         else:

@@ -11,6 +11,7 @@ from mythos.promotion import evaluate_promotion
 from mythos.risk import RiskConstitution
 from mythos.router import MetaRouter
 from mythos.world_model import WorldModel
+from mythos.walkforward import V3ExecutionGovernor
 
 
 def _synthetic_ohlcv_df(n: int = 900):
@@ -131,3 +132,34 @@ def test_promotion_gate_evaluate_pass_and_fail():
     assert ok.should_promote is True
     assert bad.should_promote is False
     assert len(bad.reasons) > 0
+
+
+def test_execution_governor_adaptive_side_penalty_nudges_dominant_side():
+    cfg = MythosConfig(
+        side_balance_window=32,
+        side_imbalance_soft_cap=0.65,
+        side_imbalance_edge_penalty=0.015,
+        adaptive_side_target_strength=0.30,
+        adaptive_side_target_min=0.40,
+        adaptive_side_target_max=0.60,
+        side_health_penalty=0.03,
+        side_health_boost=0.01,
+    )
+    gov = V3ExecutionGovernor(cfg)
+    gov.side_hist = [1] * 30 + [-1] * 2
+    gov.side_health[1] = -0.8
+    gov.side_health[-1] = 0.7
+
+    long_pen = gov.side_penalty(1)
+    short_pen = gov.side_penalty(-1)
+    assert long_pen > 0.0
+    assert short_pen <= 0.0
+
+
+def test_execution_governor_side_fail_is_soft_by_default():
+    cfg = MythosConfig(side_fail_hard_pause=False, side_fail_window=8, side_fail_min_trades=3)
+    gov = V3ExecutionGovernor(cfg)
+    gov.side_recent_rr[1] = [-0.5, -0.4, -0.35, -0.3]
+    gov._update_side_health(side=1, bar_idx=50)
+    assert gov.side_pause_until[1] == -1
+    assert gov.side_health[1] < 0.0

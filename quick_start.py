@@ -5287,6 +5287,18 @@ Examples:
                         help="MYTHOS v3: soft max side concentration before penalties (default: 0.82)")
     parser.add_argument("--mythos-side-imbalance-edge-penalty", type=float, default=0.015,
                         help="MYTHOS v3: edge penalty when one side dominates (default: 0.015)")
+    parser.add_argument("--mythos-adaptive-side-target-strength", type=float, default=0.22,
+                        help="MYTHOS adaptive: how strongly side health shifts long/short target mix (default: 0.22)")
+    parser.add_argument("--mythos-adaptive-side-target-min", type=float, default=0.35,
+                        help="MYTHOS adaptive: minimum target long share (default: 0.35)")
+    parser.add_argument("--mythos-adaptive-side-target-max", type=float, default=0.65,
+                        help="MYTHOS adaptive: maximum target long share (default: 0.65)")
+    parser.add_argument("--mythos-side-health-penalty", type=float, default=0.02,
+                        help="MYTHOS adaptive: extra edge penalty scale for overrepresented weak side (default: 0.02)")
+    parser.add_argument("--mythos-side-health-boost", type=float, default=0.008,
+                        help="MYTHOS adaptive: edge boost scale for underrepresented healthier side (default: 0.008)")
+    parser.add_argument("--mythos-side-health-decay", type=float, default=0.97,
+                        help="MYTHOS adaptive: decay factor for side health memory (default: 0.97)")
     parser.add_argument("--mythos-drawdown-edge-start-r", type=float, default=8.0,
                         help="MYTHOS v3: drawdown level where edge floor starts tightening (default: 8.0)")
     parser.add_argument("--mythos-drawdown-edge-step-r", type=float, default=4.0,
@@ -5305,6 +5317,11 @@ Examples:
                         help="MYTHOS v5: side expectancy threshold that triggers side cooldown (default: -0.12)")
     parser.add_argument("--mythos-side-fail-cooldown-bars", type=int, default=24,
                         help="MYTHOS v5: bars to pause entries for a failing side (default: 24)")
+    parser.add_argument("--mythos-side-fail-hard-pause", dest="mythos_side_fail_hard_pause", action="store_true",
+                        help="MYTHOS adaptive: hard-pause failing side instead of soft adaptive downweighting")
+    parser.add_argument("--mythos-no-side-fail-hard-pause", dest="mythos_side_fail_hard_pause", action="store_false",
+                        help="MYTHOS adaptive: keep trading both sides and adaptively rebalance (default)")
+    parser.set_defaults(mythos_side_fail_hard_pause=False)
     parser.add_argument("--mythos-online-allocator-lr", type=float, default=0.06,
                         help="MYTHOS v4: online expert allocator learning rate (default: 0.06)")
     parser.add_argument("--mythos-online-allocator-min-mult", type=float, default=0.75,
@@ -6410,6 +6427,12 @@ Examples:
                 side_balance_window=args.mythos_side_balance_window,
                 side_imbalance_soft_cap=args.mythos_side_imbalance_soft_cap,
                 side_imbalance_edge_penalty=args.mythos_side_imbalance_edge_penalty,
+                adaptive_side_target_strength=args.mythos_adaptive_side_target_strength,
+                adaptive_side_target_min=args.mythos_adaptive_side_target_min,
+                adaptive_side_target_max=args.mythos_adaptive_side_target_max,
+                side_health_penalty=args.mythos_side_health_penalty,
+                side_health_boost=args.mythos_side_health_boost,
+                side_health_decay=args.mythos_side_health_decay,
                 drawdown_edge_start_r=args.mythos_drawdown_edge_start_r,
                 drawdown_edge_step_r=args.mythos_drawdown_edge_step_r,
                 drawdown_edge_boost=args.mythos_drawdown_edge_boost,
@@ -6419,6 +6442,7 @@ Examples:
                 side_fail_min_trades=args.mythos_side_fail_min_trades,
                 side_fail_expectancy_r=args.mythos_side_fail_expectancy_r,
                 side_fail_cooldown_bars=args.mythos_side_fail_cooldown_bars,
+                side_fail_hard_pause=args.mythos_side_fail_hard_pause,
                 online_allocator_lr=args.mythos_online_allocator_lr,
                 online_allocator_min_mult=args.mythos_online_allocator_min_mult,
                 online_allocator_max_mult=args.mythos_online_allocator_max_mult,
