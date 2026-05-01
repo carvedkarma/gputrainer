@@ -825,9 +825,14 @@ def _run_fold(
         meta_conf_gain = float(np.clip(getattr(cfg, "meta_learner_conf_blend", 0.20), 0.0, 1.0))
         meta_unc_pen = float(np.clip(getattr(cfg, "meta_learner_uncertainty_penalty", 0.80), 0.0, 2.0))
         meta_min_side_prob = float(np.clip(getattr(cfg, "meta_learner_min_side_prob", 0.50), 0.0, 1.0))
+        meta_ready_floor = float(np.clip(getattr(cfg, "meta_learner_ready_prob_floor", 0.42), 0.0, 1.0))
+        meta_ready_ceiling = float(np.clip(getattr(cfg, "meta_learner_ready_prob_ceiling", 0.58), 0.0, 1.0))
+        meta_warmup = int(max(getattr(cfg, "meta_learner_warmup_samples", 1024), 0))
+        meta_buffer_n = int(getattr(meta, "_buffer_x", []) and len(getattr(meta, "_buffer_x", [])) or 0)
+        meta_ready = meta_buffer_n >= meta_warmup and (meta_p <= meta_ready_floor or meta_p >= meta_ready_ceiling)
         if abs(meta_p - 0.5) > 1e-9:
             meta_mode_bars += 1
-        if side != 0 and meta_p < meta_min_side_prob:
+        if side != 0 and meta_ready and meta_p < meta_min_side_prob:
             skip_counts["meta_reject"] += 1
             continue
         signed = float((meta_p - 0.5) * 2.0)

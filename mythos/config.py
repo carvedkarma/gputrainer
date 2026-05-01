@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List
 
+import numpy as np
+
 
 @dataclass
 class MythosConfig:
@@ -112,6 +114,8 @@ class MythosConfig:
     meta_learner_min_side_prob: float = 0.50
     meta_learner_min_train_samples: int = 512
     meta_learner_warmup_samples: int = 1024
+    meta_learner_ready_prob_floor: float = 0.42
+    meta_learner_ready_prob_ceiling: float = 0.58
     regime_flip_confidence_boost: float = 0.05
     regime_flip_min_analog_edge: float = 0.0
     online_allocator_lr: float = 0.06
@@ -154,4 +158,10 @@ class MythosConfig:
             meta_dev = "auto"
         self.meta_learner_device = meta_dev
         self.allow_cpu_meta_learner = bool(meta_dev in {"auto", "cpu"})
+        floor = float(np.clip(getattr(self, "meta_learner_ready_prob_floor", 0.42), 0.0, 1.0))
+        ceil = float(np.clip(getattr(self, "meta_learner_ready_prob_ceiling", 0.58), 0.0, 1.0))
+        if floor > ceil:
+            floor, ceil = ceil, floor
+        self.meta_learner_ready_prob_floor = floor
+        self.meta_learner_ready_prob_ceiling = ceil
 

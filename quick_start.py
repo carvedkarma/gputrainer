@@ -5401,6 +5401,12 @@ Examples:
                         help="MYTHOS v7: minimum samples before meta-learner online updates activate (default: 512)")
     parser.add_argument("--mythos-meta-warmup-trades", type=int, default=300,
                         help="MYTHOS v7: trades before meta-learner gating starts affecting execution (default: 300)")
+    parser.add_argument("--mythos-meta-warmup-samples", type=int, default=1024,
+                        help="MYTHOS v7: warmup samples required before strict meta gating activates (default: 1024)")
+    parser.add_argument("--mythos-meta-ready-prob-floor", type=float, default=0.42,
+                        help="MYTHOS v7: lower probability bound considered neutral during meta warmup (default: 0.42)")
+    parser.add_argument("--mythos-meta-ready-prob-ceiling", type=float, default=0.58,
+                        help="MYTHOS v7: upper probability bound considered neutral during meta warmup (default: 0.58)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")
@@ -6453,6 +6459,9 @@ Examples:
                 meta_learner_conf_blend=args.mythos_meta_confidence_gain,
                 meta_learner_uncertainty_penalty=args.mythos_meta_uncertainty_gain,
                 meta_learner_min_train_samples=args.mythos_meta_min_train_samples,
+                meta_learner_warmup_samples=args.mythos_meta_warmup_samples,
+                meta_learner_ready_prob_floor=args.mythos_meta_ready_prob_floor,
+                meta_learner_ready_prob_ceiling=args.mythos_meta_ready_prob_ceiling,
             )
             mythos_report = run_mythos_walk_forward(
                 data_dir=data_dir,
