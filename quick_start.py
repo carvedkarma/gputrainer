@@ -5397,12 +5397,6 @@ Examples:
                         help="MYTHOS v7: confidence adjustment gain from meta quality score (default: 0.08)")
     parser.add_argument("--mythos-meta-uncertainty-gain", type=float, default=0.25,
                         help="MYTHOS v7: uncertainty damping gain from meta quality score (default: 0.25)")
-    parser.add_argument("--mythos-use-deep-meta", dest="mythos_meta_learner", action="store_true",
-                        help="Alias for --mythos-meta-learner")
-    parser.add_argument("--mythos-no-use-deep-meta", dest="mythos_meta_learner", action="store_false",
-                        help="Alias for --mythos-no-meta-learner")
-    parser.add_argument("--mythos-meta-min-train-samples", type=int, default=512,
-                        help="MYTHOS v7: minimum training samples before meta learner updates (default: 512)")
     parser.add_argument("--mythos-meta-min-train-samples", type=int, default=512,
                         help="MYTHOS v7: minimum samples before meta-learner online updates activate (default: 512)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
