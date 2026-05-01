@@ -448,6 +448,32 @@ class NeuralMetaLearner:
             p = float(self._model(t).item())
         return float(np.clip(p, 0.0, 1.0))
 
+    def apply_adjustments(
+        self,
+        edge: float,
+        confidence: float,
+        uncertainty: float,
+        meta_p: float,
+    ) -> Dict[str, float]:
+        signed = float((float(meta_p) - 0.5) * 2.0)  # in [-1, 1]
+        edge_gain = float(np.clip(getattr(self.cfg, "meta_learner_edge_blend", 0.30), 0.0, 2.0))
+        conf_gain = float(np.clip(getattr(self.cfg, "meta_learner_conf_blend", 0.20), 0.0, 1.0))
+        unc_gain = float(np.clip(getattr(self.cfg, "meta_learner_uncertainty_penalty", 0.80), 0.0, 2.0))
+        out_edge = float(edge * (1.0 + edge_gain * signed))
+        out_conf = float(np.clip(confidence + conf_gain * signed, 0.0, 1.0))
+        # Raise uncertainty when meta confidence is poor; lower when strong.
+        out_unc = float(np.clip(uncertainty * (1.0 - 0.35 * unc_gain * signed), 0.005, 2.0))
+        return {"edge": out_edge, "confidence": out_conf, "uncertainty": out_unc}
+
+    def pass_filter(self, side: int, meta_p: float) -> bool:
+        if int(side) == 0:
+            return False
+        min_side = float(np.clip(getattr(self.cfg, "meta_learner_min_side_prob", 0.50), 0.0, 1.0))
+        p = float(np.clip(meta_p, 0.0, 1.0))
+        if int(side) > 0:
+            return p >= min_side
+        return (1.0 - p) >= min_side
+
     def update(
         self,
         x: np.ndarray,
@@ -728,6 +754,7 @@ def _run_fold(
         "streak_pause": 0,
         "counterfactual_reject": 0,
         "risk_reject": 0,
+        "meta_reject": 0,
     }
     cf_rejects = 0
     n_long = 0
@@ -785,13 +812,19 @@ def _run_fold(
             regime=regime,
             side=side,
         )
-        meta_gain = float(np.clip(getattr(cfg, "meta_learner_edge_gain", 0.30), 0.0, 2.0))
-        meta_conf_gain = float(np.clip(getattr(cfg, "meta_learner_confidence_gain", 0.08), 0.0, 1.0))
+        meta_gain = float(np.clip(getattr(cfg, "meta_learner_edge_blend", 0.30), 0.0, 2.0))
+        meta_conf_gain = float(np.clip(getattr(cfg, "meta_learner_conf_blend", 0.20), 0.0, 1.0))
+        meta_unc_pen = float(np.clip(getattr(cfg, "meta_learner_uncertainty_penalty", 0.80), 0.0, 2.0))
+        meta_min_side_prob = float(np.clip(getattr(cfg, "meta_learner_min_side_prob", 0.50), 0.0, 1.0))
         if abs(meta_p - 0.5) > 1e-9:
             meta_mode_bars += 1
+        if side != 0 and meta_p < meta_min_side_prob:
+            skip_counts["meta_reject"] += 1
+            continue
         signed = float((meta_p - 0.5) * 2.0)
         edge = float(edge * (1.0 + meta_gain * signed))
         confidence = float(np.clip(confidence + meta_conf_gain * signed, 0.0, 1.0))
+        uncertainty = float(np.clip(uncertainty * (1.0 + meta_unc_pen * max(0.5 - meta_p, 0.0)), 0.005, 2.0))
         edge_floor = governor.adjusted_edge_floor(risk.state.equity_r)
         edge -= governor.side_penalty(side)
         if confidence < cfg.min_confidence:
@@ -994,6 +1027,7 @@ def run_mythos_walk_forward(
         "streak_pause": int(sum(int(r.get("skip_reasons", {}).get("streak_pause", 0)) for r in reports)),
         "counterfactual_reject": int(sum(int(r.get("skip_reasons", {}).get("counterfactual_reject", 0)) for r in reports)),
         "risk_reject": int(sum(int(r.get("skip_reasons", {}).get("risk_reject", 0)) for r in reports)),
+        "meta_reject": int(sum(int(r.get("skip_reasons", {}).get("meta_reject", 0)) for r in reports)),
     }
     change_mode_rate = float(total_change_mode_bars / max(total_trades, 1))
     total_transition_mode_bars = int(sum(r.get("transition_mode_bars", 0) for r in reports))

@@ -106,6 +106,9 @@ class MythosConfig:
     meta_learner_edge_blend: float = 0.30
     meta_learner_conf_blend: float = 0.20
     meta_learner_uncertainty_penalty: float = 0.80
+    # Aliases used by CLI for readability.
+    meta_learner_edge_gain: float = 0.30
+    meta_learner_confidence_gain: float = 0.20
     meta_learner_min_side_prob: float = 0.50
     meta_learner_min_train_samples: int = 512
     regime_flip_confidence_boost: float = 0.05
