@@ -356,7 +356,7 @@ class NeuralMetaLearner:
     def __init__(self, cfg: MythosConfig, n_features: int):
         self.cfg = cfg
         self.n_features = int(max(n_features, 1))
-        self.enabled = bool(getattr(cfg, "meta_learner_enable", True))
+        self.enabled = bool(getattr(cfg, "use_meta_learner", True))
         self.device = "cpu"
         self._active = False
         self._torch = None
@@ -468,7 +468,7 @@ class NeuralMetaLearner:
             trim = len(self._buffer_x) - self._max_buffer
             del self._buffer_x[:trim]
             del self._buffer_y[:trim]
-        min_n = int(max(getattr(self.cfg, "meta_learner_min_samples", 256), 16))
+        min_n = int(max(getattr(self.cfg, "meta_learner_min_train_samples", 256), 16))
         if len(self._buffer_x) < min_n:
             return
         batch_size = int(max(getattr(self.cfg, "meta_learner_batch_size", 1024), 16))
@@ -485,6 +485,14 @@ class NeuralMetaLearner:
             self._optimizer.zero_grad(set_to_none=True)
             loss.backward()
             self._optimizer.step()
+
+    def state_dict(self) -> Dict[str, object]:
+        return {
+            "active": bool(self.is_active()),
+            "device": str(self.device),
+            "buffer_size": int(len(self._buffer_x)),
+            "max_buffer": int(self._max_buffer),
+        }
 
 
 def _counterfactual_pass(

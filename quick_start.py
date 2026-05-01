@@ -5377,6 +5377,10 @@ Examples:
                         help="MYTHOS v7: enable neural meta-learner for trade quality modulation (default: enabled)")
     parser.add_argument("--mythos-no-meta-learner", dest="mythos_meta_learner", action="store_false",
                         help="MYTHOS v7: disable neural meta-learner and use base decision stack")
+    parser.add_argument("--mythos-use-deep-meta", dest="mythos_meta_learner", action="store_true",
+                        help="Alias for --mythos-meta-learner")
+    parser.add_argument("--mythos-no-use-deep-meta", dest="mythos_meta_learner", action="store_false",
+                        help="Alias for --mythos-no-meta-learner")
     parser.add_argument("--mythos-meta-device", type=str, default="auto", choices=["auto", "cuda", "cpu"],
                         help="MYTHOS v7: meta-learner runtime device preference (default: auto)")
     parser.add_argument("--mythos-meta-hidden", type=int, default=64,
@@ -5393,6 +5397,14 @@ Examples:
                         help="MYTHOS v7: confidence adjustment gain from meta quality score (default: 0.08)")
     parser.add_argument("--mythos-meta-uncertainty-gain", type=float, default=0.25,
                         help="MYTHOS v7: uncertainty damping gain from meta quality score (default: 0.25)")
+    parser.add_argument("--mythos-use-deep-meta", dest="mythos_meta_learner", action="store_true",
+                        help="Alias for --mythos-meta-learner")
+    parser.add_argument("--mythos-no-use-deep-meta", dest="mythos_meta_learner", action="store_false",
+                        help="Alias for --mythos-no-meta-learner")
+    parser.add_argument("--mythos-meta-min-train-samples", type=int, default=512,
+                        help="MYTHOS v7: minimum training samples before meta learner updates (default: 512)")
+    parser.add_argument("--mythos-meta-min-train-samples", type=int, default=512,
+                        help="MYTHOS v7: minimum samples before meta-learner online updates activate (default: 512)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")
@@ -6435,6 +6447,16 @@ Examples:
                 neural_expert_epochs=args.mythos_neural_epochs,
                 neural_expert_lr=args.mythos_neural_lr,
                 neural_expert_batch_size=args.mythos_neural_batch_size,
+                use_meta_learner=args.mythos_meta_learner,
+                meta_learner_device=args.mythos_meta_device,
+                meta_learner_hidden=args.mythos_meta_hidden,
+                meta_learner_epochs=args.mythos_meta_epochs,
+                meta_learner_lr=args.mythos_meta_lr,
+                meta_learner_batch_size=args.mythos_meta_batch_size,
+                meta_learner_edge_blend=args.mythos_meta_edge_gain,
+                meta_learner_conf_blend=args.mythos_meta_confidence_gain,
+                meta_learner_uncertainty_penalty=args.mythos_meta_uncertainty_gain,
+                meta_learner_min_train_samples=args.mythos_meta_min_train_samples,
             )
             mythos_report = run_mythos_walk_forward(
                 data_dir=data_dir,
