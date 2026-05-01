@@ -5359,6 +5359,12 @@ Examples:
                         help="MYTHOS v6: enable GPU neural expert in expert council (default: enabled)")
     parser.add_argument("--mythos-no-use-neural-expert", dest="mythos_use_neural_expert", action="store_false",
                         help="MYTHOS v6: disable GPU neural expert and use classic linear-only council")
+    parser.add_argument("--mythos-neural-experts", dest="mythos_use_neural_expert", action="store_true",
+                        help="Alias for --mythos-use-neural-expert")
+    parser.add_argument("--mythos-no-neural-experts", dest="mythos_use_neural_expert", action="store_false",
+                        help="Alias for --mythos-no-use-neural-expert")
+    parser.add_argument("--mythos-neural-device", type=str, default="auto", choices=["auto", "cuda", "cpu"],
+                        help="MYTHOS v6: neural expert runtime device preference (default: auto)")
     parser.add_argument("--mythos-neural-hidden", type=int, default=64,
                         help="MYTHOS v6: hidden width for neural expert MLP (default: 64)")
     parser.add_argument("--mythos-neural-epochs", type=int, default=8,
@@ -6404,6 +6410,7 @@ Examples:
                 counterfactual_uncertainty_weight=args.mythos_counterfactual_uncertainty_weight,
                 counterfactual_min_alt_hits=args.mythos_counterfactual_min_alt_hits,
                 enable_gpu_neural_experts=args.mythos_use_neural_expert,
+                neural_expert_device=args.mythos_neural_device,
                 neural_expert_hidden=args.mythos_neural_hidden,
                 neural_expert_epochs=args.mythos_neural_epochs,
                 neural_expert_lr=args.mythos_neural_lr,
