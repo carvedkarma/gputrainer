@@ -5399,6 +5399,8 @@ Examples:
                         help="MYTHOS v7: uncertainty damping gain from meta quality score (default: 0.25)")
     parser.add_argument("--mythos-meta-min-train-samples", type=int, default=512,
                         help="MYTHOS v7: minimum samples before meta-learner online updates activate (default: 512)")
+    parser.add_argument("--mythos-meta-warmup-trades", type=int, default=300,
+                        help="MYTHOS v7: trades before meta-learner gating starts affecting execution (default: 300)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")

@@ -367,6 +367,8 @@ class NeuralMetaLearner:
         self._buffer_x: List[np.ndarray] = []
         self._buffer_y: List[float] = []
         self._max_buffer = int(max(getattr(cfg, "meta_learner_buffer_size", 6000), 256))
+        self._trained_steps = 0
+        self._ready = False
         self._init_model()
 
     def _init_model(self) -> None:
@@ -409,6 +411,9 @@ class NeuralMetaLearner:
     def is_active(self) -> bool:
         return bool(self._active and self._model is not None and self._torch is not None)
 
+    def is_ready(self) -> bool:
+        return bool(self.is_active() and self._ready)
+
     def _meta_vector(
         self,
         x: np.ndarray,
@@ -440,7 +445,7 @@ class NeuralMetaLearner:
         regime: int,
         side: int,
     ) -> float:
-        if not self.is_active():
+        if not self.is_ready():
             return 0.5
         vec = self._meta_vector(x=x, edge=edge, confidence=confidence, uncertainty=uncertainty, regime=regime, side=side)
         t = self._torch.tensor(vec.reshape(1, -1), dtype=self._torch.float32, device=self.device)
@@ -511,13 +516,17 @@ class NeuralMetaLearner:
             self._optimizer.zero_grad(set_to_none=True)
             loss.backward()
             self._optimizer.step()
+        self._trained_steps += int(train_steps)
+        self._ready = True
 
     def state_dict(self) -> Dict[str, object]:
         return {
             "active": bool(self.is_active()),
+            "ready": bool(self.is_ready()),
             "device": str(self.device),
             "buffer_size": int(len(self._buffer_x)),
             "max_buffer": int(self._max_buffer),
+            "trained_steps": int(self._trained_steps),
         }
 
 

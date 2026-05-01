@@ -111,6 +111,7 @@ class MythosConfig:
     meta_learner_confidence_gain: float = 0.20
     meta_learner_min_side_prob: float = 0.50
     meta_learner_min_train_samples: int = 512
+    meta_learner_warmup_samples: int = 1024
     regime_flip_confidence_boost: float = 0.05
     regime_flip_min_analog_edge: float = 0.0
     online_allocator_lr: float = 0.06
