@@ -764,7 +764,20 @@ def _is_sure_signal(
     hit_floor = float(np.clip(getattr(cfg, "sure_recent_min_hit_rate", 0.52), 0.0, 1.0))
     exp_floor = float(getattr(cfg, "sure_recent_min_expectancy", 0.04))
     if bool(stats["ready"]):
-        if float(stats["hit_rate"]) < hit_floor or float(stats["expectancy"]) < exp_floor:
+        hit_gap = float(max(hit_floor - float(stats["hit_rate"]), 0.0))
+        exp_gap = float(max(exp_floor - float(stats["expectancy"]), 0.0))
+        # Avoid binary lockout after a weak streak: increase required conviction/meta
+        # instead of permanently disabling sure classification.
+        exp_scale = max(abs(exp_floor), 1e-6)
+        conv_penalty = 0.45 * hit_gap + 0.25 * min(exp_gap / exp_scale, 1.0)
+        meta_penalty = 0.50 * hit_gap + 0.20 * min(exp_gap / exp_scale, 1.0)
+        dyn_conv = float(np.clip(high_conv + conv_penalty, 0.0, 1.0))
+        dyn_meta = float(
+            np.clip(getattr(cfg, "sure_meta_strength_min", 0.10) + meta_penalty, 0.0, 1.0)
+        )
+        if float(conviction) < dyn_conv:
+            return False
+        if float(meta_strength) < dyn_meta:
             return False
     else:
         cold_conv = high_conv + float(np.clip(getattr(cfg, "sure_cold_start_conviction_extra", 0.04), 0.0, 0.5))
@@ -1316,7 +1329,10 @@ def _run_fold(
         runtime_warmup = int(meta_warmup)
         if hasattr(meta, "_effective_min_samples"):
             try:
-                runtime_warmup = int(min(runtime_warmup, max(int(meta._effective_min_samples()) * 2, 64)))
+                # Keep minimum warmup sufficiently high to avoid unstable early-fold
+                # leverage/sure gating from under-trained meta outputs.
+                adaptive_floor = int(max(int(meta._effective_min_samples()) * 2, 128))
+                runtime_warmup = int(max(min(runtime_warmup, adaptive_floor), 128))
             except Exception:
                 runtime_warmup = int(meta_warmup)
         meta_ready = (
