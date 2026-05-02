@@ -326,3 +326,28 @@ def test_conviction_boost_disabled_without_recent_quality():
         allow_conviction_boost=False,
     )
     assert abs(no_quality - blocked) < 1e-9
+
+
+def test_sure_and_leverage_gate_thresholds_are_normalized():
+    cfg = MythosConfig(
+        sure_min_analog_hits=-5,
+        sure_min_analog_ratio=1.5,
+        sure_meta_strength_min=-0.2,
+        sure_recent_window=0,
+        sure_recent_min_trades=0,
+        sure_recent_min_hit_rate=1.5,
+        sure_cold_start_conviction_extra=0.8,
+        leverage_recent_window=0,
+        leverage_recent_min_trades=0,
+        leverage_recent_min_hit_rate=-0.5,
+    )
+    assert cfg.sure_min_analog_hits == 0
+    assert cfg.sure_min_analog_ratio == 1.0
+    assert cfg.sure_meta_strength_min == 0.0
+    assert cfg.sure_recent_window >= 8
+    assert cfg.sure_recent_min_trades >= 1
+    assert cfg.sure_recent_min_hit_rate == 1.0
+    assert cfg.sure_cold_start_conviction_extra == 0.5
+    assert cfg.leverage_recent_window >= 8
+    assert cfg.leverage_recent_min_trades >= 1
+    assert cfg.leverage_recent_min_hit_rate == 0.0

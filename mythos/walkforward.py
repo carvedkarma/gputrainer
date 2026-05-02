@@ -697,6 +697,130 @@ def _conviction_score(
     return float(np.clip(score, 0.0, 1.0))
 
 
+def _recent_quality_stats(
+    rr_hist: List[float],
+    *,
+    window: int,
+    min_trades: int,
+) -> Dict[str, float]:
+    w = int(max(window, 1))
+    m = int(max(min_trades, 1))
+    recent = rr_hist[-w:] if rr_hist else []
+    n = int(len(recent))
+    if n == 0:
+        return {"ready": 0.0, "n": 0.0, "hit_rate": 0.0, "expectancy": 0.0}
+    arr = np.asarray(recent, dtype=np.float64)
+    hit_rate = float(np.mean(arr > 0.0))
+    expectancy = float(np.mean(arr))
+    ready = float(n >= m)
+    return {"ready": ready, "n": float(n), "hit_rate": hit_rate, "expectancy": expectancy}
+
+
+def _is_sure_signal(
+    *,
+    side: int,
+    edge: float,
+    confidence: float,
+    uncertainty: float,
+    conviction: float,
+    meta_p: float,
+    meta_ready: bool,
+    analog_hits: float,
+    sure_recent_rr: List[float],
+    cfg: MythosConfig,
+) -> bool:
+    _ = uncertainty
+    if int(side) == 0:
+        return False
+    high_conv = float(np.clip(getattr(cfg, "precision_high_conviction", 0.72), 0.0, 1.0))
+    if float(conviction) < high_conv:
+        return False
+    if bool(getattr(cfg, "conviction_requires_meta_ready", True)) and not bool(meta_ready):
+        return False
+    meta_strength = float(np.clip(abs(float(meta_p) - 0.5) * 2.0, 0.0, 1.0))
+    if meta_strength < float(np.clip(getattr(cfg, "sure_meta_strength_min", 0.10), 0.0, 1.0)):
+        return False
+    edge_floor = float(getattr(cfg, "min_edge_threshold", 0.02)) + float(
+        max(getattr(cfg, "sure_edge_buffer", 0.001), 0.0)
+    )
+    if float(edge) < edge_floor:
+        return False
+    conf_floor = float(np.clip(getattr(cfg, "min_confidence", 0.55), 0.0, 1.0)) + float(
+        np.clip(getattr(cfg, "sure_confidence_buffer", 0.03), 0.0, 0.5)
+    )
+    if float(confidence) < min(conf_floor, 1.0):
+        return False
+    analog_floor_abs = int(max(getattr(cfg, "sure_min_analog_hits", 12), 0))
+    analog_floor_ratio = float(np.clip(getattr(cfg, "sure_min_analog_ratio", 0.20), 0.0, 1.0))
+    analog_floor = max(analog_floor_abs, int(np.ceil(float(getattr(cfg, "analog_k", 48)) * analog_floor_ratio)))
+    if float(analog_hits) < float(max(analog_floor, 0)):
+        return False
+
+    stats = _recent_quality_stats(
+        sure_recent_rr,
+        window=int(max(getattr(cfg, "sure_recent_window", 96), 8)),
+        min_trades=int(max(getattr(cfg, "sure_recent_min_trades", 24), 1)),
+    )
+    hit_floor = float(np.clip(getattr(cfg, "sure_recent_min_hit_rate", 0.52), 0.0, 1.0))
+    exp_floor = float(getattr(cfg, "sure_recent_min_expectancy", 0.04))
+    if bool(stats["ready"]):
+        if float(stats["hit_rate"]) < hit_floor or float(stats["expectancy"]) < exp_floor:
+            return False
+    else:
+        cold_conv = high_conv + float(np.clip(getattr(cfg, "sure_cold_start_conviction_extra", 0.04), 0.0, 0.5))
+        cold_meta = float(np.clip(getattr(cfg, "sure_meta_strength_min", 0.10), 0.0, 1.0)) + float(
+            np.clip(getattr(cfg, "sure_cold_start_meta_extra", 0.06), 0.0, 0.5)
+        )
+        if float(conviction) < min(cold_conv, 1.0):
+            return False
+        if meta_strength < min(cold_meta, 1.0):
+            return False
+    return True
+
+
+def _allow_conviction_leverage(
+    *,
+    is_sure_signal: bool,
+    edge: float,
+    confidence: float,
+    conviction: float,
+    leveraged_recent_rr: List[float],
+    cfg: MythosConfig,
+) -> bool:
+    if not bool(is_sure_signal):
+        return False
+    score_thr = float(np.clip(getattr(cfg, "conviction_score_threshold", 0.62), 0.0, 1.0))
+    conv_floor = score_thr + float(np.clip(getattr(cfg, "leverage_conviction_buffer", 0.04), 0.0, 0.5))
+    if float(conviction) < min(conv_floor, 1.0):
+        return False
+    edge_floor = float(getattr(cfg, "min_edge_threshold", 0.02)) + float(
+        max(getattr(cfg, "leverage_edge_buffer", 0.003), 0.0)
+    )
+    if float(edge) < edge_floor:
+        return False
+    conf_floor = float(np.clip(getattr(cfg, "min_confidence", 0.55), 0.0, 1.0)) + float(
+        np.clip(getattr(cfg, "leverage_confidence_buffer", 0.04), 0.0, 0.5)
+    )
+    if float(confidence) < min(conf_floor, 1.0):
+        return False
+
+    stats = _recent_quality_stats(
+        leveraged_recent_rr,
+        window=int(max(getattr(cfg, "leverage_recent_window", 120), 8)),
+        min_trades=int(max(getattr(cfg, "leverage_recent_min_trades", 20), 1)),
+    )
+    hit_floor = float(np.clip(getattr(cfg, "leverage_recent_min_hit_rate", 0.53), 0.0, 1.0))
+    exp_floor = float(getattr(cfg, "leverage_recent_min_expectancy", 0.05))
+    if bool(stats["ready"]):
+        if float(stats["hit_rate"]) < hit_floor or float(stats["expectancy"]) < exp_floor:
+            return False
+    else:
+        # Cold start: require exceptionally strong conviction before any boost.
+        if float(conviction) < min(conv_floor + 0.05, 1.0):
+            return False
+    return True
+
+
 def _counterfactual_pass(
     analog_mem: AnalogMemory,
     x: np.ndarray,
@@ -1016,6 +1140,10 @@ def _run_fold(
     sure_leveraged_trades = 0
     sure_leveraged_hits = 0
     sure_leveraged_total_r = 0.0
+    leverage_blocked_candidates = 0
+    leverage_boost_approved = 0
+    sure_recent_rr: List[float] = []
+    sure_lev_recent_rr: List[float] = []
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
         x = X_te[i]
@@ -1099,10 +1227,20 @@ def _run_fold(
             meta_p=meta_p,
             cfg=cfg,
         )
-        high_conv_thresh = float(np.clip(getattr(cfg, "precision_high_conviction", 0.72), 0.0, 1.0))
-        require_meta_for_leverage = bool(getattr(cfg, "conviction_requires_meta_ready", True))
-        sure_meta_ok = (not require_meta_for_leverage) or meta_ready
-        is_sure_signal = side != 0 and conviction >= high_conv_thresh and sure_meta_ok
+        analog_hits = float(analog.get("analog_hits", 0.0))
+        is_sure_signal = _is_sure_signal(
+            side=side,
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            conviction=conviction,
+            meta_p=meta_p,
+            meta_ready=meta_ready,
+            analog_hits=analog_hits,
+            sure_recent_rr=sure_recent_rr,
+            cfg=cfg,
+        )
+        sure_recent_window = int(max(getattr(cfg, "sure_recent_window", 96), 8))
         min_conv = float(np.clip(getattr(cfg, "precision_min_conviction", 0.52), 0.0, 1.0))
         if side != 0 and conviction < min_conv:
             skip_counts["low_conviction"] += 1
@@ -1150,12 +1288,25 @@ def _run_fold(
             conviction=conviction,
             allow_conviction_boost=False,
         )
+        lev_recent_window = int(max(getattr(cfg, "leverage_recent_window", 120), 8))
+        leverage_allowed = _allow_conviction_leverage(
+            is_sure_signal=is_sure_signal,
+            edge=edge,
+            confidence=confidence,
+            conviction=conviction,
+            leveraged_recent_rr=sure_lev_recent_rr,
+            cfg=cfg,
+        )
+        if is_sure_signal and not leverage_allowed:
+            leverage_blocked_candidates += 1
+        if leverage_allowed:
+            leverage_boost_approved += 1
         size = risk.position_size_multiplier(
             edge=edge,
             uncertainty=uncertainty,
             regime=regime,
             conviction=conviction,
-            allow_conviction_boost=is_sure_signal,
+            allow_conviction_boost=leverage_allowed,
         )
         leveraged = bool(size > (base_size + 1e-9))
         rr = float(realized * size)
@@ -1176,6 +1327,9 @@ def _run_fold(
         if is_sure_signal:
             sure_trades += 1
             sure_total_r += rr
+            sure_recent_rr.append(rr)
+            if len(sure_recent_rr) > sure_recent_window:
+                del sure_recent_rr[0 : len(sure_recent_rr) - sure_recent_window]
             if rr > 0.0:
                 sure_hits += 1
         if leveraged:
@@ -1186,6 +1340,9 @@ def _run_fold(
         if is_sure_signal and leveraged:
             sure_leveraged_trades += 1
             sure_leveraged_total_r += rr
+            sure_lev_recent_rr.append(rr)
+            if len(sure_lev_recent_rr) > lev_recent_window:
+                del sure_lev_recent_rr[0 : len(sure_lev_recent_rr) - lev_recent_window]
             if rr > 0.0:
                 sure_leveraged_hits += 1
         recent_trade_rr.append(rr)
@@ -1275,6 +1432,8 @@ def _run_fold(
         "sure_leveraged_hits": int(sure_leveraged_hits),
         "sure_leveraged_hit_rate": round(float(sure_leveraged_hits / max(sure_leveraged_trades, 1)), 4),
         "sure_leveraged_total_r": round(float(sure_leveraged_total_r), 4),
+        "leverage_boost_approved": int(leverage_boost_approved),
+        "leverage_blocked_candidates": int(leverage_blocked_candidates),
         "status": status,
         "promotion": asdict(promotion),
         "_model_state": {"world_model": wm, "experts": experts, "router": router, "adaptive": adaptive},
@@ -1342,7 +1501,7 @@ def run_mythos_walk_forward(
                     brain=model_state.get("adaptive"),
                 )
         log.info(
-            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d",
+            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d lev_boost=%d lev_blocked=%d",
             i,
             fold["total_trades"],
             fold["total_r"],
@@ -1353,6 +1512,8 @@ def run_mythos_walk_forward(
             fold.get("sure_win_rate", 0.0),
             fold.get("sure_leveraged_trades", 0),
             fold.get("sure_leveraged_hits", 0),
+            fold.get("leverage_boost_approved", 0),
+            fold.get("leverage_blocked_candidates", 0),
         )
 
     total_trades = int(sum(r["total_trades"] for r in reports))
@@ -1412,6 +1573,8 @@ def run_mythos_walk_forward(
     total_sure_lev_trades = int(sum(int(r.get("sure_leveraged_trades", 0)) for r in reports))
     total_sure_lev_hits = int(sum(int(r.get("sure_leveraged_hits", 0)) for r in reports))
     total_sure_lev_r = float(sum(float(r.get("sure_leveraged_total_r", 0.0)) for r in reports))
+    total_lev_boost_approved = int(sum(int(r.get("leverage_boost_approved", 0)) for r in reports))
+    total_lev_blocked = int(sum(int(r.get("leverage_blocked_candidates", 0)) for r in reports))
     cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
     act = sum(1 for r in reports if r["status"] == "ACTIVE")
     low = sum(1 for r in reports if r["status"] == "LOW_CONF")
@@ -1458,6 +1621,8 @@ def run_mythos_walk_forward(
         "sure_leveraged_hits": total_sure_lev_hits,
         "sure_leveraged_hit_rate": round(float(total_sure_lev_hits / max(total_sure_lev_trades, 1)), 4),
         "sure_leveraged_total_r": round(total_sure_lev_r, 4),
+        "leverage_boost_approved": total_lev_boost_approved,
+        "leverage_blocked_candidates": total_lev_blocked,
         "flip_pressure_bars": total_flip_pressure_bars,
         "flip_pressure_rate": round(float(total_flip_pressure_bars / max(total_trades, 1)), 4),
         "counterfactual_rejects": total_cf_rejects,

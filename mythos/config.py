@@ -79,6 +79,24 @@ class MythosConfig:
     conviction_recent_window: int = 64
     conviction_recent_min_trades: int = 12
     conviction_recent_min_expectancy: float = 0.03
+    sure_min_analog_hits: int = 12
+    sure_min_analog_ratio: float = 0.20
+    sure_meta_strength_min: float = 0.10
+    sure_edge_buffer: float = 0.001
+    sure_confidence_buffer: float = 0.03
+    sure_recent_window: int = 96
+    sure_recent_min_trades: int = 24
+    sure_recent_min_hit_rate: float = 0.52
+    sure_recent_min_expectancy: float = 0.04
+    sure_cold_start_conviction_extra: float = 0.04
+    sure_cold_start_meta_extra: float = 0.06
+    leverage_edge_buffer: float = 0.003
+    leverage_confidence_buffer: float = 0.04
+    leverage_conviction_buffer: float = 0.04
+    leverage_recent_window: int = 120
+    leverage_recent_min_trades: int = 20
+    leverage_recent_min_hit_rate: float = 0.53
+    leverage_recent_min_expectancy: float = 0.05
     conviction_guard_window: int = 32
     conviction_guard_min_trades: int = 8
     conviction_guard_min_expectancy_r: float = 0.03
@@ -244,6 +262,38 @@ class MythosConfig:
         self.conviction_recent_min_trades = int(max(getattr(self, "conviction_recent_min_trades", 12), 1))
         self.conviction_recent_min_expectancy = float(
             getattr(self, "conviction_recent_min_expectancy", 0.03)
+        )
+        self.sure_min_analog_hits = int(max(getattr(self, "sure_min_analog_hits", 12), 0))
+        self.sure_min_analog_ratio = float(np.clip(getattr(self, "sure_min_analog_ratio", 0.20), 0.0, 1.0))
+        self.sure_meta_strength_min = float(np.clip(getattr(self, "sure_meta_strength_min", 0.10), 0.0, 1.0))
+        self.sure_edge_buffer = float(max(getattr(self, "sure_edge_buffer", 0.001), 0.0))
+        self.sure_confidence_buffer = float(np.clip(getattr(self, "sure_confidence_buffer", 0.03), 0.0, 1.0))
+        self.sure_recent_window = int(max(getattr(self, "sure_recent_window", 96), 8))
+        self.sure_recent_min_trades = int(max(getattr(self, "sure_recent_min_trades", 24), 1))
+        self.sure_recent_min_hit_rate = float(
+            np.clip(getattr(self, "sure_recent_min_hit_rate", 0.52), 0.0, 1.0)
+        )
+        self.sure_recent_min_expectancy = float(getattr(self, "sure_recent_min_expectancy", 0.04))
+        self.sure_cold_start_conviction_extra = float(
+            np.clip(getattr(self, "sure_cold_start_conviction_extra", 0.04), 0.0, 0.5)
+        )
+        self.sure_cold_start_meta_extra = float(
+            np.clip(getattr(self, "sure_cold_start_meta_extra", 0.06), 0.0, 0.5)
+        )
+        self.leverage_edge_buffer = float(max(getattr(self, "leverage_edge_buffer", 0.003), 0.0))
+        self.leverage_confidence_buffer = float(
+            np.clip(getattr(self, "leverage_confidence_buffer", 0.04), 0.0, 1.0)
+        )
+        self.leverage_conviction_buffer = float(
+            np.clip(getattr(self, "leverage_conviction_buffer", 0.04), 0.0, 1.0)
+        )
+        self.leverage_recent_window = int(max(getattr(self, "leverage_recent_window", 120), 8))
+        self.leverage_recent_min_trades = int(max(getattr(self, "leverage_recent_min_trades", 20), 1))
+        self.leverage_recent_min_hit_rate = float(
+            np.clip(getattr(self, "leverage_recent_min_hit_rate", 0.53), 0.0, 1.0)
+        )
+        self.leverage_recent_min_expectancy = float(
+            getattr(self, "leverage_recent_min_expectancy", 0.05)
         )
         self.conviction_guard_window = int(
             max(getattr(self, "conviction_guard_window", self.conviction_recent_window), 8)

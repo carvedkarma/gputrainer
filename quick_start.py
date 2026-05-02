@@ -6608,6 +6608,11 @@ Examples:
                 agg.get("sure_leveraged_hit_rate"),
                 agg.get("sure_leveraged_total_r"),
             )
+            log.info(
+                "[MYTHOS] Leverage gate: approved=%s blocked_candidates=%s",
+                agg.get("leverage_boost_approved"),
+                agg.get("leverage_blocked_candidates"),
+            )
             if agg.get("best_model_path"):
                 log.info(
                     "[MYTHOS] Best model: metric=%s value=%s path=%s",
