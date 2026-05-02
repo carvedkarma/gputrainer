@@ -5431,6 +5431,24 @@ Examples:
     parser.set_defaults(mythos_meta_fallback=True)
     parser.add_argument("--mythos-meta-fallback-lr", type=float, default=0.03,
                         help="MYTHOS v7: learning rate for fallback online meta learner (default: 0.03)")
+    parser.add_argument("--mythos-precision-min-conviction", type=float, default=0.52,
+                        help="MYTHOS precision: minimum conviction score required to execute a trade (default: 0.52)")
+    parser.add_argument("--mythos-precision-high-conviction", type=float, default=0.72,
+                        help="MYTHOS precision: conviction threshold counted as high-certainty trade (default: 0.72)")
+    parser.add_argument("--mythos-precision-edge-weight", type=float, default=0.30,
+                        help="MYTHOS precision: conviction score weight for edge strength (default: 0.30)")
+    parser.add_argument("--mythos-precision-confidence-weight", type=float, default=0.30,
+                        help="MYTHOS precision: conviction score weight for confidence strength (default: 0.30)")
+    parser.add_argument("--mythos-precision-uncertainty-weight", type=float, default=0.25,
+                        help="MYTHOS precision: conviction score weight for low uncertainty (default: 0.25)")
+    parser.add_argument("--mythos-precision-meta-weight", type=float, default=0.15,
+                        help="MYTHOS precision: conviction score weight for meta decisiveness (default: 0.15)")
+    parser.add_argument("--mythos-conviction-score-threshold", type=float, default=0.62,
+                        help="MYTHOS precision: conviction score threshold to activate leverage boost (default: 0.62)")
+    parser.add_argument("--mythos-conviction-boost", type=float, default=0.35,
+                        help="MYTHOS precision: leverage boost intensity on high-conviction setups (default: 0.35)")
+    parser.add_argument("--mythos-conviction-max-size-mult", type=float, default=2.2,
+                        help="MYTHOS precision: cap for leverage multiplier after conviction boost (default: 2.2)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")
@@ -6440,6 +6458,17 @@ Examples:
                 side_health_penalty=args.mythos_side_health_penalty,
                 side_health_boost=args.mythos_side_health_boost,
                 side_health_decay=args.mythos_side_health_decay,
+                precision_min_edge=args.mythos_precision_min_edge,
+                precision_min_confidence=args.mythos_precision_min_confidence,
+                precision_min_conviction=args.mythos_precision_min_conviction,
+                precision_high_conviction=args.mythos_precision_high_conviction,
+                precision_edge_weight=args.mythos_precision_edge_weight,
+                precision_confidence_weight=args.mythos_precision_confidence_weight,
+                precision_uncertainty_weight=args.mythos_precision_uncertainty_weight,
+                precision_meta_weight=args.mythos_precision_meta_weight,
+                conviction_score_threshold=args.mythos_conviction_score_threshold,
+                conviction_boost=args.mythos_conviction_boost,
+                conviction_max_size_mult=args.mythos_conviction_max_size_mult,
                 drawdown_edge_start_r=args.mythos_drawdown_edge_start_r,
                 drawdown_edge_step_r=args.mythos_drawdown_edge_step_r,
                 drawdown_edge_boost=args.mythos_drawdown_edge_boost,
@@ -6512,6 +6541,15 @@ Examples:
                 agg.get("avg_max_drawdown_r"), agg.get("avg_robust_score"), agg.get("change_mode_rate"),
                 agg.get("counterfactual_reject_rate"),
                 agg.get("active_folds"), agg.get("folds"),
+            )
+            log.info(
+                "[MYTHOS] Side stats: long trades=%s win=%s totalR=%s | short trades=%s win=%s totalR=%s",
+                agg.get("long_trades"), agg.get("long_win_rate"), agg.get("long_total_r"),
+                agg.get("short_trades"), agg.get("short_win_rate"), agg.get("short_total_r"),
+            )
+            log.info(
+                "[MYTHOS] High-conviction stats: trades=%s win=%s totalR=%s",
+                agg.get("high_conviction_trades"), agg.get("high_conviction_win_rate"), agg.get("high_conviction_total_r"),
             )
             if agg.get("best_model_path"):
                 log.info(

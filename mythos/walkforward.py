@@ -621,6 +621,27 @@ class NeuralMetaLearner:
         }
 
 
+def _conviction_score(
+    edge: float,
+    confidence: float,
+    uncertainty: float,
+    meta_p: float,
+    cfg: MythosConfig,
+) -> float:
+    edge_unit = float(max(getattr(cfg, "min_expected_r", 0.005), 1e-6))
+    edge_n = float(np.clip(max(edge, 0.0) / edge_unit, 0.0, 4.0) / 4.0)
+    conf_n = float(np.clip(confidence, 0.0, 1.0))
+    unc_n = float(np.clip(1.0 / (1.0 + max(float(uncertainty), 0.0)), 0.0, 1.0))
+    meta_n = float(np.clip(abs(float(meta_p) - 0.5) * 2.0, 0.0, 1.0))
+    w_edge = float(max(getattr(cfg, "conviction_weight_edge", 0.30), 0.0))
+    w_conf = float(max(getattr(cfg, "conviction_weight_confidence", 0.30), 0.0))
+    w_unc = float(max(getattr(cfg, "conviction_weight_uncertainty", 0.25), 0.0))
+    w_meta = float(max(getattr(cfg, "conviction_weight_meta", 0.15), 0.0))
+    w_sum = max(w_edge + w_conf + w_unc + w_meta, 1e-6)
+    score = (w_edge * edge_n + w_conf * conf_n + w_unc * unc_n + w_meta * meta_n) / w_sum
+    return float(np.clip(score, 0.0, 1.0))
+
+
 def _counterfactual_pass(
     analog_mem: AnalogMemory,
     x: np.ndarray,
@@ -861,6 +882,7 @@ def _run_fold(
         "counterfactual_reject": 0,
         "risk_reject": 0,
         "meta_reject": 0,
+        "low_conviction": 0,
     }
     cf_rejects = 0
     n_long = 0
@@ -870,6 +892,11 @@ def _run_fold(
     transition_mode_bars = 0
     meta_mode_bars = 0
     recent_trade_rr: List[float] = []
+    long_trades: List[float] = []
+    short_trades: List[float] = []
+    high_conv_trades = 0
+    high_conv_wins = 0
+    high_conv_r_sum = 0.0
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
         x = X_te[i]
@@ -946,6 +973,17 @@ def _run_fold(
         edge = float(edge * (1.0 + meta_gain * signed))
         confidence = float(np.clip(confidence + meta_conf_gain * signed, 0.0, 1.0))
         uncertainty = float(np.clip(uncertainty * (1.0 + meta_unc_pen * max(0.5 - meta_p, 0.0)), 0.005, 2.0))
+        conviction = _conviction_score(
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            meta_p=meta_p,
+            cfg=cfg,
+        )
+        min_conv = float(np.clip(getattr(cfg, "precision_min_conviction", 0.52), 0.0, 1.0))
+        if side != 0 and conviction < min_conv:
+            skip_counts["low_conviction"] += 1
+            continue
         edge_floor = governor.adjusted_edge_floor(risk.state.equity_r)
         edge -= governor.side_penalty(side)
         if confidence < cfg.min_confidence:
@@ -982,7 +1020,12 @@ def _run_fold(
             horizon=cfg.horizon,
             atr=atr,
         )
-        size = risk.position_size_multiplier(edge=edge, uncertainty=uncertainty, regime=regime)
+        size = risk.position_size_multiplier(
+            edge=edge,
+            uncertainty=uncertainty,
+            regime=regime,
+            conviction=conviction,
+        )
         rr = float(realized * size)
         risk.record_trade(rr, int(timestamps[i]), edge=edge, uncertainty=uncertainty)
         governor.record_trade(side=side, realized_r=rr, bar_idx=i)
@@ -1004,8 +1047,16 @@ def _run_fold(
             del recent_trade_rr[0 : len(recent_trade_rr) - max_recent]
         if side == 1:
             n_long += 1
+            long_trades.append(rr)
         else:
             n_short += 1
+            short_trades.append(rr)
+        high_conv_thresh = float(np.clip(getattr(cfg, "precision_high_conviction", 0.72), 0.0, 1.0))
+        if conviction >= high_conv_thresh:
+            high_conv_trades += 1
+            high_conv_r_sum += rr
+            if rr > 0.0:
+                high_conv_wins += 1
 
     n = len(trades)
     wins = int(np.sum(np.array(trades) > 0.0)) if n else 0
@@ -1016,6 +1067,12 @@ def _run_fold(
     total_r = float(np.sum(trades)) if n else 0.0
     expect = float(np.mean(trades)) if n else 0.0
     wr = float(np.mean(np.array(trades) > 0)) if n else 0.0
+    long_n = len(long_trades)
+    short_n = len(short_trades)
+    long_wr = float(np.mean(np.array(long_trades) > 0.0)) if long_n else 0.0
+    short_wr = float(np.mean(np.array(short_trades) > 0.0)) if short_n else 0.0
+    long_r_sum = float(np.sum(long_trades)) if long_n else 0.0
+    short_r_sum = float(np.sum(short_trades)) if short_n else 0.0
     eq = np.cumsum(np.array(trades, dtype=np.float64)) if n else np.array([0.0], dtype=np.float64)
     peak = np.maximum.accumulate(eq)
     dd = eq - peak
@@ -1053,6 +1110,13 @@ def _run_fold(
         "skip_reasons": {k: int(v) for k, v in skip_counts.items()},
         "long_trades": n_long,
         "short_trades": n_short,
+        "long_win_rate": round(long_wr, 4),
+        "short_win_rate": round(short_wr, 4),
+        "long_total_r": round(long_r_sum, 4),
+        "short_total_r": round(short_r_sum, 4),
+        "high_conviction_trades": int(high_conv_trades),
+        "high_conviction_win_rate": round(float(high_conv_wins / max(high_conv_trades, 1)), 4),
+        "high_conviction_total_r": round(float(high_conv_r_sum), 4),
         "status": status,
         "promotion": asdict(promotion),
         "_model_state": {"world_model": wm, "experts": experts, "router": router, "adaptive": adaptive},
@@ -1149,10 +1213,34 @@ def run_mythos_walk_forward(
         "counterfactual_reject": int(sum(int(r.get("skip_reasons", {}).get("counterfactual_reject", 0)) for r in reports)),
         "risk_reject": int(sum(int(r.get("skip_reasons", {}).get("risk_reject", 0)) for r in reports)),
         "meta_reject": int(sum(int(r.get("skip_reasons", {}).get("meta_reject", 0)) for r in reports)),
+        "low_conviction": int(sum(int(r.get("skip_reasons", {}).get("low_conviction", 0)) for r in reports)),
     }
     change_mode_rate = float(total_change_mode_bars / max(total_trades, 1))
     total_transition_mode_bars = int(sum(r.get("transition_mode_bars", 0) for r in reports))
     total_meta_mode_bars = int(sum(r.get("meta_mode_bars", 0) for r in reports))
+    total_long_trades = int(sum(r.get("long_trades", 0) for r in reports))
+    total_short_trades = int(sum(r.get("short_trades", 0) for r in reports))
+    total_long_wins = int(
+        sum(int(round(float(r.get("long_win_rate", 0.0)) * int(r.get("long_trades", 0)))) for r in reports)
+    )
+    total_short_wins = int(
+        sum(int(round(float(r.get("short_win_rate", 0.0)) * int(r.get("short_trades", 0)))) for r in reports)
+    )
+    total_long_r = float(sum(float(r.get("long_total_r", 0.0)) for r in reports))
+    total_short_r = float(sum(float(r.get("short_total_r", 0.0)) for r in reports))
+    total_high_conv_trades = int(sum(int(r.get("high_conviction_trades", 0)) for r in reports))
+    total_high_conv_r = float(sum(float(r.get("high_conviction_total_r", 0.0)) for r in reports))
+    total_high_conv_wins = int(
+        sum(
+            int(
+                round(
+                    float(r.get("high_conviction_win_rate", 0.0))
+                    * int(r.get("high_conviction_trades", 0))
+                )
+            )
+            for r in reports
+        )
+    )
     cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
     act = sum(1 for r in reports if r["status"] == "ACTIVE")
     low = sum(1 for r in reports if r["status"] == "LOW_CONF")
@@ -1178,6 +1266,15 @@ def run_mythos_walk_forward(
         "transition_mode_rate": round(float(total_transition_mode_bars / max(total_trades, 1)), 4),
         "meta_mode_bars": total_meta_mode_bars,
         "meta_mode_rate": round(float(total_meta_mode_bars / max(total_trades, 1)), 4),
+        "long_trades": total_long_trades,
+        "short_trades": total_short_trades,
+        "long_win_rate": round(float(total_long_wins / max(total_long_trades, 1)), 4),
+        "short_win_rate": round(float(total_short_wins / max(total_short_trades, 1)), 4),
+        "long_total_r": round(total_long_r, 4),
+        "short_total_r": round(total_short_r, 4),
+        "high_conviction_trades": total_high_conv_trades,
+        "high_conviction_win_rate": round(float(total_high_conv_wins / max(total_high_conv_trades, 1)), 4),
+        "high_conviction_total_r": round(total_high_conv_r, 4),
         "flip_pressure_bars": total_flip_pressure_bars,
         "flip_pressure_rate": round(float(total_flip_pressure_bars / max(total_trades, 1)), 4),
         "counterfactual_rejects": total_cf_rejects,

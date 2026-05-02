@@ -78,7 +78,13 @@ class RiskConstitution:
             return False
         return True
 
-    def position_size_multiplier(self, edge: float, uncertainty: float, regime: int | None = None) -> float:
+    def position_size_multiplier(
+        self,
+        edge: float,
+        uncertainty: float,
+        regime: int | None = None,
+        conviction: float | None = None,
+    ) -> float:
         """
         Apply uncertainty-aware fractional sizing.
         """
@@ -86,7 +92,16 @@ class RiskConstitution:
         safe_edge = max(float(edge), 0.0)
         safe_unc = max(float(uncertainty), 0.0)
         conf = 1.0 / (1.0 + safe_unc)
-        size_mult = np.clip(conf * (1.0 + safe_edge), self.cfg.min_size_mult, self.cfg.max_size_mult)
+        size_mult = conf * (1.0 + safe_edge)
+        conv = float(np.clip(conviction if conviction is not None else conf, 0.0, 1.0))
+        score_thr = float(np.clip(getattr(self.cfg, "conviction_score_threshold", 0.62), 0.0, 1.0))
+        if conv >= score_thr:
+            boost = float(np.clip(getattr(self.cfg, "conviction_boost", 0.35), 0.0, 2.0))
+            span = max(1.0 - score_thr, 1e-6)
+            gain = 1.0 + boost * ((conv - score_thr) / span)
+            size_mult *= gain
+        max_mult = float(max(getattr(self.cfg, "conviction_max_size_mult", self.cfg.max_size_mult), self.cfg.max_size_mult))
+        size_mult = np.clip(size_mult, self.cfg.min_size_mult, max_mult)
         return float(size_mult)
 
     def sized_r(self, expected_r: float, uncertainty: float) -> float:

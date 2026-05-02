@@ -11,7 +11,12 @@ from mythos.promotion import evaluate_promotion
 from mythos.risk import RiskConstitution
 from mythos.router import MetaRouter
 from mythos.world_model import WorldModel
-from mythos.walkforward import NeuralMetaLearner, V3ExecutionGovernor, _counterfactual_pass
+from mythos.walkforward import (
+    NeuralMetaLearner,
+    V3ExecutionGovernor,
+    _conviction_score,
+    _counterfactual_pass,
+)
 
 
 def _synthetic_ohlcv_df(n: int = 900):
@@ -220,3 +225,30 @@ def test_counterfactual_pass_keeps_strong_live_edge():
         cfg=cfg,
     )
     assert ok is True
+
+
+def test_conviction_score_increases_with_better_signal_quality():
+    cfg = MythosConfig(
+        min_expected_r=0.005,
+        conviction_weight_edge=0.30,
+        conviction_weight_confidence=0.30,
+        conviction_weight_uncertainty=0.25,
+        conviction_weight_meta=0.15,
+    )
+    low = _conviction_score(
+        edge=0.004,
+        confidence=0.52,
+        uncertainty=0.60,
+        meta_p=0.51,
+        cfg=cfg,
+    )
+    high = _conviction_score(
+        edge=0.03,
+        confidence=0.78,
+        uncertainty=0.12,
+        meta_p=0.69,
+        cfg=cfg,
+    )
+    assert 0.0 <= low <= 1.0
+    assert 0.0 <= high <= 1.0
+    assert high > low

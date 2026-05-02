@@ -62,6 +62,20 @@ class MythosConfig:
     side_health_penalty: float = 0.02
     side_health_boost: float = 0.008
     side_health_decay: float = 0.97
+    precision_min_confidence: float = 0.0
+    precision_min_edge: float = 0.0
+    precision_min_conviction: float = 0.52
+    precision_high_conviction: float = 0.72
+    conviction_weight_edge: float = 0.30
+    conviction_weight_confidence: float = 0.30
+    conviction_weight_uncertainty: float = 0.25
+    conviction_weight_meta: float = 0.15
+    conviction_score_threshold: float = 0.70
+    conviction_boost: float = 1.30
+    conviction_max_size_mult: float = 2.2
+    # Backward-compatible aliases for older CLI wiring.
+    conviction_size_gate: float = 0.70
+    conviction_size_boost: float = 1.30
     drawdown_edge_start_r: float = 8.0
     drawdown_edge_step_r: float = 4.0
     drawdown_edge_boost: float = 0.0025
@@ -166,6 +180,33 @@ class MythosConfig:
         self.side_health_penalty = float(max(getattr(self, "side_health_penalty", 0.02), 0.0))
         self.side_health_boost = float(max(getattr(self, "side_health_boost", 0.008), 0.0))
         self.side_health_decay = float(np.clip(getattr(self, "side_health_decay", 0.97), 0.80, 0.999))
+        self.precision_min_confidence = float(
+            np.clip(getattr(self, "precision_min_confidence", 0.0), 0.0, 1.0)
+        )
+        self.precision_min_edge = float(max(getattr(self, "precision_min_edge", 0.0), 0.0))
+        self.precision_min_conviction = float(
+            np.clip(getattr(self, "precision_min_conviction", 0.52), 0.0, 1.0)
+        )
+        self.precision_high_conviction = float(
+            np.clip(getattr(self, "precision_high_conviction", 0.72), 0.0, 1.0)
+        )
+        if self.precision_high_conviction < self.precision_min_conviction:
+            self.precision_high_conviction = self.precision_min_conviction
+        self.conviction_weight_edge = float(max(getattr(self, "conviction_weight_edge", 0.30), 0.0))
+        self.conviction_weight_confidence = float(max(getattr(self, "conviction_weight_confidence", 0.30), 0.0))
+        self.conviction_weight_uncertainty = float(max(getattr(self, "conviction_weight_uncertainty", 0.25), 0.0))
+        self.conviction_weight_meta = float(max(getattr(self, "conviction_weight_meta", 0.15), 0.0))
+        self.conviction_size_gate = float(np.clip(getattr(self, "conviction_size_gate", 0.70), 0.0, 1.0))
+        self.conviction_size_boost = float(np.clip(getattr(self, "conviction_size_boost", 1.30), 1.0, 3.0))
+        self.conviction_score_threshold = float(
+            np.clip(getattr(self, "conviction_score_threshold", self.conviction_size_gate), 0.0, 1.0)
+        )
+        self.conviction_boost = float(
+            np.clip(getattr(self, "conviction_boost", self.conviction_size_boost), 1.0, 3.0)
+        )
+        self.conviction_max_size_mult = float(
+            max(getattr(self, "conviction_max_size_mult", 2.2), self.max_size_mult)
+        )
         self.side_fail_hard_pause = bool(getattr(self, "side_fail_hard_pause", False))
         # Keep neural-expert naming aligned across revisions.
         self.use_gpu_neural_expert = bool(self.enable_gpu_neural_experts)
