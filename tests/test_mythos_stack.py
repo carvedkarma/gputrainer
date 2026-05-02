@@ -14,11 +14,15 @@ from mythos.world_model import WorldModel
 from mythos.walkforward import (
     NeuralMetaLearner,
     V3ExecutionGovernor,
+    _bayes_quality_gate,
     _conviction_score,
     _counterfactual_pass,
     _allow_conviction_leverage,
     _estimate_execution_cost_r,
+    _nonconformity_gate,
+    _nonconformity_score,
     _side_policy_ok,
+    _update_bayes_quality_state,
 )
 
 
@@ -462,5 +466,106 @@ def test_net_edge_floor_blocks_leverage_when_cost_dominates():
     uncertainty = 1.0
     net_edge = edge - _estimate_execution_cost_r(edge=edge, uncertainty=uncertainty, cfg=cfg)
     assert net_edge < cfg.leverage_net_edge_floor
+
+
+def test_bayes_quality_gate_rejects_persistently_weak_side_regime():
+    cfg = MythosConfig(
+        bayes_quality_enable=True,
+        bayes_quality_warmup_trades=8,
+        bayes_quality_prior_alpha=2.0,
+        bayes_quality_prior_beta=2.0,
+        bayes_quality_min_win_prob=0.52,
+        bayes_quality_min_expectancy=0.0,
+        bayes_quality_reject_margin=0.02,
+    )
+    side_stats = {1: {"alpha": 2.0, "beta": 2.0, "n": 0.0, "sum_r": 0.0}}
+    regime_stats = {}
+    for _ in range(18):
+        _update_bayes_quality_state(
+            side=1,
+            regime=2,
+            realized_r=-0.35,
+            side_stats=side_stats,
+            regime_side_stats=regime_stats,
+            cfg=cfg,
+        )
+    gate = _bayes_quality_gate(
+        side=1,
+        regime=2,
+        edge=0.002,
+        confidence=0.51,
+        uncertainty=1.2,
+        total_trades=24,
+        side_stats=side_stats,
+        regime_side_stats=regime_stats,
+        cfg=cfg,
+    )
+    assert gate["ready"] == 1.0
+    assert gate["pass"] == 0.0
+
+
+def test_nonconformity_gate_blocks_outlier_but_allows_override_for_extreme_signal():
+    cfg = MythosConfig(
+        nonconformity_enable=True,
+        nonconformity_warmup_trades=12,
+        nonconformity_window=64,
+        nonconformity_quantile=0.80,
+        nonconformity_margin=0.01,
+        nonconformity_min_winners=10,
+        nonconformity_override_conviction=0.9,
+        nonconformity_override_edge_buffer=0.004,
+        nonconformity_override_confidence_buffer=0.05,
+        min_edge_threshold=0.01,
+        min_confidence=0.55,
+    )
+    winner_scores = [0.12, 0.16, 0.18, 0.20, 0.22, 0.24, 0.19, 0.21, 0.23, 0.17, 0.15, 0.18]
+    blocked = _nonconformity_gate(
+        score=0.40,
+        conviction=0.82,
+        edge=0.018,
+        confidence=0.61,
+        total_trades=20,
+        winner_scores=winner_scores,
+        cfg=cfg,
+    )
+    assert blocked["ready"] == 1.0
+    assert blocked["pass"] == 0.0
+    assert blocked["override"] == 0.0
+
+    overridden = _nonconformity_gate(
+        score=0.40,
+        conviction=0.95,
+        edge=0.016,
+        confidence=0.62,
+        total_trades=20,
+        winner_scores=winner_scores,
+        cfg=cfg,
+    )
+    assert overridden["ready"] == 1.0
+    assert overridden["pass"] == 1.0
+    assert overridden["override"] == 1.0
+
+
+def test_nonconformity_score_behaves_monotonically_with_quality():
+    cfg = MythosConfig()
+    bad = _nonconformity_score(
+        edge=0.002,
+        confidence=0.52,
+        uncertainty=1.4,
+        meta_p=0.51,
+        analog_hits=4.0,
+        cfg=cfg,
+    )
+    good = _nonconformity_score(
+        edge=0.03,
+        confidence=0.76,
+        uncertainty=0.10,
+        meta_p=0.70,
+        analog_hits=36.0,
+        cfg=cfg,
+    )
+    assert 0.0 <= bad <= 1.0
+    assert 0.0 <= good <= 1.0
+    assert good < bad
 
 

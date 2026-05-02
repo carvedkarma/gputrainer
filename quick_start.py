@@ -5526,6 +5526,64 @@ Examples:
                         help="MYTHOS net intelligence: slippage in bps applied in per-trade net-R accounting (default: 2.0)")
     parser.add_argument("--mythos-execution-cost-cap-r", type=float, default=0.35,
                         help="MYTHOS net intelligence: cap on deducted execution cost per trade in R-units (default: 0.35)")
+    parser.add_argument("--mythos-bayes-quality-enable", dest="mythos_bayes_quality_enable", action="store_true",
+                        help="MYTHOS Bayesian gate: enable online side/regime quality gating (default: enabled)")
+    parser.add_argument("--mythos-no-bayes-quality-enable", dest="mythos_bayes_quality_enable", action="store_false",
+                        help="MYTHOS Bayesian gate: disable online side/regime quality gating")
+    parser.set_defaults(mythos_bayes_quality_enable=True)
+    parser.add_argument("--mythos-bayes-quality-warmup-trades", type=int, default=20,
+                        help="MYTHOS Bayesian gate: warmup trade count before strict quality rejects (default: 20)")
+    parser.add_argument("--mythos-bayes-quality-decay", type=float, default=0.995,
+                        help="MYTHOS Bayesian gate: EMA-style decay for online side/regime quality memory (default: 0.995)")
+    parser.add_argument("--mythos-bayes-quality-prior-alpha", type=float, default=2.0,
+                        help="MYTHOS Bayesian gate: beta prior alpha for hit-rate estimate (default: 2.0)")
+    parser.add_argument("--mythos-bayes-quality-prior-beta", type=float, default=2.0,
+                        help="MYTHOS Bayesian gate: beta prior beta for hit-rate estimate (default: 2.0)")
+    parser.add_argument("--mythos-bayes-quality-regime-weight", type=float, default=0.45,
+                        help="MYTHOS Bayesian gate: weight on regime-conditional quality vs side-global quality (default: 0.45)")
+    parser.add_argument("--mythos-bayes-quality-min-win-prob", type=float, default=0.50,
+                        help="MYTHOS Bayesian gate: minimum adjusted side win probability before reject pressure (default: 0.50)")
+    parser.add_argument("--mythos-bayes-quality-min-expectancy", type=float, default=-0.01,
+                        help="MYTHOS Bayesian gate: minimum adjusted side expectancy-R before reject pressure (default: -0.01)")
+    parser.add_argument("--mythos-bayes-quality-edge-scale", type=float, default=0.22,
+                        help="MYTHOS Bayesian gate: edge contribution scale to adjusted win-probability (default: 0.22)")
+    parser.add_argument("--mythos-bayes-quality-confidence-scale", type=float, default=0.10,
+                        help="MYTHOS Bayesian gate: confidence contribution scale to adjusted win-probability (default: 0.10)")
+    parser.add_argument("--mythos-bayes-quality-uncertainty-scale", type=float, default=0.18,
+                        help="MYTHOS Bayesian gate: uncertainty penalty scale on adjusted win-probability (default: 0.18)")
+    parser.add_argument("--mythos-bayes-quality-reject-margin", type=float, default=0.05,
+                        help="MYTHOS Bayesian gate: reject margin below min thresholds before skipping trade (default: 0.05)")
+    parser.add_argument("--mythos-nonconformity-enable", dest="mythos_nonconformity_enable", action="store_true",
+                        help="MYTHOS nonconformity gate: enable selective abstention on outlier decision contexts (default: enabled)")
+    parser.add_argument("--mythos-no-nonconformity-enable", dest="mythos_nonconformity_enable", action="store_false",
+                        help="MYTHOS nonconformity gate: disable selective abstention on outlier decision contexts")
+    parser.set_defaults(mythos_nonconformity_enable=True)
+    parser.add_argument("--mythos-nonconformity-warmup-trades", type=int, default=24,
+                        help="MYTHOS nonconformity gate: warmup trades before nonconformity rejects can activate (default: 24)")
+    parser.add_argument("--mythos-nonconformity-window", type=int, default=160,
+                        help="MYTHOS nonconformity gate: rolling winner reference window size (default: 160)")
+    parser.add_argument("--mythos-nonconformity-quantile", type=float, default=0.86,
+                        help="MYTHOS nonconformity gate: accepted winner-score quantile ceiling (default: 0.86)")
+    parser.add_argument("--mythos-nonconformity-margin", type=float, default=0.03,
+                        help="MYTHOS nonconformity gate: additive margin above winner quantile threshold (default: 0.03)")
+    parser.add_argument("--mythos-nonconformity-min-winners", type=int, default=16,
+                        help="MYTHOS nonconformity gate: minimum winning references before strict filtering (default: 16)")
+    parser.add_argument("--mythos-nonconformity-weight-uncertainty", type=float, default=0.36,
+                        help="MYTHOS nonconformity gate: uncertainty component weight in outlier score (default: 0.36)")
+    parser.add_argument("--mythos-nonconformity-weight-confidence", type=float, default=0.22,
+                        help="MYTHOS nonconformity gate: inverse-confidence component weight in outlier score (default: 0.22)")
+    parser.add_argument("--mythos-nonconformity-weight-edge", type=float, default=0.20,
+                        help="MYTHOS nonconformity gate: inverse-edge component weight in outlier score (default: 0.20)")
+    parser.add_argument("--mythos-nonconformity-weight-meta", type=float, default=0.14,
+                        help="MYTHOS nonconformity gate: inverse-meta-decisiveness component weight in outlier score (default: 0.14)")
+    parser.add_argument("--mythos-nonconformity-weight-analog", type=float, default=0.08,
+                        help="MYTHOS nonconformity gate: inverse-analog-support component weight in outlier score (default: 0.08)")
+    parser.add_argument("--mythos-nonconformity-override-conviction", type=float, default=0.88,
+                        help="MYTHOS nonconformity gate: override conviction threshold for exceptionally strong trades (default: 0.88)")
+    parser.add_argument("--mythos-nonconformity-override-edge-buffer", type=float, default=0.003,
+                        help="MYTHOS nonconformity gate: edge buffer above base floor for override (default: 0.003)")
+    parser.add_argument("--mythos-nonconformity-override-confidence-buffer", type=float, default=0.04,
+                        help="MYTHOS nonconformity gate: confidence buffer above base floor for override (default: 0.04)")
     parser.add_argument("--mythos-short-boost-enable", action="store_true", default=True,
                         help="MYTHOS adaptive: enable short-side edge boost when short side outperforms (default: enabled)")
     parser.add_argument("--mythos-no-short-boost-enable", dest="mythos_short_boost_enable", action="store_false",
@@ -6599,6 +6657,32 @@ Examples:
                 execution_fee_bps=args.mythos_execution_fee_bps,
                 execution_slippage_bps=args.mythos_execution_slippage_bps,
                 execution_cost_cap_r=args.mythos_execution_cost_cap_r,
+                bayes_quality_enable=args.mythos_bayes_quality_enable,
+                bayes_quality_warmup_trades=args.mythos_bayes_quality_warmup_trades,
+                bayes_quality_decay=args.mythos_bayes_quality_decay,
+                bayes_quality_prior_alpha=args.mythos_bayes_quality_prior_alpha,
+                bayes_quality_prior_beta=args.mythos_bayes_quality_prior_beta,
+                bayes_quality_regime_weight=args.mythos_bayes_quality_regime_weight,
+                bayes_quality_min_win_prob=args.mythos_bayes_quality_min_win_prob,
+                bayes_quality_min_expectancy=args.mythos_bayes_quality_min_expectancy,
+                bayes_quality_edge_scale=args.mythos_bayes_quality_edge_scale,
+                bayes_quality_confidence_scale=args.mythos_bayes_quality_confidence_scale,
+                bayes_quality_uncertainty_scale=args.mythos_bayes_quality_uncertainty_scale,
+                bayes_quality_reject_margin=args.mythos_bayes_quality_reject_margin,
+                nonconformity_enable=args.mythos_nonconformity_enable,
+                nonconformity_warmup_trades=args.mythos_nonconformity_warmup_trades,
+                nonconformity_window=args.mythos_nonconformity_window,
+                nonconformity_quantile=args.mythos_nonconformity_quantile,
+                nonconformity_margin=args.mythos_nonconformity_margin,
+                nonconformity_min_winners=args.mythos_nonconformity_min_winners,
+                nonconformity_weight_uncertainty=args.mythos_nonconformity_weight_uncertainty,
+                nonconformity_weight_confidence=args.mythos_nonconformity_weight_confidence,
+                nonconformity_weight_edge=args.mythos_nonconformity_weight_edge,
+                nonconformity_weight_meta=args.mythos_nonconformity_weight_meta,
+                nonconformity_weight_analog=args.mythos_nonconformity_weight_analog,
+                nonconformity_override_conviction=args.mythos_nonconformity_override_conviction,
+                nonconformity_override_edge_buffer=args.mythos_nonconformity_override_edge_buffer,
+                nonconformity_override_confidence_buffer=args.mythos_nonconformity_override_confidence_buffer,
                 short_boost_enable=args.mythos_short_boost_enable,
                 short_boost_window=args.mythos_short_boost_window,
                 short_boost_min_trades=args.mythos_short_boost_min_trades,
@@ -6719,6 +6803,20 @@ Examples:
                 agg.get("net_expectancy_r"),
                 agg.get("net_win_rate"),
                 agg.get("net_sure_leveraged_hit_rate"),
+            )
+            log.info(
+                "[MYTHOS] Bayesian quality gate: rejects=%s reject_rate=%s ready_checks=%s",
+                agg.get("bayes_quality_rejects"),
+                agg.get("bayes_quality_reject_rate"),
+                agg.get("bayes_quality_ready_checks"),
+            )
+            log.info(
+                "[MYTHOS] Nonconformity gate: rejects=%s reject_rate=%s overrides=%s ready_checks=%s winners_ref=%s",
+                agg.get("nonconformity_rejects"),
+                agg.get("nonconformity_reject_rate"),
+                agg.get("nonconformity_overrides"),
+                agg.get("nonconformity_ready_checks"),
+                agg.get("nonconformity_winner_ref_count"),
             )
             if agg.get("best_model_path"):
                 log.info(

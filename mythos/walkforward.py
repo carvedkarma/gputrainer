@@ -716,6 +716,201 @@ def _recent_quality_stats(
     return {"ready": ready, "n": float(n), "hit_rate": hit_rate, "expectancy": expectancy}
 
 
+def _bayes_bucket(prior_alpha: float, prior_beta: float) -> Dict[str, float]:
+    return {
+        "alpha": float(max(prior_alpha, 1e-6)),
+        "beta": float(max(prior_beta, 1e-6)),
+        "n": 0.0,
+        "sum_r": 0.0,
+    }
+
+
+def _update_bayes_quality_state(
+    *,
+    side: int,
+    regime: int,
+    realized_r: float,
+    side_stats: Dict[int, Dict[str, float]],
+    regime_side_stats: Dict[Tuple[int, int], Dict[str, float]],
+    cfg: MythosConfig,
+) -> None:
+    s = int(side)
+    if s not in (-1, 1):
+        return
+    prior_alpha = float(np.clip(getattr(cfg, "bayes_quality_prior_alpha", 2.0), 0.10, 100.0))
+    prior_beta = float(np.clip(getattr(cfg, "bayes_quality_prior_beta", 2.0), 0.10, 100.0))
+    decay = float(np.clip(getattr(cfg, "bayes_quality_decay", 0.995), 0.90, 1.0))
+    hit = 1.0 if float(realized_r) > 0.0 else 0.0
+
+    def _touch(bucket: Dict[str, float]) -> None:
+        alpha = float(bucket.get("alpha", prior_alpha))
+        beta = float(bucket.get("beta", prior_beta))
+        n = float(bucket.get("n", 0.0))
+        s_r = float(bucket.get("sum_r", 0.0))
+        alpha = prior_alpha + (alpha - prior_alpha) * decay
+        beta = prior_beta + (beta - prior_beta) * decay
+        n *= decay
+        s_r *= decay
+        alpha += hit
+        beta += (1.0 - hit)
+        n += 1.0
+        s_r += float(realized_r)
+        bucket["alpha"] = float(alpha)
+        bucket["beta"] = float(beta)
+        bucket["n"] = float(n)
+        bucket["sum_r"] = float(s_r)
+
+    s_bucket = side_stats.setdefault(s, _bayes_bucket(prior_alpha, prior_beta))
+    r_bucket = regime_side_stats.setdefault((int(regime), s), _bayes_bucket(prior_alpha, prior_beta))
+    _touch(s_bucket)
+    _touch(r_bucket)
+
+
+def _bayes_quality_gate(
+    *,
+    side: int,
+    regime: int,
+    edge: float,
+    confidence: float,
+    uncertainty: float,
+    total_trades: int,
+    side_stats: Dict[int, Dict[str, float]],
+    regime_side_stats: Dict[Tuple[int, int], Dict[str, float]],
+    cfg: MythosConfig,
+) -> Dict[str, float]:
+    if not bool(getattr(cfg, "bayes_quality_enable", True)):
+        return {"pass": 1.0, "ready": 0.0}
+    s = int(side)
+    if s not in (-1, 1):
+        return {"pass": 1.0, "ready": 0.0}
+    prior_alpha = float(np.clip(getattr(cfg, "bayes_quality_prior_alpha", 2.0), 0.10, 100.0))
+    prior_beta = float(np.clip(getattr(cfg, "bayes_quality_prior_beta", 2.0), 0.10, 100.0))
+    s_bucket = side_stats.setdefault(s, _bayes_bucket(prior_alpha, prior_beta))
+    r_bucket = regime_side_stats.setdefault((int(regime), s), _bayes_bucket(prior_alpha, prior_beta))
+    s_n = float(max(s_bucket.get("n", 0.0), 0.0))
+    r_n = float(max(r_bucket.get("n", 0.0), 0.0))
+    warmup = int(max(getattr(cfg, "bayes_quality_warmup_trades", 20), 1))
+    if int(total_trades) < warmup or (s_n + r_n) < max(float(warmup) * 0.6, 4.0):
+        return {"pass": 1.0, "ready": 0.0}
+
+    def _stats(bucket: Dict[str, float]) -> Tuple[float, float]:
+        a = float(max(bucket.get("alpha", prior_alpha), 1e-6))
+        b = float(max(bucket.get("beta", prior_beta), 1e-6))
+        n = float(max(bucket.get("n", 0.0), 1e-6))
+        p = float(a / max(a + b, 1e-6))
+        e = float(bucket.get("sum_r", 0.0) / n)
+        return p, e
+
+    s_p, s_e = _stats(s_bucket)
+    r_p, r_e = _stats(r_bucket)
+    reg_w = float(np.clip(getattr(cfg, "bayes_quality_regime_weight", 0.45), 0.0, 1.0))
+    p_hist = float((1.0 - reg_w) * s_p + reg_w * r_p)
+    e_hist = float((1.0 - reg_w) * s_e + reg_w * r_e)
+    edge_unit = float(max(getattr(cfg, "min_expected_r", 0.01), 1e-6))
+    edge_n = float(np.clip(max(edge, 0.0) / max(edge_unit * 2.5, 1e-6), 0.0, 1.0))
+    conf_n = float(np.clip(confidence, 0.0, 1.0))
+    unc_n = float(np.clip(uncertainty, 0.0, 2.0) / 2.0)
+    p_adj = float(
+        p_hist
+        + float(np.clip(getattr(cfg, "bayes_quality_edge_scale", 0.22), 0.0, 2.0)) * edge_n
+        + float(np.clip(getattr(cfg, "bayes_quality_confidence_scale", 0.10), 0.0, 1.0)) * max(conf_n - 0.5, 0.0)
+        - float(np.clip(getattr(cfg, "bayes_quality_uncertainty_scale", 0.18), 0.0, 2.0)) * unc_n
+    )
+    p_adj = float(np.clip(p_adj, 0.0, 1.0))
+    e_adj = float(e_hist + (0.30 * edge_n + 0.10 * (conf_n - 0.5) - 0.20 * unc_n) * edge_unit)
+    min_p = float(np.clip(getattr(cfg, "bayes_quality_min_win_prob", 0.50), 0.0, 1.0))
+    min_e = float(getattr(cfg, "bayes_quality_min_expectancy", -0.01))
+    margin = float(np.clip(getattr(cfg, "bayes_quality_reject_margin", 0.05), 0.0, 0.5))
+    bad_prob = bool(p_adj < (min_p - margin))
+    bad_exp = bool(e_adj < (min_e - margin * edge_unit))
+    allowed = not (bad_prob and bad_exp)
+    return {
+        "pass": float(1.0 if allowed else 0.0),
+        "ready": 1.0,
+        "p_adj": float(p_adj),
+        "e_adj": float(e_adj),
+    }
+
+
+def _nonconformity_score(
+    *,
+    edge: float,
+    confidence: float,
+    uncertainty: float,
+    meta_p: float,
+    analog_hits: float,
+    cfg: MythosConfig,
+) -> float:
+    edge_unit = float(max(getattr(cfg, "min_expected_r", 0.01), 1e-6))
+    edge_n = float(np.clip(max(edge, 0.0) / max(edge_unit * 2.5, 1e-6), 0.0, 1.0))
+    conf_n = float(np.clip(confidence, 0.0, 1.0))
+    unc_n = float(np.clip(uncertainty, 0.0, 2.0) / 2.0)
+    meta_n = float(np.clip(abs(float(meta_p) - 0.5) * 2.0, 0.0, 1.0))
+    analog_n = float(
+        np.clip(float(analog_hits) / max(float(getattr(cfg, "analog_k", 48)), 1.0), 0.0, 1.0)
+    )
+    w_unc = float(max(getattr(cfg, "nonconformity_weight_uncertainty", 0.36), 0.0))
+    w_conf = float(max(getattr(cfg, "nonconformity_weight_confidence", 0.22), 0.0))
+    w_edge = float(max(getattr(cfg, "nonconformity_weight_edge", 0.20), 0.0))
+    w_meta = float(max(getattr(cfg, "nonconformity_weight_meta", 0.14), 0.0))
+    w_analog = float(max(getattr(cfg, "nonconformity_weight_analog", 0.08), 0.0))
+    denom = float(max(w_unc + w_conf + w_edge + w_meta + w_analog, 1e-6))
+    raw = (
+        w_unc * unc_n
+        + w_conf * (1.0 - conf_n)
+        + w_edge * (1.0 - edge_n)
+        + w_meta * (1.0 - meta_n)
+        + w_analog * (1.0 - analog_n)
+    )
+    return float(np.clip(raw / denom, 0.0, 1.0))
+
+
+def _nonconformity_gate(
+    *,
+    score: float,
+    conviction: float,
+    edge: float,
+    confidence: float,
+    total_trades: int,
+    winner_scores: List[float],
+    cfg: MythosConfig,
+) -> Dict[str, float]:
+    if not bool(getattr(cfg, "nonconformity_enable", True)):
+        return {"pass": 1.0, "ready": 0.0, "override": 0.0}
+    warmup = int(max(getattr(cfg, "nonconformity_warmup_trades", 24), 1))
+    min_winners = int(max(getattr(cfg, "nonconformity_min_winners", 16), 1))
+    if int(total_trades) < warmup or len(winner_scores) < min_winners:
+        return {"pass": 1.0, "ready": 0.0, "override": 0.0}
+    q = float(np.clip(getattr(cfg, "nonconformity_quantile", 0.86), 0.50, 0.99))
+    margin = float(np.clip(getattr(cfg, "nonconformity_margin", 0.03), 0.0, 1.0))
+    w = int(max(getattr(cfg, "nonconformity_window", 160), 8))
+    sample = np.asarray(winner_scores[-w:], dtype=np.float64)
+    threshold = float(np.clip(np.quantile(sample, q) + margin, 0.0, 1.0))
+    passed = bool(float(score) <= threshold)
+    override = False
+    if not passed:
+        conv_floor = float(np.clip(getattr(cfg, "nonconformity_override_conviction", 0.88), 0.0, 1.0))
+        edge_floor = float(getattr(cfg, "min_edge_threshold", 0.02)) + float(
+            max(getattr(cfg, "nonconformity_override_edge_buffer", 0.003), 0.0)
+        )
+        conf_floor = float(np.clip(getattr(cfg, "min_confidence", 0.55), 0.0, 1.0)) + float(
+            np.clip(getattr(cfg, "nonconformity_override_confidence_buffer", 0.04), 0.0, 1.0)
+        )
+        if (
+            float(conviction) >= conv_floor
+            and float(edge) >= edge_floor
+            and float(confidence) >= min(conf_floor, 1.0)
+        ):
+            passed = True
+            override = True
+    return {
+        "pass": float(1.0 if passed else 0.0),
+        "ready": 1.0,
+        "threshold": float(threshold),
+        "override": float(1.0 if override else 0.0),
+    }
+
+
 def _is_sure_signal(
     *,
     side: int,
@@ -1237,6 +1432,8 @@ def _run_fold(
         "edge_below_floor": 0,
         "streak_pause": 0,
         "counterfactual_reject": 0,
+        "bayes_quality_reject": 0,
+        "nonconformity_reject": 0,
         "risk_reject": 0,
         "meta_reject": 0,
         "low_conviction": 0,
@@ -1266,9 +1463,26 @@ def _run_fold(
     leverage_blocked_candidates = 0
     leverage_boost_approved = 0
     execution_cost_total_r = 0.0
+    bayes_quality_rejects = 0
+    bayes_quality_ready_checks = 0
+    nonconformity_rejects = 0
+    nonconformity_overrides = 0
+    nonconformity_ready_checks = 0
     sure_recent_rr: List[float] = []
     sure_lev_recent_rr: List[float] = []
     sure_lev_recent_ctx: List[float] = []
+    winner_nonconformity_scores: List[float] = []
+    bayes_side_stats: Dict[int, Dict[str, float]] = {
+        1: _bayes_bucket(
+            float(np.clip(getattr(cfg, "bayes_quality_prior_alpha", 2.0), 0.10, 100.0)),
+            float(np.clip(getattr(cfg, "bayes_quality_prior_beta", 2.0), 0.10, 100.0)),
+        ),
+        -1: _bayes_bucket(
+            float(np.clip(getattr(cfg, "bayes_quality_prior_alpha", 2.0), 0.10, 100.0)),
+            float(np.clip(getattr(cfg, "bayes_quality_prior_beta", 2.0), 0.10, 100.0)),
+        ),
+    }
+    bayes_regime_side_stats: Dict[Tuple[int, int], Dict[str, float]] = {}
     side_quality_rr: Dict[int, List[float]] = {1: [], -1: []}
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
@@ -1397,6 +1611,48 @@ def _run_fold(
             cf_rejects += 1
             skip_counts["counterfactual_reject"] += 1
             continue
+        bayes_gate = _bayes_quality_gate(
+            side=side,
+            regime=regime,
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            total_trades=len(trades),
+            side_stats=bayes_side_stats,
+            regime_side_stats=bayes_regime_side_stats,
+            cfg=cfg,
+        )
+        if float(bayes_gate.get("ready", 0.0)) > 0.5:
+            bayes_quality_ready_checks += 1
+            if float(bayes_gate.get("pass", 1.0)) < 0.5:
+                bayes_quality_rejects += 1
+                skip_counts["bayes_quality_reject"] += 1
+                continue
+        nonconf_score = _nonconformity_score(
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            meta_p=meta_p,
+            analog_hits=analog_hits,
+            cfg=cfg,
+        )
+        nonconf_gate = _nonconformity_gate(
+            score=nonconf_score,
+            conviction=conviction,
+            edge=edge,
+            confidence=confidence,
+            total_trades=len(trades),
+            winner_scores=winner_nonconformity_scores,
+            cfg=cfg,
+        )
+        if float(nonconf_gate.get("ready", 0.0)) > 0.5:
+            nonconformity_ready_checks += 1
+            if float(nonconf_gate.get("pass", 1.0)) < 0.5:
+                nonconformity_rejects += 1
+                skip_counts["nonconformity_reject"] += 1
+                continue
+            if float(nonconf_gate.get("override", 0.0)) > 0.5:
+                nonconformity_overrides += 1
         if not risk.allow_trade(ts_ms=int(timestamps[i]), side=side, edge=edge, uncertainty=uncertainty):
             skip_counts["risk_reject"] += 1
             continue
@@ -1468,6 +1724,14 @@ def _run_fold(
         governor.record_trade(side=side, realized_r=rr, bar_idx=i)
         router.update_reliability(expert_name=expert_name, realized_r=rr, regime=regime)
         adaptive.update_after_trade(expert_name=expert_name, regime=regime, realized_r=rr, side=side)
+        _update_bayes_quality_state(
+            side=side,
+            regime=regime,
+            realized_r=rr,
+            side_stats=bayes_side_stats,
+            regime_side_stats=bayes_regime_side_stats,
+            cfg=cfg,
+        )
         meta.update(
             x=x,
             edge=edge,
@@ -1479,6 +1743,11 @@ def _run_fold(
         )
         trades.append(rr)
         gross_trades.append(rr_gross)
+        if rr > 0.0:
+            winner_nonconformity_scores.append(float(nonconf_score))
+            nc_window = int(max(getattr(cfg, "nonconformity_window", 160), 8))
+            if len(winner_nonconformity_scores) > nc_window:
+                del winner_nonconformity_scores[0 : len(winner_nonconformity_scores) - nc_window]
         if is_sure_signal:
             sure_trades += 1
             sure_total_r += rr
@@ -1573,6 +1842,12 @@ def _run_fold(
         "transition_mode_bars": int(transition_mode_bars),
         "meta_mode_bars": int(meta_mode_bars),
         "counterfactual_rejects": int(cf_rejects),
+        "bayes_quality_rejects": int(bayes_quality_rejects),
+        "nonconformity_rejects": int(nonconformity_rejects),
+        "nonconformity_overrides": int(nonconformity_overrides),
+        "bayes_quality_ready_checks": int(bayes_quality_ready_checks),
+        "nonconformity_ready_checks": int(nonconformity_ready_checks),
+        "nonconformity_winner_ref_count": int(len(winner_nonconformity_scores)),
         "skip_reasons": {k: int(v) for k, v in skip_counts.items()},
         "long_trades": n_long,
         "short_trades": n_short,
@@ -1670,7 +1945,7 @@ def run_mythos_walk_forward(
                     brain=model_state.get("adaptive"),
                 )
         log.info(
-            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d lev_boost=%d lev_blocked=%d",
+            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d lev_boost=%d lev_blocked=%d bayes_rej=%d nonconf_rej=%d nonconf_ovr=%d",
             i,
             fold["total_trades"],
             fold["total_r"],
@@ -1683,6 +1958,9 @@ def run_mythos_walk_forward(
             fold.get("sure_leveraged_hits", 0),
             fold.get("leverage_boost_approved", 0),
             fold.get("leverage_blocked_candidates", 0),
+            fold.get("bayes_quality_rejects", 0),
+            fold.get("nonconformity_rejects", 0),
+            fold.get("nonconformity_overrides", 0),
         )
 
     total_trades = int(sum(r["total_trades"] for r in reports))
@@ -1703,6 +1981,8 @@ def run_mythos_walk_forward(
         "edge_below_floor": int(sum(int(r.get("skip_reasons", {}).get("edge_below_floor", 0)) for r in reports)),
         "streak_pause": int(sum(int(r.get("skip_reasons", {}).get("streak_pause", 0)) for r in reports)),
         "counterfactual_reject": int(sum(int(r.get("skip_reasons", {}).get("counterfactual_reject", 0)) for r in reports)),
+        "bayes_quality_reject": int(sum(int(r.get("skip_reasons", {}).get("bayes_quality_reject", 0)) for r in reports)),
+        "nonconformity_reject": int(sum(int(r.get("skip_reasons", {}).get("nonconformity_reject", 0)) for r in reports)),
         "risk_reject": int(sum(int(r.get("skip_reasons", {}).get("risk_reject", 0)) for r in reports)),
         "meta_reject": int(sum(int(r.get("skip_reasons", {}).get("meta_reject", 0)) for r in reports)),
         "low_conviction": int(sum(int(r.get("skip_reasons", {}).get("low_conviction", 0)) for r in reports)),
@@ -1746,7 +2026,21 @@ def run_mythos_walk_forward(
     total_gross_r = float(sum(float(r.get("gross_total_r", r.get("total_r", 0.0))) for r in reports))
     total_lev_boost_approved = int(sum(int(r.get("leverage_boost_approved", 0)) for r in reports))
     total_lev_blocked = int(sum(int(r.get("leverage_blocked_candidates", 0)) for r in reports))
+    total_bayes_quality_rejects = int(sum(int(r.get("bayes_quality_rejects", 0)) for r in reports))
+    total_nonconformity_rejects = int(sum(int(r.get("nonconformity_rejects", 0)) for r in reports))
+    total_nonconformity_overrides = int(sum(int(r.get("nonconformity_overrides", 0)) for r in reports))
+    total_bayes_quality_ready_checks = int(sum(int(r.get("bayes_quality_ready_checks", 0)) for r in reports))
+    total_nonconformity_ready_checks = int(sum(int(r.get("nonconformity_ready_checks", 0)) for r in reports))
+    total_nonconformity_winner_ref_count = int(
+        sum(int(r.get("nonconformity_winner_ref_count", 0)) for r in reports)
+    )
     cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
+    bayes_quality_reject_rate = float(
+        total_bayes_quality_rejects / max(total_bayes_quality_rejects + total_trades, 1)
+    )
+    nonconformity_reject_rate = float(
+        total_nonconformity_rejects / max(total_nonconformity_rejects + total_trades, 1)
+    )
     act = sum(1 for r in reports if r["status"] == "ACTIVE")
     low = sum(1 for r in reports if r["status"] == "LOW_CONF")
     dead = sum(1 for r in reports if r["status"] == "DEAD")
@@ -1804,6 +2098,14 @@ def run_mythos_walk_forward(
         "flip_pressure_rate": round(float(total_flip_pressure_bars / max(total_trades, 1)), 4),
         "counterfactual_rejects": total_cf_rejects,
         "counterfactual_reject_rate": round(cf_reject_rate, 4),
+        "bayes_quality_rejects": total_bayes_quality_rejects,
+        "bayes_quality_reject_rate": round(bayes_quality_reject_rate, 4),
+        "bayes_quality_ready_checks": total_bayes_quality_ready_checks,
+        "nonconformity_rejects": total_nonconformity_rejects,
+        "nonconformity_reject_rate": round(nonconformity_reject_rate, 4),
+        "nonconformity_overrides": total_nonconformity_overrides,
+        "nonconformity_ready_checks": total_nonconformity_ready_checks,
+        "nonconformity_winner_ref_count": total_nonconformity_winner_ref_count,
         "skip_reasons": total_skip_reasons,
         "active_folds": act,
         "low_conf_folds": low,

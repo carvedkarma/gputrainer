@@ -111,6 +111,32 @@ class MythosConfig:
     execution_fee_bps: float = 4.0
     execution_slippage_bps: float = 2.0
     execution_cost_cap_r: float = 0.35
+    bayes_quality_enable: bool = True
+    bayes_quality_warmup_trades: int = 20
+    bayes_quality_decay: float = 0.995
+    bayes_quality_prior_alpha: float = 2.0
+    bayes_quality_prior_beta: float = 2.0
+    bayes_quality_regime_weight: float = 0.45
+    bayes_quality_min_win_prob: float = 0.50
+    bayes_quality_min_expectancy: float = -0.01
+    bayes_quality_edge_scale: float = 0.22
+    bayes_quality_confidence_scale: float = 0.10
+    bayes_quality_uncertainty_scale: float = 0.18
+    bayes_quality_reject_margin: float = 0.05
+    nonconformity_enable: bool = True
+    nonconformity_warmup_trades: int = 24
+    nonconformity_window: int = 160
+    nonconformity_quantile: float = 0.86
+    nonconformity_margin: float = 0.03
+    nonconformity_min_winners: int = 16
+    nonconformity_weight_uncertainty: float = 0.36
+    nonconformity_weight_confidence: float = 0.22
+    nonconformity_weight_edge: float = 0.20
+    nonconformity_weight_meta: float = 0.14
+    nonconformity_weight_analog: float = 0.08
+    nonconformity_override_conviction: float = 0.88
+    nonconformity_override_edge_buffer: float = 0.003
+    nonconformity_override_confidence_buffer: float = 0.04
     conviction_guard_window: int = 32
     conviction_guard_min_trades: int = 8
     conviction_guard_min_expectancy_r: float = 0.03
@@ -336,6 +362,72 @@ class MythosConfig:
         self.execution_slippage_bps = float(max(getattr(self, "execution_slippage_bps", 2.0), 0.0))
         self.execution_cost_cap_r = float(
             np.clip(getattr(self, "execution_cost_cap_r", 0.35), 0.0, 5.0)
+        )
+        self.bayes_quality_enable = bool(getattr(self, "bayes_quality_enable", True))
+        self.bayes_quality_warmup_trades = int(max(getattr(self, "bayes_quality_warmup_trades", 20), 1))
+        self.bayes_quality_decay = float(
+            np.clip(getattr(self, "bayes_quality_decay", 0.995), 0.90, 1.0)
+        )
+        self.bayes_quality_prior_alpha = float(
+            np.clip(getattr(self, "bayes_quality_prior_alpha", 2.0), 0.10, 100.0)
+        )
+        self.bayes_quality_prior_beta = float(
+            np.clip(getattr(self, "bayes_quality_prior_beta", 2.0), 0.10, 100.0)
+        )
+        self.bayes_quality_regime_weight = float(
+            np.clip(getattr(self, "bayes_quality_regime_weight", 0.45), 0.0, 1.0)
+        )
+        self.bayes_quality_min_win_prob = float(
+            np.clip(getattr(self, "bayes_quality_min_win_prob", 0.50), 0.0, 1.0)
+        )
+        self.bayes_quality_min_expectancy = float(
+            getattr(self, "bayes_quality_min_expectancy", -0.01)
+        )
+        self.bayes_quality_edge_scale = float(
+            np.clip(getattr(self, "bayes_quality_edge_scale", 0.22), 0.0, 2.0)
+        )
+        self.bayes_quality_confidence_scale = float(
+            np.clip(getattr(self, "bayes_quality_confidence_scale", 0.10), 0.0, 1.0)
+        )
+        self.bayes_quality_uncertainty_scale = float(
+            np.clip(getattr(self, "bayes_quality_uncertainty_scale", 0.18), 0.0, 2.0)
+        )
+        self.bayes_quality_reject_margin = float(
+            np.clip(getattr(self, "bayes_quality_reject_margin", 0.05), 0.0, 0.5)
+        )
+        self.nonconformity_enable = bool(getattr(self, "nonconformity_enable", True))
+        self.nonconformity_warmup_trades = int(max(getattr(self, "nonconformity_warmup_trades", 24), 1))
+        self.nonconformity_window = int(max(getattr(self, "nonconformity_window", 160), 8))
+        self.nonconformity_quantile = float(
+            np.clip(getattr(self, "nonconformity_quantile", 0.86), 0.50, 0.99)
+        )
+        self.nonconformity_margin = float(
+            np.clip(getattr(self, "nonconformity_margin", 0.03), 0.0, 1.0)
+        )
+        self.nonconformity_min_winners = int(max(getattr(self, "nonconformity_min_winners", 16), 1))
+        self.nonconformity_weight_uncertainty = float(
+            max(getattr(self, "nonconformity_weight_uncertainty", 0.36), 0.0)
+        )
+        self.nonconformity_weight_confidence = float(
+            max(getattr(self, "nonconformity_weight_confidence", 0.22), 0.0)
+        )
+        self.nonconformity_weight_edge = float(
+            max(getattr(self, "nonconformity_weight_edge", 0.20), 0.0)
+        )
+        self.nonconformity_weight_meta = float(
+            max(getattr(self, "nonconformity_weight_meta", 0.14), 0.0)
+        )
+        self.nonconformity_weight_analog = float(
+            max(getattr(self, "nonconformity_weight_analog", 0.08), 0.0)
+        )
+        self.nonconformity_override_conviction = float(
+            np.clip(getattr(self, "nonconformity_override_conviction", 0.88), 0.0, 1.0)
+        )
+        self.nonconformity_override_edge_buffer = float(
+            max(getattr(self, "nonconformity_override_edge_buffer", 0.003), 0.0)
+        )
+        self.nonconformity_override_confidence_buffer = float(
+            np.clip(getattr(self, "nonconformity_override_confidence_buffer", 0.04), 0.0, 1.0)
         )
         self.conviction_guard_window = int(
             max(getattr(self, "conviction_guard_window", self.conviction_recent_window), 8)
