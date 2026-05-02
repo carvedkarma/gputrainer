@@ -1227,6 +1227,7 @@ def _run_fold(
             meta_p=meta_p,
             cfg=cfg,
         )
+        high_conv_thresh = float(np.clip(getattr(cfg, "precision_high_conviction", 0.72), 0.0, 1.0))
         analog_hits = float(analog.get("analog_hits", 0.0))
         is_sure_signal = _is_sure_signal(
             side=side,
