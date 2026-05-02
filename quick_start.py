@@ -5605,6 +5605,24 @@ Examples:
                         help="MYTHOS nonconformity gate: edge buffer above base floor for override (default: 0.003)")
     parser.add_argument("--mythos-nonconformity-override-confidence-buffer", type=float, default=0.04,
                         help="MYTHOS nonconformity gate: confidence buffer above base floor for override (default: 0.04)")
+    parser.add_argument("--mythos-nonconformity-target-reject-rate", type=float, default=0.48,
+                        help="MYTHOS nonconformity adaptive: target reject rate for dynamic threshold relaxation (default: 0.48)")
+    parser.add_argument("--mythos-nonconformity-reject-tolerance", type=float, default=0.12,
+                        help="MYTHOS nonconformity adaptive: tolerance above target reject-rate before relaxation (default: 0.12)")
+    parser.add_argument("--mythos-nonconformity-adaptive-relax", type=float, default=0.16,
+                        help="MYTHOS nonconformity adaptive: relaxation gain when reject-rate overshoots target (default: 0.16)")
+    parser.add_argument("--mythos-nonconformity-adaptive-max-relax", type=float, default=0.18,
+                        help="MYTHOS nonconformity adaptive: max additional threshold relaxation (default: 0.18)")
+    parser.add_argument("--mythos-nonconformity-soft-override-margin", type=float, default=0.04,
+                        help="MYTHOS nonconformity adaptive: soft override margin for very strong conviction/context (default: 0.04)")
+    parser.add_argument("--mythos-counterfactual-target-reject-rate", type=float, default=0.70,
+                        help="MYTHOS counterfactual adaptive: target reject rate for dynamic relaxation (default: 0.70)")
+    parser.add_argument("--mythos-counterfactual-reject-tolerance", type=float, default=0.10,
+                        help="MYTHOS counterfactual adaptive: tolerance above target reject-rate before relaxation (default: 0.10)")
+    parser.add_argument("--mythos-counterfactual-adaptive-relax", type=float, default=0.35,
+                        help="MYTHOS counterfactual adaptive: relaxation gain when reject-rate overshoots target (default: 0.35)")
+    parser.add_argument("--mythos-counterfactual-adaptive-min-adv-floor", type=float, default=0.25,
+                        help="MYTHOS counterfactual adaptive: minimum retained fraction of base min-advantage under relaxation (default: 0.25)")
     parser.add_argument("--mythos-short-boost-enable", action="store_true", default=True,
                         help="MYTHOS adaptive: enable short-side edge boost when short side outperforms (default: enabled)")
     parser.add_argument("--mythos-no-short-boost-enable", dest="mythos_short_boost_enable", action="store_false",
