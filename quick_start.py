@@ -5287,6 +5287,27 @@ Examples:
                         help="MYTHOS v3: soft max side concentration before penalties (default: 0.82)")
     parser.add_argument("--mythos-side-imbalance-edge-penalty", type=float, default=0.015,
                         help="MYTHOS v3: edge penalty when one side dominates (default: 0.015)")
+    parser.add_argument("--mythos-side-rebalance-enable", dest="mythos_side_rebalance_enable", action="store_true",
+                        help="MYTHOS side rebalance: enable adaptive short/long rebalance nudges (default: enabled)")
+    parser.add_argument("--mythos-no-side-rebalance-enable", dest="mythos_side_rebalance_enable", action="store_false",
+                        help="MYTHOS side rebalance: disable adaptive short/long rebalance nudges")
+    parser.set_defaults(mythos_side_rebalance_enable=True)
+    parser.add_argument("--mythos-side-rebalance-warmup-trades", type=int, default=40,
+                        help="MYTHOS side rebalance: warmup accepted trades before rebalance nudges (default: 40)")
+    parser.add_argument("--mythos-side-rebalance-window", type=int, default=96,
+                        help="MYTHOS side rebalance: rolling window for side-share estimation (default: 96)")
+    parser.add_argument("--mythos-side-rebalance-short-target", type=float, default=0.32,
+                        help="MYTHOS side rebalance: target short-side share in active window (default: 0.32)")
+    parser.add_argument("--mythos-side-rebalance-short-boost", type=float, default=0.0035,
+                        help="MYTHOS side rebalance: max short edge boost when underweight (default: 0.0035)")
+    parser.add_argument("--mythos-side-rebalance-long-penalty", type=float, default=0.0030,
+                        help="MYTHOS side rebalance: long edge penalty when short side is underweight (default: 0.0030)")
+    parser.add_argument("--mythos-side-rebalance-conf-boost", type=float, default=0.02,
+                        help="MYTHOS side rebalance: short confidence boost when underweight (default: 0.02)")
+    parser.add_argument("--mythos-side-rebalance-quality-guard", type=float, default=0.06,
+                        help="MYTHOS side rebalance: block short boost when short expectancy lags long by this guard (default: 0.06)")
+    parser.add_argument("--mythos-side-rebalance-max-adjust", type=float, default=0.012,
+                        help="MYTHOS side rebalance: cap on per-trade edge adjustment from rebalance nudges (default: 0.012)")
     parser.add_argument("--mythos-adaptive-side-target-strength", type=float, default=0.22,
                         help="MYTHOS adaptive: how strongly side health shifts long/short target mix (default: 0.22)")
     parser.add_argument("--mythos-adaptive-side-target-min", type=float, default=0.35,
@@ -5299,6 +5320,27 @@ Examples:
                         help="MYTHOS adaptive: edge boost scale for underrepresented healthier side (default: 0.008)")
     parser.add_argument("--mythos-side-health-decay", type=float, default=0.97,
                         help="MYTHOS adaptive: decay factor for side health memory (default: 0.97)")
+    parser.add_argument("--mythos-side-rebalance-enable", dest="mythos_side_rebalance_enable", action="store_true",
+                        help="MYTHOS adaptive rebalance: enable short/long allocation correction nudges (default: enabled)")
+    parser.add_argument("--mythos-no-side-rebalance-enable", dest="mythos_side_rebalance_enable", action="store_false",
+                        help="MYTHOS adaptive rebalance: disable allocation correction nudges")
+    parser.set_defaults(mythos_side_rebalance_enable=True)
+    parser.add_argument("--mythos-side-rebalance-warmup-trades", type=int, default=40,
+                        help="MYTHOS adaptive rebalance: minimum accepted trades before side rebalance activates (default: 40)")
+    parser.add_argument("--mythos-side-rebalance-window", type=int, default=96,
+                        help="MYTHOS adaptive rebalance: rolling trade window used for side mix estimation (default: 96)")
+    parser.add_argument("--mythos-side-rebalance-short-target", type=float, default=0.32,
+                        help="MYTHOS adaptive rebalance: target minimum short-trade share in rolling window (default: 0.32)")
+    parser.add_argument("--mythos-side-rebalance-short-boost", type=float, default=0.0035,
+                        help="MYTHOS adaptive rebalance: edge boost added to short side when underrepresented (default: 0.0035)")
+    parser.add_argument("--mythos-side-rebalance-long-penalty", type=float, default=0.0030,
+                        help="MYTHOS adaptive rebalance: edge penalty applied to long side when short share is too low (default: 0.0030)")
+    parser.add_argument("--mythos-side-rebalance-conf-boost", type=float, default=0.02,
+                        help="MYTHOS adaptive rebalance: confidence boost paired with short-side rebalance edge boost (default: 0.02)")
+    parser.add_argument("--mythos-side-rebalance-quality-guard", type=float, default=0.06,
+                        help="MYTHOS adaptive rebalance: disable short boost if shorts underperform longs by more than this R gap (default: 0.06)")
+    parser.add_argument("--mythos-side-rebalance-max-adjust", type=float, default=0.012,
+                        help="MYTHOS adaptive rebalance: maximum absolute edge adjustment from side rebalance (default: 0.012)")
     parser.add_argument("--mythos-drawdown-edge-start-r", type=float, default=8.0,
                         help="MYTHOS v3: drawdown level where edge floor starts tightening (default: 8.0)")
     parser.add_argument("--mythos-drawdown-edge-step-r", type=float, default=4.0,
@@ -6605,6 +6647,15 @@ Examples:
                 side_balance_window=args.mythos_side_balance_window,
                 side_imbalance_soft_cap=args.mythos_side_imbalance_soft_cap,
                 side_imbalance_edge_penalty=args.mythos_side_imbalance_edge_penalty,
+                side_rebalance_enable=args.mythos_side_rebalance_enable,
+                side_rebalance_warmup_trades=args.mythos_side_rebalance_warmup_trades,
+                side_rebalance_window=args.mythos_side_rebalance_window,
+                side_rebalance_short_target=args.mythos_side_rebalance_short_target,
+                side_rebalance_short_boost=args.mythos_side_rebalance_short_boost,
+                side_rebalance_long_penalty=args.mythos_side_rebalance_long_penalty,
+                side_rebalance_conf_boost=args.mythos_side_rebalance_conf_boost,
+                side_rebalance_quality_guard=args.mythos_side_rebalance_quality_guard,
+                side_rebalance_max_adjust=args.mythos_side_rebalance_max_adjust,
                 adaptive_side_target_strength=args.mythos_adaptive_side_target_strength,
                 adaptive_side_target_min=args.mythos_adaptive_side_target_min,
                 adaptive_side_target_max=args.mythos_adaptive_side_target_max,
@@ -6683,6 +6734,15 @@ Examples:
                 nonconformity_override_conviction=args.mythos_nonconformity_override_conviction,
                 nonconformity_override_edge_buffer=args.mythos_nonconformity_override_edge_buffer,
                 nonconformity_override_confidence_buffer=args.mythos_nonconformity_override_confidence_buffer,
+                nonconformity_target_reject_rate=args.mythos_nonconformity_target_reject_rate,
+                nonconformity_reject_tolerance=args.mythos_nonconformity_reject_tolerance,
+                nonconformity_adaptive_relax=args.mythos_nonconformity_adaptive_relax,
+                nonconformity_adaptive_max_relax=args.mythos_nonconformity_adaptive_max_relax,
+                nonconformity_soft_override_margin=args.mythos_nonconformity_soft_override_margin,
+                counterfactual_target_reject_rate=args.mythos_counterfactual_target_reject_rate,
+                counterfactual_reject_tolerance=args.mythos_counterfactual_reject_tolerance,
+                counterfactual_adaptive_relax=args.mythos_counterfactual_adaptive_relax,
+                counterfactual_adaptive_min_adv_floor=args.mythos_counterfactual_adaptive_min_adv_floor,
                 short_boost_enable=args.mythos_short_boost_enable,
                 short_boost_window=args.mythos_short_boost_window,
                 short_boost_min_trades=args.mythos_short_boost_min_trades,

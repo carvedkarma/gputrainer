@@ -873,6 +873,8 @@ def _nonconformity_gate(
     confidence: float,
     total_trades: int,
     winner_scores: List[float],
+    ready_checks: int = 0,
+    rejects: int = 0,
     cfg: MythosConfig,
 ) -> Dict[str, float]:
     if not bool(getattr(cfg, "nonconformity_enable", True)):
@@ -886,6 +888,14 @@ def _nonconformity_gate(
     w = int(max(getattr(cfg, "nonconformity_window", 160), 8))
     sample = np.asarray(winner_scores[-w:], dtype=np.float64)
     threshold = float(np.clip(np.quantile(sample, q) + margin, 0.0, 1.0))
+    target_reject = float(np.clip(getattr(cfg, "nonconformity_target_reject_rate", 0.48), 0.0, 0.99))
+    tol = float(np.clip(getattr(cfg, "nonconformity_reject_tolerance", 0.12), 0.0, 0.5))
+    relax_gain = float(np.clip(getattr(cfg, "nonconformity_adaptive_relax", 0.16), 0.0, 1.0))
+    max_relax = float(np.clip(getattr(cfg, "nonconformity_adaptive_max_relax", 0.18), 0.0, 0.5))
+    observed_reject = float(rejects / max(ready_checks, 1))
+    overshoot = float(max(observed_reject - (target_reject + tol), 0.0))
+    adaptive_relax = float(np.clip(relax_gain * overshoot, 0.0, max_relax))
+    threshold = float(np.clip(threshold + adaptive_relax, 0.0, 1.0))
     passed = bool(float(score) <= threshold)
     override = False
     if not passed:
@@ -896,8 +906,20 @@ def _nonconformity_gate(
         conf_floor = float(np.clip(getattr(cfg, "min_confidence", 0.55), 0.0, 1.0)) + float(
             np.clip(getattr(cfg, "nonconformity_override_confidence_buffer", 0.04), 0.0, 1.0)
         )
+        soft_margin = float(np.clip(getattr(cfg, "nonconformity_soft_override_margin", 0.04), 0.0, 0.5))
+        near_threshold = bool(float(score) <= float(np.clip(threshold + soft_margin, 0.0, 1.0)))
+        soft_ok = (
+            near_threshold
+            and float(conviction) >= max(conv_floor - 0.06, 0.0)
+            and float(edge) >= max(edge_floor - 0.001, 0.0)
+            and float(confidence) >= min(max(conf_floor - 0.03, 0.0), 1.0)
+        )
+        if soft_ok:
+            passed = True
+            override = True
         if (
-            float(conviction) >= conv_floor
+            (not passed)
+            and float(conviction) >= conv_floor
             and float(edge) >= edge_floor
             and float(confidence) >= min(conf_floor, 1.0)
         ):
@@ -907,8 +929,59 @@ def _nonconformity_gate(
         "pass": float(1.0 if passed else 0.0),
         "ready": 1.0,
         "threshold": float(threshold),
+        "adaptive_relax": float(adaptive_relax),
         "override": float(1.0 if override else 0.0),
     }
+
+
+def _adaptive_rebalance_adjustment(
+    *,
+    side: int,
+    long_trades: List[float],
+    short_trades: List[float],
+    cfg: MythosConfig,
+) -> Dict[str, float]:
+    s = int(side)
+    if s not in (-1, 1):
+        return {"edge_adjust": 0.0, "conf_adjust": 0.0}
+    if not bool(getattr(cfg, "side_rebalance_enable", True)):
+        return {"edge_adjust": 0.0, "conf_adjust": 0.0}
+    warmup = int(max(getattr(cfg, "side_rebalance_warmup_trades", 40), 1))
+    total = int(len(long_trades) + len(short_trades))
+    if total < warmup:
+        return {"edge_adjust": 0.0, "conf_adjust": 0.0}
+    w = int(max(getattr(cfg, "side_rebalance_window", 96), 8))
+    long_recent = list(long_trades[-w:]) if long_trades else []
+    short_recent = list(short_trades[-w:]) if short_trades else []
+    total_recent = int(len(long_recent) + len(short_recent))
+    if total_recent < max(8, int(0.5 * w)):
+        return {"edge_adjust": 0.0, "conf_adjust": 0.0}
+    short_frac = float(len(short_recent) / max(total_recent, 1))
+    short_target = float(np.clip(getattr(cfg, "side_rebalance_short_target", 0.32), 0.05, 0.50))
+    gap = float(short_target - short_frac)
+    if abs(gap) <= 1e-9:
+        return {"edge_adjust": 0.0, "conf_adjust": 0.0}
+    quality_guard = float(np.clip(getattr(cfg, "side_rebalance_quality_guard", 0.06), 0.0, 0.50))
+    long_exp = float(np.mean(np.asarray(long_recent, dtype=np.float64))) if long_recent else 0.0
+    short_exp = float(np.mean(np.asarray(short_recent, dtype=np.float64))) if short_recent else 0.0
+    max_adj = float(np.clip(getattr(cfg, "side_rebalance_max_adjust", 0.012), 0.0, 0.10))
+    short_boost = float(np.clip(getattr(cfg, "side_rebalance_short_boost", 0.0035), 0.0, 0.05))
+    long_pen = float(np.clip(getattr(cfg, "side_rebalance_long_penalty", 0.0030), 0.0, 0.05))
+    conf_boost = float(np.clip(getattr(cfg, "side_rebalance_conf_boost", 0.02), 0.0, 0.20))
+    if s == -1 and gap > 0.0:
+        # Boost shorts only when short side is underrepresented and not clearly degraded.
+        if short_exp + quality_guard < long_exp:
+            return {"edge_adjust": 0.0, "conf_adjust": 0.0}
+        scale = float(min(gap / max(short_target, 1e-6), 1.0))
+        return {
+            "edge_adjust": float(np.clip(short_boost * (0.5 + scale), 0.0, max_adj)),
+            "conf_adjust": float(np.clip(conf_boost * (0.5 + scale), 0.0, 0.25)),
+        }
+    if s == 1 and gap > 0.0:
+        # Penalize longs a bit when short allocation is too low.
+        scale = float(min(gap / max(short_target, 1e-6), 1.0))
+        return {"edge_adjust": float(-np.clip(long_pen * scale, 0.0, max_adj)), "conf_adjust": 0.0}
+    return {"edge_adjust": 0.0, "conf_adjust": 0.0}
 
 
 def _is_sure_signal(
@@ -1179,6 +1252,112 @@ def _counterfactual_pass(
     if adjusted_edge >= (0.75 * min_adv) and analog_adv >= (-0.5 * min_adv):
         return True
     return combo >= min_adv
+
+
+def _adaptive_counterfactual_pass(
+    *,
+    analog_mem: AnalogMemory,
+    x: np.ndarray,
+    side: int,
+    edge: float,
+    uncertainty: float,
+    cfg: MythosConfig,
+    accepted_trades: int,
+    cf_rejects: int,
+) -> bool:
+    target = float(np.clip(getattr(cfg, "counterfactual_target_reject_rate", 0.70), 0.0, 0.99))
+    tol = float(np.clip(getattr(cfg, "counterfactual_reject_tolerance", 0.10), 0.0, 0.5))
+    relax_gain = float(np.clip(getattr(cfg, "counterfactual_adaptive_relax", 0.35), 0.0, 1.0))
+    min_floor = float(np.clip(getattr(cfg, "counterfactual_adaptive_min_adv_floor", 0.25), 0.05, 1.0))
+    obs = float(cf_rejects / max(cf_rejects + accepted_trades, 1))
+    overshoot = float(max(obs - (target + tol), 0.0))
+    if overshoot <= 0.0:
+        return _counterfactual_pass(
+            analog_mem=analog_mem,
+            x=x,
+            side=side,
+            edge=edge,
+            uncertainty=uncertainty,
+            cfg=cfg,
+        )
+    orig_min_adv = float(max(getattr(cfg, "counterfactual_min_advantage_r", 0.006), 0.0))
+    relax = float(np.clip(relax_gain * overshoot, 0.0, 0.95))
+    adj_min_adv = float(max(orig_min_adv * (1.0 - relax), orig_min_adv * min_floor))
+    adj_margin = float(max(getattr(cfg, "counterfactual_margin", 0.006), 0.0) * (1.0 - 0.6 * relax))
+    adj_risk_pen = float(max(getattr(cfg, "counterfactual_risk_penalty", 0.6), 0.0) * (1.0 - 0.5 * relax))
+    orig = (
+        getattr(cfg, "counterfactual_min_advantage_r", orig_min_adv),
+        getattr(cfg, "counterfactual_margin", 0.006),
+        getattr(cfg, "counterfactual_risk_penalty", 0.6),
+    )
+    try:
+        setattr(cfg, "counterfactual_min_advantage_r", adj_min_adv)
+        setattr(cfg, "counterfactual_margin", adj_margin)
+        setattr(cfg, "counterfactual_risk_penalty", adj_risk_pen)
+        return _counterfactual_pass(
+            analog_mem=analog_mem,
+            x=x,
+            side=side,
+            edge=edge,
+            uncertainty=uncertainty,
+            cfg=cfg,
+        )
+    finally:
+        setattr(cfg, "counterfactual_min_advantage_r", orig[0])
+        setattr(cfg, "counterfactual_margin", orig[1])
+        setattr(cfg, "counterfactual_risk_penalty", orig[2])
+
+
+def _adaptive_nonconformity_gate(
+    *,
+    score: float,
+    conviction: float,
+    edge: float,
+    confidence: float,
+    total_trades: int,
+    winner_scores: List[float],
+    nonconformity_rejects: int,
+    cfg: MythosConfig,
+) -> Dict[str, float]:
+    target = float(np.clip(getattr(cfg, "nonconformity_target_reject_rate", 0.48), 0.0, 0.99))
+    tol = float(np.clip(getattr(cfg, "nonconformity_reject_tolerance", 0.12), 0.0, 0.5))
+    relax_gain = float(np.clip(getattr(cfg, "nonconformity_adaptive_relax", 0.16), 0.0, 1.0))
+    relax_cap = float(np.clip(getattr(cfg, "nonconformity_adaptive_max_relax", 0.18), 0.0, 0.5))
+    obs = float(nonconformity_rejects / max(nonconformity_rejects + total_trades, 1))
+    overshoot = float(max(obs - (target + tol), 0.0))
+    gate = _nonconformity_gate(
+        score=score,
+        conviction=conviction,
+        edge=edge,
+        confidence=confidence,
+        total_trades=total_trades,
+        winner_scores=winner_scores,
+        cfg=cfg,
+    )
+    if overshoot <= 0.0:
+        return gate
+    relax = float(np.clip(relax_gain * overshoot, 0.0, relax_cap))
+    # Relax threshold first, then allow a soft override when signal is close.
+    if float(gate.get("ready", 0.0)) > 0.5:
+        threshold = float(np.clip(gate.get("threshold", 0.5) + relax, 0.0, 1.0))
+        if float(score) <= threshold:
+            return {"pass": 1.0, "ready": 1.0, "threshold": threshold, "override": 1.0}
+        soft_margin = float(np.clip(getattr(cfg, "nonconformity_soft_override_margin", 0.04), 0.0, 0.5))
+        if float(score) <= (threshold + soft_margin * relax):
+            conv_floor = float(np.clip(getattr(cfg, "nonconformity_override_conviction", 0.88), 0.0, 1.0))
+            edge_floor = float(getattr(cfg, "min_edge_threshold", 0.02)) + float(
+                max(getattr(cfg, "nonconformity_override_edge_buffer", 0.003), 0.0)
+            )
+            conf_floor = float(np.clip(getattr(cfg, "min_confidence", 0.55), 0.0, 1.0)) + float(
+                np.clip(getattr(cfg, "nonconformity_override_confidence_buffer", 0.04), 0.0, 1.0)
+            )
+            if (
+                float(conviction) >= max(conv_floor - relax, 0.0)
+                and float(edge) >= max(edge_floor - relax * 0.01, 0.0)
+                and float(confidence) >= min(max(conf_floor - 0.2 * relax, 0.0), 1.0)
+            ):
+                return {"pass": 1.0, "ready": 1.0, "threshold": threshold, "override": 1.0}
+    return gate
 
 
 def _short_aggression_boost(

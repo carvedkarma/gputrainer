@@ -56,6 +56,15 @@ class MythosConfig:
     side_balance_window: int = 160
     side_imbalance_soft_cap: float = 0.82
     side_imbalance_edge_penalty: float = 0.015
+    side_rebalance_enable: bool = True
+    side_rebalance_warmup_trades: int = 40
+    side_rebalance_window: int = 96
+    side_rebalance_short_target: float = 0.32
+    side_rebalance_short_boost: float = 0.0035
+    side_rebalance_long_penalty: float = 0.0030
+    side_rebalance_conf_boost: float = 0.02
+    side_rebalance_quality_guard: float = 0.06
+    side_rebalance_max_adjust: float = 0.012
     adaptive_side_target_strength: float = 0.22
     adaptive_side_target_min: float = 0.35
     adaptive_side_target_max: float = 0.65
@@ -137,6 +146,11 @@ class MythosConfig:
     nonconformity_override_conviction: float = 0.88
     nonconformity_override_edge_buffer: float = 0.003
     nonconformity_override_confidence_buffer: float = 0.04
+    nonconformity_target_reject_rate: float = 0.48
+    nonconformity_reject_tolerance: float = 0.12
+    nonconformity_adaptive_relax: float = 0.16
+    nonconformity_adaptive_max_relax: float = 0.18
+    nonconformity_soft_override_margin: float = 0.04
     conviction_guard_window: int = 32
     conviction_guard_min_trades: int = 8
     conviction_guard_min_expectancy_r: float = 0.03
@@ -235,6 +249,10 @@ class MythosConfig:
     counterfactual_margin: float = 0.006
     counterfactual_uncertainty_weight: float = 0.50
     counterfactual_min_alt_hits: int = 8
+    counterfactual_target_reject_rate: float = 0.70
+    counterfactual_reject_tolerance: float = 0.10
+    counterfactual_adaptive_relax: float = 0.35
+    counterfactual_adaptive_min_adv_floor: float = 0.25
 
     def __post_init__(self) -> None:
         # Keep legacy/new naming aligned for callers.
@@ -250,6 +268,27 @@ class MythosConfig:
         self.transition_memory_uncertainty_scale = float(self.transition_uncertainty_gain)
         self.adaptive_side_target_strength = float(
             np.clip(getattr(self, "adaptive_side_target_strength", 0.22), 0.0, 1.0)
+        )
+        self.side_rebalance_enable = bool(getattr(self, "side_rebalance_enable", True))
+        self.side_rebalance_warmup_trades = int(max(getattr(self, "side_rebalance_warmup_trades", 40), 1))
+        self.side_rebalance_window = int(max(getattr(self, "side_rebalance_window", 96), 8))
+        self.side_rebalance_short_target = float(
+            np.clip(getattr(self, "side_rebalance_short_target", 0.32), 0.05, 0.50)
+        )
+        self.side_rebalance_short_boost = float(
+            np.clip(getattr(self, "side_rebalance_short_boost", 0.0035), 0.0, 0.05)
+        )
+        self.side_rebalance_long_penalty = float(
+            np.clip(getattr(self, "side_rebalance_long_penalty", 0.0030), 0.0, 0.05)
+        )
+        self.side_rebalance_conf_boost = float(
+            np.clip(getattr(self, "side_rebalance_conf_boost", 0.02), 0.0, 0.20)
+        )
+        self.side_rebalance_quality_guard = float(
+            np.clip(getattr(self, "side_rebalance_quality_guard", 0.06), 0.0, 0.50)
+        )
+        self.side_rebalance_max_adjust = float(
+            np.clip(getattr(self, "side_rebalance_max_adjust", 0.012), 0.0, 0.10)
         )
         tmin = float(np.clip(getattr(self, "adaptive_side_target_min", 0.35), 0.05, 0.95))
         tmax = float(np.clip(getattr(self, "adaptive_side_target_max", 0.65), 0.05, 0.95))
@@ -429,6 +468,21 @@ class MythosConfig:
         self.nonconformity_override_confidence_buffer = float(
             np.clip(getattr(self, "nonconformity_override_confidence_buffer", 0.04), 0.0, 1.0)
         )
+        self.nonconformity_target_reject_rate = float(
+            np.clip(getattr(self, "nonconformity_target_reject_rate", 0.48), 0.0, 0.99)
+        )
+        self.nonconformity_reject_tolerance = float(
+            np.clip(getattr(self, "nonconformity_reject_tolerance", 0.12), 0.0, 0.5)
+        )
+        self.nonconformity_adaptive_relax = float(
+            np.clip(getattr(self, "nonconformity_adaptive_relax", 0.16), 0.0, 1.0)
+        )
+        self.nonconformity_adaptive_max_relax = float(
+            np.clip(getattr(self, "nonconformity_adaptive_max_relax", 0.18), 0.0, 0.5)
+        )
+        self.nonconformity_soft_override_margin = float(
+            np.clip(getattr(self, "nonconformity_soft_override_margin", 0.04), 0.0, 0.5)
+        )
         self.conviction_guard_window = int(
             max(getattr(self, "conviction_guard_window", self.conviction_recent_window), 8)
         )
@@ -479,6 +533,18 @@ class MythosConfig:
         )
         self.meta_bootstrap_conf_gain = float(
             np.clip(getattr(self, "meta_bootstrap_conf_gain", 0.12), 0.0, 0.49)
+        )
+        self.counterfactual_target_reject_rate = float(
+            np.clip(getattr(self, "counterfactual_target_reject_rate", 0.70), 0.0, 0.99)
+        )
+        self.counterfactual_reject_tolerance = float(
+            np.clip(getattr(self, "counterfactual_reject_tolerance", 0.10), 0.0, 0.5)
+        )
+        self.counterfactual_adaptive_relax = float(
+            np.clip(getattr(self, "counterfactual_adaptive_relax", 0.35), 0.0, 1.0)
+        )
+        self.counterfactual_adaptive_min_adv_floor = float(
+            np.clip(getattr(self, "counterfactual_adaptive_min_adv_floor", 0.25), 0.05, 1.0)
         )
         floor = float(np.clip(getattr(self, "meta_learner_ready_prob_floor", 0.42), 0.0, 1.0))
         ceil = float(np.clip(getattr(self, "meta_learner_ready_prob_ceiling", 0.58), 0.0, 1.0))

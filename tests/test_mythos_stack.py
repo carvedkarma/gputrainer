@@ -14,6 +14,9 @@ from mythos.world_model import WorldModel
 from mythos.walkforward import (
     NeuralMetaLearner,
     V3ExecutionGovernor,
+    _adaptive_counterfactual_pass,
+    _adaptive_nonconformity_gate,
+    _adaptive_rebalance_adjustment,
     _bayes_quality_gate,
     _conviction_score,
     _counterfactual_pass,
@@ -567,5 +570,91 @@ def test_nonconformity_score_behaves_monotonically_with_quality():
     assert 0.0 <= bad <= 1.0
     assert 0.0 <= good <= 1.0
     assert good < bad
+
+
+def test_adaptive_counterfactual_relaxes_when_reject_rate_overshoots():
+    class _StubAnalog:
+        def query(self, x, side):
+            return {"analog_edge": 0.0015 if side == 1 else 0.0012, "analog_conf": 0.52, "analog_hits": 20.0}
+
+    cfg = MythosConfig(
+        counterfactual_min_advantage_r=0.01,
+        counterfactual_margin=0.01,
+        counterfactual_target_reject_rate=0.55,
+        counterfactual_reject_tolerance=0.05,
+        counterfactual_adaptive_relax=0.8,
+        counterfactual_adaptive_min_adv_floor=0.2,
+    )
+    strict = _counterfactual_pass(
+        analog_mem=_StubAnalog(),
+        x=np.array([0.0], dtype=np.float64),
+        side=1,
+        edge=0.006,
+        uncertainty=0.3,
+        cfg=cfg,
+    )
+    relaxed = _adaptive_counterfactual_pass(
+        analog_mem=_StubAnalog(),
+        x=np.array([0.0], dtype=np.float64),
+        side=1,
+        edge=0.006,
+        uncertainty=0.3,
+        cfg=cfg,
+        accepted_trades=20,
+        cf_rejects=90,
+    )
+    assert strict is False
+    assert relaxed is True
+
+
+def test_adaptive_nonconformity_soft_override_activates():
+    cfg = MythosConfig(
+        nonconformity_enable=True,
+        nonconformity_warmup_trades=12,
+        nonconformity_window=64,
+        nonconformity_quantile=0.80,
+        nonconformity_margin=0.01,
+        nonconformity_min_winners=10,
+        nonconformity_target_reject_rate=0.45,
+        nonconformity_reject_tolerance=0.05,
+        nonconformity_adaptive_relax=0.5,
+        nonconformity_adaptive_max_relax=0.2,
+        nonconformity_soft_override_margin=0.06,
+    )
+    winner_scores = [0.10, 0.13, 0.15, 0.17, 0.18, 0.20, 0.14, 0.16, 0.19, 0.21, 0.12, 0.13]
+    gate = _adaptive_nonconformity_gate(
+        score=0.28,
+        conviction=0.86,
+        edge=0.018,
+        confidence=0.62,
+        total_trades=24,
+        winner_scores=winner_scores,
+        cfg=cfg,
+        accepted_trades=20,
+        nonconformity_rejects=80,
+    )
+    assert gate["ready"] == 1.0
+    assert gate["pass"] == 1.0
+    assert gate["override"] == 1.0
+    assert gate["adaptive_soft_override"] == 1.0
+
+
+def test_side_rebalance_boosts_shorts_when_underrepresented():
+    cfg = MythosConfig(
+        side_rebalance_enable=True,
+        side_rebalance_warmup_trades=12,
+        side_rebalance_window=20,
+        side_rebalance_short_target=0.35,
+        side_rebalance_short_boost=0.006,
+        side_rebalance_long_penalty=0.004,
+        side_rebalance_quality_guard=0.08,
+    )
+    long_hist = [0.01] * 14
+    short_hist = [0.03] * 2
+    short_adj = _adaptive_rebalance_adjustment(side=-1, long_trades=long_hist, short_trades=short_hist, cfg=cfg)
+    long_adj = _adaptive_rebalance_adjustment(side=1, long_trades=long_hist, short_trades=short_hist, cfg=cfg)
+    assert short_adj["edge_adjust"] > 0.0
+    assert short_adj["conf_adjust"] >= 0.0
+    assert long_adj["edge_adjust"] < 0.0
 
 

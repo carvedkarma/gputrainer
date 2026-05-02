@@ -75,3 +75,42 @@ def test_new_bayes_and_nonconformity_knobs_are_normalized():
     assert cfg.nonconformity_override_conviction == 1.0
     assert cfg.nonconformity_override_edge_buffer == 0.0
     assert cfg.nonconformity_override_confidence_buffer == 1.0
+
+
+def test_new_adaptive_reject_and_side_rebalance_knobs_are_normalized():
+    cfg = MythosConfig(
+        side_rebalance_warmup_trades=0,
+        side_rebalance_window=0,
+        side_rebalance_short_target=0.9,
+        side_rebalance_short_boost=-0.1,
+        side_rebalance_long_penalty=-0.2,
+        side_rebalance_conf_boost=9.0,
+        side_rebalance_quality_guard=9.0,
+        side_rebalance_max_adjust=9.0,
+        counterfactual_target_reject_rate=2.0,
+        counterfactual_reject_tolerance=-1.0,
+        counterfactual_adaptive_relax=2.0,
+        counterfactual_adaptive_min_adv_floor=0.0,
+        nonconformity_target_reject_rate=2.0,
+        nonconformity_reject_tolerance=-1.0,
+        nonconformity_adaptive_relax=2.0,
+        nonconformity_adaptive_max_relax=2.0,
+        nonconformity_soft_override_margin=-1.0,
+    )
+    assert cfg.side_rebalance_warmup_trades >= 1
+    assert cfg.side_rebalance_window >= 8
+    assert cfg.side_rebalance_short_target == 0.5
+    assert cfg.side_rebalance_short_boost == 0.0
+    assert cfg.side_rebalance_long_penalty == 0.0
+    assert cfg.side_rebalance_conf_boost == 0.2
+    assert cfg.side_rebalance_quality_guard == 0.5
+    assert cfg.side_rebalance_max_adjust == 0.1
+    assert cfg.counterfactual_target_reject_rate == 0.99
+    assert cfg.counterfactual_reject_tolerance == 0.0
+    assert cfg.counterfactual_adaptive_relax == 1.0
+    assert cfg.counterfactual_adaptive_min_adv_floor == 0.05
+    assert cfg.nonconformity_target_reject_rate == 0.99
+    assert cfg.nonconformity_reject_tolerance == 0.0
+    assert cfg.nonconformity_adaptive_relax == 1.0
+    assert cfg.nonconformity_adaptive_max_relax == 0.5
+    assert cfg.nonconformity_soft_override_margin == 0.0
