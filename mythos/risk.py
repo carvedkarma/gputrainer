@@ -31,6 +31,26 @@ class RiskConstitution:
         self.realized_r_history: List[float] = []
         self._recent_high_conv_rr: List[float] = []
         self._recent_high_conv_max = int(max(getattr(cfg, "high_conviction_expectancy_window", 64), 8))
+        self._equity_curve: List[float] = []
+
+    def current_drawdown_r(self) -> float:
+        return float(max(self.state.peak_equity_r - self.state.equity_r, 0.0))
+
+    def should_disable_leverage(self) -> bool:
+        dd = self.current_drawdown_r()
+        return bool(dd >= float(max(getattr(self.cfg, "disable_leverage_drawdown_r", 6.0), 0.0)))
+
+    def should_disable_conviction_boost(self) -> bool:
+        dd = self.current_drawdown_r()
+        return bool(dd >= float(max(getattr(self.cfg, "disable_conviction_boost_drawdown_r", 6.0), 0.0)))
+
+    def should_stop_trading(self) -> bool:
+        if not bool(getattr(self.cfg, "emergency_stop_enable", True)):
+            return False
+        dd = self.current_drawdown_r()
+        dd_stop = float(max(getattr(self.cfg, "emergency_max_drawdown_r", 12.0), 0.0))
+        eq_floor = float(getattr(self.cfg, "emergency_equity_floor_r", -18.0))
+        return bool(dd >= dd_stop or self.state.equity_r <= eq_floor)
 
     def _to_bar_index(self, ts_ms: int | None = None, bar_index: int | None = None) -> int:
         if bar_index is not None:
@@ -97,6 +117,15 @@ class RiskConstitution:
         safe_unc = max(float(uncertainty), 0.0)
         conf = 1.0 / (1.0 + safe_unc)
         size_mult = conf * (1.0 + safe_edge)
+        dd = self.current_drawdown_r()
+        dd_start = float(max(getattr(self.cfg, "drawdown_size_start_r", 6.0), 0.0))
+        dd_max = float(max(getattr(self.cfg, "drawdown_size_full_r", 14.0), dd_start + 1e-6))
+        min_frac = float(np.clip(getattr(self.cfg, "drawdown_size_min_scale", 0.35), 0.05, 1.0))
+        if dd > dd_start:
+            span = max(dd_max - dd_start, 1e-6)
+            severity = float(np.clip((dd - dd_start) / span, 0.0, 1.0))
+            throttle = float(1.0 - (1.0 - min_frac) * severity)
+            size_mult *= throttle
         conv = float(np.clip(conviction if conviction is not None else conf, 0.0, 1.0))
         score_thr = float(np.clip(getattr(self.cfg, "conviction_score_threshold", 0.62), 0.0, 1.0))
         guard_window = int(max(getattr(self.cfg, "conviction_guard_window", 32), 1))
@@ -106,7 +135,7 @@ class RiskConstitution:
         hist = [float(v) for v in hist_src[-guard_window:]] if hist_src else []
         hist_expectancy = float(np.mean(np.asarray(hist, dtype=np.float64))) if hist else 0.0
         hist_ready = len(hist) >= guard_min_trades and hist_expectancy >= guard_min_expectancy
-        if allow_conviction_boost and conv >= score_thr and hist_ready:
+        if allow_conviction_boost and (not self.should_disable_conviction_boost()) and conv >= score_thr and hist_ready:
             boost = float(np.clip(getattr(self.cfg, "conviction_boost", 0.35), 0.0, 2.0))
             span = max(1.0 - score_thr, 1e-6)
             gain = 1.0 + boost * ((conv - score_thr) / span)

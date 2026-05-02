@@ -1874,6 +1874,8 @@ def _run_fold(
             leveraged_recent_ctx=sure_lev_recent_ctx,
             cfg=cfg,
         )
+        if risk.should_disable_leverage():
+            leverage_allowed = False
         net_edge_est = float(edge - _estimate_execution_cost_r(edge=edge, uncertainty=uncertainty, cfg=cfg))
         if net_edge_est < float(max(getattr(cfg, "leverage_net_edge_floor", 0.002), 0.0)):
             leverage_allowed = False

@@ -658,3 +658,21 @@ def test_side_rebalance_boosts_shorts_when_underrepresented():
     assert long_adj["edge_adjust"] < 0.0
 
 
+def test_risk_emergency_stop_and_size_throttle_behave_safely():
+    cfg = MythosConfig(
+        emergency_stop_enable=True,
+        emergency_max_drawdown_r=2.0,
+        emergency_equity_floor_r=-3.0,
+        drawdown_size_start_r=1.0,
+        drawdown_size_full_r=3.0,
+        drawdown_size_min_scale=0.4,
+        disable_leverage_drawdown_r=1.0,
+    )
+    risk = RiskConstitution(cfg)
+    risk.record_trade(-1.5, bar_index=1, conviction=0.8)
+    risk.record_trade(-1.0, bar_index=2, conviction=0.8)
+    assert risk.should_disable_leverage() is True
+    assert risk.should_stop_trading() is True
+    base = 1.0 / (1.0 + 0.2) * (1.0 + 0.03)
+    sized = risk.position_size_multiplier(edge=0.03, uncertainty=0.2, conviction=0.9)
+    assert sized <= base

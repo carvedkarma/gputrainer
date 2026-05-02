@@ -120,6 +120,22 @@ class MythosConfig:
     execution_fee_bps: float = 4.0
     execution_slippage_bps: float = 2.0
     execution_cost_cap_r: float = 0.35
+    # Capital-protection controls (CLI names preserved for compatibility).
+    emergency_stop_r: float = -35.0
+    dd_size_throttle_start_r: float = 10.0
+    dd_size_throttle_end_r: float = 24.0
+    dd_size_throttle_min: float = 0.40
+    dd_disable_leverage_r: float = 12.0
+    dd_risk_recovery_r: float = 6.0
+    # Internal/legacy aliases kept for backward compatibility.
+    emergency_stop_enable: bool = True
+    emergency_max_drawdown_r: float = 12.0
+    emergency_equity_floor_r: float = -18.0
+    drawdown_size_start_r: float = 6.0
+    drawdown_size_full_r: float = 14.0
+    drawdown_size_min_scale: float = 0.35
+    disable_conviction_boost_drawdown_r: float = 6.0
+    disable_leverage_drawdown_r: float = 6.0
     bayes_quality_enable: bool = True
     bayes_quality_warmup_trades: int = 20
     bayes_quality_decay: float = 0.995
@@ -402,6 +418,49 @@ class MythosConfig:
         self.execution_cost_cap_r = float(
             np.clip(getattr(self, "execution_cost_cap_r", 0.35), 0.0, 5.0)
         )
+        self.emergency_stop_r = float(getattr(self, "emergency_stop_r", -35.0))
+        raw_dd_start = float(getattr(self, "dd_size_throttle_start_r", 10.0))
+        raw_drawdown_start = float(getattr(self, "drawdown_size_start_r", 6.0))
+        if abs(raw_dd_start - 10.0) <= 1e-12 and abs(raw_drawdown_start - 6.0) > 1e-12:
+            raw_dd_start = raw_drawdown_start
+        self.dd_size_throttle_start_r = float(max(raw_dd_start, 0.0))
+        raw_dd_end = float(getattr(self, "dd_size_throttle_end_r", 24.0))
+        raw_drawdown_end = float(getattr(self, "drawdown_size_full_r", 14.0))
+        if abs(raw_dd_end - 24.0) <= 1e-12 and abs(raw_drawdown_end - 14.0) > 1e-12:
+            raw_dd_end = raw_drawdown_end
+        self.dd_size_throttle_end_r = float(max(raw_dd_end, self.dd_size_throttle_start_r + 1e-6))
+        raw_dd_min = float(getattr(self, "dd_size_throttle_min", 0.40))
+        raw_drawdown_min = float(getattr(self, "drawdown_size_min_scale", 0.35))
+        if abs(raw_dd_min - 0.40) <= 1e-12 and abs(raw_drawdown_min - 0.35) > 1e-12:
+            raw_dd_min = raw_drawdown_min
+        self.dd_size_throttle_min = float(np.clip(raw_dd_min, 0.05, 1.0))
+        raw_dd_disable_lev = float(getattr(self, "dd_disable_leverage_r", 12.0))
+        raw_disable_lev = float(getattr(self, "disable_leverage_drawdown_r", 6.0))
+        if abs(raw_dd_disable_lev - 12.0) <= 1e-12 and abs(raw_disable_lev - 6.0) > 1e-12:
+            raw_dd_disable_lev = raw_disable_lev
+        self.dd_disable_leverage_r = float(max(raw_dd_disable_lev, 0.0))
+        self.dd_risk_recovery_r = float(
+            np.clip(
+                getattr(self, "dd_risk_recovery_r", max(0.5 * self.dd_disable_leverage_r, 0.0)),
+                0.0,
+                max(self.dd_disable_leverage_r, 1e-6),
+            )
+        )
+        self.size_throttle_dd_start_r = float(self.dd_size_throttle_start_r)
+        self.size_throttle_dd_max_r = float(self.dd_size_throttle_end_r)
+        self.size_throttle_min_fraction = float(self.dd_size_throttle_min)
+        self.emergency_stop_enable = bool(getattr(self, "emergency_stop_enable", True))
+        self.emergency_max_drawdown_r = float(max(getattr(self, "emergency_max_drawdown_r", 12.0), 0.0))
+        self.emergency_equity_floor_r = float(
+            np.clip(getattr(self, "emergency_equity_floor_r", self.emergency_stop_r), -200.0, 0.0)
+        )
+        self.drawdown_size_start_r = float(self.dd_size_throttle_start_r)
+        self.drawdown_size_full_r = float(self.dd_size_throttle_end_r)
+        self.drawdown_size_min_scale = float(self.dd_size_throttle_min)
+        self.disable_conviction_boost_drawdown_r = float(
+            max(getattr(self, "disable_conviction_boost_drawdown_r", self.dd_disable_leverage_r), 0.0)
+        )
+        self.disable_leverage_drawdown_r = float(self.dd_disable_leverage_r)
         self.bayes_quality_enable = bool(getattr(self, "bayes_quality_enable", True))
         self.bayes_quality_warmup_trades = int(max(getattr(self, "bayes_quality_warmup_trades", 20), 1))
         self.bayes_quality_decay = float(

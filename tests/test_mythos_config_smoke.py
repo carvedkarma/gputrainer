@@ -114,3 +114,22 @@ def test_new_adaptive_reject_and_side_rebalance_knobs_are_normalized():
     assert cfg.nonconformity_adaptive_relax == 1.0
     assert cfg.nonconformity_adaptive_max_relax == 0.5
     assert cfg.nonconformity_soft_override_margin == 0.0
+
+
+def test_capital_protection_knobs_are_normalized():
+    cfg = MythosConfig(
+        emergency_max_drawdown_r=-1.0,
+        emergency_equity_floor_r=-999.0,
+        drawdown_size_start_r=-1.0,
+        drawdown_size_full_r=-2.0,
+        drawdown_size_min_scale=-1.0,
+        disable_conviction_boost_drawdown_r=-1.0,
+        disable_leverage_drawdown_r=-1.0,
+    )
+    assert cfg.emergency_max_drawdown_r == 0.0
+    assert cfg.emergency_equity_floor_r == -200.0
+    assert cfg.drawdown_size_start_r == 0.0
+    assert cfg.drawdown_size_full_r > cfg.drawdown_size_start_r
+    assert cfg.drawdown_size_min_scale == 0.05
+    assert cfg.disable_conviction_boost_drawdown_r == 0.0
+    assert cfg.disable_leverage_drawdown_r == 0.0

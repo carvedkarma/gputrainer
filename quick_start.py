@@ -5250,6 +5250,20 @@ Examples:
                         help="MYTHOS daily loss cap in R (default: -4.0)")
     parser.add_argument("--mythos-weekly-loss-cap", type=float, default=-12.0,
                         help="MYTHOS weekly loss cap in R (default: -12.0)")
+    parser.add_argument("--mythos-emergency-stop-r", type=float, default=-18.0,
+                        help="MYTHOS hard emergency stop: halt new trades once fold equity reaches this floor in R (default: -18.0)")
+    parser.add_argument("--mythos-emergency-max-drawdown-r", type=float, default=12.0,
+                        help="MYTHOS hard emergency stop: halt new trades once peak-to-trough drawdown reaches this R (default: 12.0)")
+    parser.add_argument("--mythos-drawdown-size-start-r", type=float, default=6.0,
+                        help="MYTHOS size throttle: drawdown level where position-size throttling starts (default: 6.0)")
+    parser.add_argument("--mythos-drawdown-size-full-r", type=float, default=14.0,
+                        help="MYTHOS size throttle: drawdown level where minimum throttle is reached (default: 14.0)")
+    parser.add_argument("--mythos-drawdown-size-min-scale", type=float, default=0.35,
+                        help="MYTHOS size throttle: minimum size scaling under deep drawdown (default: 0.35)")
+    parser.add_argument("--mythos-disable-conviction-boost-dd-r", type=float, default=6.0,
+                        help="MYTHOS leverage safety: disable conviction boost once drawdown reaches this R (default: 6.0)")
+    parser.add_argument("--mythos-disable-leverage-dd-r", type=float, default=6.0,
+                        help="MYTHOS leverage safety: disable leverage once drawdown reaches this R (default: 6.0)")
     parser.add_argument("--mythos-cooldown-bars", type=int, default=4,
                         help="MYTHOS bars of cooldown after each executed trade (default: 4)")
     parser.add_argument("--mythos-max-trades-per-day", type=int, default=8,
@@ -6627,6 +6641,12 @@ Examples:
                 min_edge_threshold=args.mythos_edge_threshold,
                 daily_loss_cap_r=args.mythos_daily_loss_cap,
                 weekly_loss_cap_r=args.mythos_weekly_loss_cap,
+                emergency_stop_r=args.mythos_emergency_stop_r,
+                dd_size_throttle_start_r=args.mythos_dd_size_throttle_start_r,
+                dd_size_throttle_end_r=args.mythos_dd_size_throttle_end_r,
+                dd_size_throttle_min=args.mythos_dd_size_throttle_min,
+                dd_disable_leverage_r=args.mythos_dd_disable_leverage_r,
+                dd_risk_recovery_r=args.mythos_dd_risk_recovery_r,
                 cooldown_bars=args.mythos_cooldown_bars,
                 max_trades_per_day=args.mythos_max_trades_per_day,
                 max_leverage=args.mythos_max_leverage,
