@@ -5431,6 +5431,10 @@ Examples:
     parser.set_defaults(mythos_meta_fallback=True)
     parser.add_argument("--mythos-meta-fallback-lr", type=float, default=0.03,
                         help="MYTHOS v7: learning rate for fallback online meta learner (default: 0.03)")
+    parser.add_argument("--mythos-precision-min-confidence", type=float, default=0.0,
+                        help="MYTHOS precision: minimum confidence required before conviction filter (default: 0.0)")
+    parser.add_argument("--mythos-precision-min-edge", type=float, default=0.0,
+                        help="MYTHOS precision: minimum edge required before conviction filter (default: 0.0)")
     parser.add_argument("--mythos-precision-min-conviction", type=float, default=0.52,
                         help="MYTHOS precision: minimum conviction score required to execute a trade (default: 0.52)")
     parser.add_argument("--mythos-precision-high-conviction", type=float, default=0.72,
