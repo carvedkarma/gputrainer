@@ -11,7 +11,7 @@ from mythos.promotion import evaluate_promotion
 from mythos.risk import RiskConstitution
 from mythos.router import MetaRouter
 from mythos.world_model import WorldModel
-from mythos.walkforward import V3ExecutionGovernor
+from mythos.walkforward import NeuralMetaLearner, V3ExecutionGovernor, _counterfactual_pass
 
 
 def _synthetic_ohlcv_df(n: int = 900):
@@ -163,3 +163,60 @@ def test_execution_governor_side_fail_is_soft_by_default():
     gov._update_side_health(side=1, bar_idx=50)
     assert gov.side_pause_until[1] == -1
     assert gov.side_health[1] < 0.0
+
+
+def test_neural_meta_learner_fallback_trains_without_torch():
+    cfg = MythosConfig(
+        use_meta_learner=True,
+        meta_learner_fallback=True,
+        meta_learner_min_train_samples=16,
+        side_balance_window=64,
+    )
+    meta = NeuralMetaLearner(cfg=cfg, n_features=5)
+    assert meta.is_active() is True
+    x = np.array([0.2, -0.1, 0.05, 0.4, -0.2], dtype=np.float64)
+    for i in range(80):
+        rr = 0.7 if (i % 3) else -0.6
+        meta.update(
+            x=x,
+            edge=0.02,
+            confidence=0.56,
+            uncertainty=0.2,
+            regime=1,
+            side=1,
+            realized_r=rr,
+        )
+    p = meta.score(x=x, edge=0.02, confidence=0.56, uncertainty=0.2, regime=1, side=1)
+    assert 0.0 <= p <= 1.0
+    assert meta.is_ready() is True
+
+
+def test_counterfactual_pass_keeps_strong_live_edge():
+    class _StubAnalog:
+        def __init__(self, choose, alt):
+            self.choose = choose
+            self.alt = alt
+
+        def query(self, x, side):
+            return self.choose if side == 1 else self.alt
+
+    cfg = MythosConfig(
+        counterfactual_min_advantage_r=0.006,
+        counterfactual_risk_penalty=0.6,
+        counterfactual_margin=0.006,
+        counterfactual_uncertainty_weight=0.5,
+        counterfactual_min_alt_hits=8,
+    )
+    analog = _StubAnalog(
+        choose={"analog_edge": 0.002, "analog_conf": 0.52, "analog_hits": 20.0},
+        alt={"analog_edge": 0.003, "analog_conf": 0.51, "analog_hits": 20.0},
+    )
+    ok = _counterfactual_pass(
+        analog_mem=analog,
+        x=np.array([0.0], dtype=np.float64),
+        side=1,
+        edge=0.025,
+        uncertainty=0.18,
+        cfg=cfg,
+    )
+    assert ok is True

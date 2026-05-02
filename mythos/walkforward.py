@@ -409,12 +409,31 @@ class NeuralMetaLearner:
         self._model = None
         self._optimizer = None
         self._loss_fn = None
+        self._fallback_active = False
+        self._fb_w: Optional[np.ndarray] = None
+        self._fb_b = 0.0
         self._buffer_x: List[np.ndarray] = []
         self._buffer_y: List[float] = []
         self._max_buffer = int(max(getattr(cfg, "meta_learner_buffer_size", 6000), 256))
         self._trained_steps = 0
         self._ready = False
         self._init_model()
+
+    def _enable_fallback(self) -> None:
+        if not bool(getattr(self.cfg, "meta_learner_fallback", True)):
+            return
+        self.device = "cpu"
+        self._fallback_active = True
+        self._fb_w = np.zeros(self.n_features + 5, dtype=np.float64)
+        self._fb_b = 0.0
+        self._active = True
+
+    def _effective_min_samples(self) -> int:
+        requested = int(max(getattr(self.cfg, "meta_learner_min_train_samples", 256), 16))
+        # Fold-local training may have far fewer trades than the static default.
+        # Keep a floor, but allow earlier adaptation inside each fold.
+        fold_adaptive = int(max(min(getattr(self.cfg, "side_balance_window", 160), 192) * 0.6, 64))
+        return int(min(requested, fold_adaptive))
 
     def _init_model(self) -> None:
         if not self.enabled:
@@ -423,11 +442,13 @@ class NeuralMetaLearner:
             import torch
             import torch.nn as nn
         except Exception:
+            self._enable_fallback()
             return
         requested = str(getattr(self.cfg, "meta_learner_device", "auto")).strip().lower()
         has_cuda = bool(torch.cuda.is_available())
         if requested == "cuda":
             if not has_cuda:
+                self._enable_fallback()
                 return
             self.device = "cuda"
         elif requested == "cpu":
@@ -454,7 +475,8 @@ class NeuralMetaLearner:
         self._active = True
 
     def is_active(self) -> bool:
-        return bool(self._active and self._model is not None and self._torch is not None)
+        torch_active = bool(self._model is not None and self._torch is not None)
+        return bool(self._active and (torch_active or self._fallback_active))
 
     def is_ready(self) -> bool:
         return bool(self.is_active() and self._ready)
@@ -493,6 +515,11 @@ class NeuralMetaLearner:
         if not self.is_ready():
             return 0.5
         vec = self._meta_vector(x=x, edge=edge, confidence=confidence, uncertainty=uncertainty, regime=regime, side=side)
+        if self._fallback_active and self._fb_w is not None:
+            vv = vec / (np.linalg.norm(vec) + 1e-6)
+            z = float(np.dot(self._fb_w, vv) + self._fb_b)
+            p = 1.0 / (1.0 + float(np.exp(-np.clip(z, -40.0, 40.0))))
+            return float(np.clip(p, 0.0, 1.0))
         t = self._torch.tensor(vec.reshape(1, -1), dtype=self._torch.float32, device=self.device)
         with self._torch.no_grad():
             p = float(self._model(t).item())
@@ -544,14 +571,32 @@ class NeuralMetaLearner:
             trim = len(self._buffer_x) - self._max_buffer
             del self._buffer_x[:trim]
             del self._buffer_y[:trim]
-        min_n = int(max(getattr(self.cfg, "meta_learner_min_train_samples", 256), 16))
+        min_n = self._effective_min_samples()
         if len(self._buffer_x) < min_n:
             return
         batch_size = int(max(getattr(self.cfg, "meta_learner_batch_size", 1024), 16))
         train_steps = int(max(getattr(self.cfg, "meta_learner_train_steps", 2), 1))
-        x_np = np.asarray(self._buffer_x, dtype=np.float32)
-        y_np = np.asarray(self._buffer_y, dtype=np.float32)
+        x_np = np.asarray(self._buffer_x, dtype=np.float64)
+        y_np = np.asarray(self._buffer_y, dtype=np.float64)
         n = len(x_np)
+        if self._fallback_active and self._fb_w is not None:
+            lr = float(np.clip(getattr(self.cfg, "meta_learner_fallback_lr", 0.03), 1e-5, 0.5))
+            reg = float(np.clip(getattr(self.cfg, "meta_learner_reg_weight", 0.25), 0.0, 2.0))
+            for _ in range(train_steps):
+                idx = np.random.choice(n, size=min(batch_size, n), replace=False)
+                xb = x_np[idx]
+                yb = y_np[idx]
+                xb = xb / (np.linalg.norm(xb, axis=1, keepdims=True) + 1e-6)
+                z = np.clip(xb @ self._fb_w + self._fb_b, -40.0, 40.0)
+                pred = 1.0 / (1.0 + np.exp(-z))
+                err = pred - yb
+                grad_w = (xb.T @ err) / max(len(idx), 1) + reg * self._fb_w
+                grad_b = float(np.mean(err))
+                self._fb_w = self._fb_w - lr * grad_w
+                self._fb_b = float(self._fb_b - lr * grad_b)
+            self._trained_steps += int(train_steps)
+            self._ready = True
+            return
         for _ in range(train_steps):
             idx = np.random.choice(n, size=min(batch_size, n), replace=False)
             xb = self._torch.tensor(x_np[idx], dtype=self._torch.float32, device=self.device)
@@ -569,6 +614,7 @@ class NeuralMetaLearner:
             "active": bool(self.is_active()),
             "ready": bool(self.is_ready()),
             "device": str(self.device),
+            "fallback_active": bool(self._fallback_active),
             "buffer_size": int(len(self._buffer_x)),
             "max_buffer": int(self._max_buffer),
             "trained_steps": int(self._trained_steps),
@@ -595,8 +641,10 @@ def _counterfactual_pass(
     min_alt_hits = int(max(getattr(cfg, "counterfactual_min_alt_hits", 8), 0))
     choose_hits = float(choose.get("analog_hits", 0.0))
     alt_hits = float(alt.get("analog_hits", 0.0))
-    # Advantage must remain positive after uncertainty drag.
-    adjusted_edge = float(edge - risk_pen * uncertainty)
+    # Keep uncertainty drag proportional to edge/min-adv scale to avoid over-pruning.
+    unc = float(np.clip(uncertainty, 0.0, 2.0))
+    adjusted_edge = float(edge * (1.0 - np.clip(risk_pen * unc, 0.0, 0.95)))
+    unc_drag = float(unc_w * unc * max(min_adv, 1e-6))
     if choose_hits < min_alt_hits or alt_hits < min_alt_hits:
         # If analog support is sparse, rely on live edge instead of hard rejecting.
         return adjusted_edge >= (0.5 * min_adv)
@@ -606,10 +654,14 @@ def _counterfactual_pass(
     alt_score = float(
         alt["analog_edge"]
         + margin * (float(alt.get("analog_conf", 0.5)) - 0.5)
-        + unc_w * uncertainty
+        + unc_drag
     )
     analog_adv = float(choose_score - alt_score)
-    return (adjusted_edge + analog_adv) >= min_adv
+    combo = float(adjusted_edge + analog_adv)
+    # Allow strong live-edge trades to pass unless counterfactual evidence is decisively negative.
+    if adjusted_edge >= (0.75 * min_adv) and analog_adv >= (-0.5 * min_adv):
+        return True
+    return combo >= min_adv
 
 
 def _select_fold_metric(fold: Dict[str, object], metric: str) -> float:
@@ -874,7 +926,17 @@ def _run_fold(
         meta_ready_ceiling = float(np.clip(getattr(cfg, "meta_learner_ready_prob_ceiling", 0.58), 0.0, 1.0))
         meta_warmup = int(max(getattr(cfg, "meta_learner_warmup_samples", 1024), 0))
         meta_buffer_n = int(getattr(meta, "_buffer_x", []) and len(getattr(meta, "_buffer_x", [])) or 0)
-        meta_ready = meta_buffer_n >= meta_warmup and (meta_p <= meta_ready_floor or meta_p >= meta_ready_ceiling)
+        runtime_warmup = int(meta_warmup)
+        if hasattr(meta, "_effective_min_samples"):
+            try:
+                runtime_warmup = int(min(runtime_warmup, max(int(meta._effective_min_samples()) * 2, 64)))
+            except Exception:
+                runtime_warmup = int(meta_warmup)
+        meta_ready = (
+            bool(meta.is_ready())
+            and meta_buffer_n >= runtime_warmup
+            and (meta_p <= meta_ready_floor or meta_p >= meta_ready_ceiling)
+        )
         if abs(meta_p - 0.5) > 1e-9:
             meta_mode_bars += 1
         if side != 0 and meta_ready and meta_p < meta_min_side_prob:

@@ -5424,6 +5424,13 @@ Examples:
                         help="MYTHOS v7: lower probability bound considered neutral during meta warmup (default: 0.42)")
     parser.add_argument("--mythos-meta-ready-prob-ceiling", type=float, default=0.58,
                         help="MYTHOS v7: upper probability bound considered neutral during meta warmup (default: 0.58)")
+    parser.add_argument("--mythos-meta-fallback", dest="mythos_meta_fallback", action="store_true",
+                        help="MYTHOS v7: enable fallback online meta learner when torch/cuda meta model is unavailable (default: enabled)")
+    parser.add_argument("--mythos-no-meta-fallback", dest="mythos_meta_fallback", action="store_false",
+                        help="MYTHOS v7: disable fallback meta learner")
+    parser.set_defaults(mythos_meta_fallback=True)
+    parser.add_argument("--mythos-meta-fallback-lr", type=float, default=0.03,
+                        help="MYTHOS v7: learning rate for fallback online meta learner (default: 0.03)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")
@@ -6482,6 +6489,8 @@ Examples:
                 meta_learner_edge_blend=args.mythos_meta_edge_gain,
                 meta_learner_conf_blend=args.mythos_meta_confidence_gain,
                 meta_learner_uncertainty_penalty=args.mythos_meta_uncertainty_gain,
+                meta_learner_fallback=args.mythos_meta_fallback,
+                meta_learner_fallback_lr=args.mythos_meta_fallback_lr,
                 meta_learner_min_train_samples=args.mythos_meta_min_train_samples,
                 meta_learner_warmup_samples=args.mythos_meta_warmup_samples,
                 meta_learner_ready_prob_floor=args.mythos_meta_ready_prob_floor,

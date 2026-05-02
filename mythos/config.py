@@ -115,6 +115,8 @@ class MythosConfig:
     meta_learner_edge_blend: float = 0.30
     meta_learner_conf_blend: float = 0.20
     meta_learner_uncertainty_penalty: float = 0.80
+    meta_learner_fallback: bool = True
+    meta_learner_fallback_lr: float = 0.03
     # Aliases used by CLI for readability.
     meta_learner_edge_gain: float = 0.30
     meta_learner_confidence_gain: float = 0.20
@@ -178,6 +180,10 @@ class MythosConfig:
             meta_dev = "auto"
         self.meta_learner_device = meta_dev
         self.allow_cpu_meta_learner = bool(meta_dev in {"auto", "cpu"})
+        self.meta_learner_fallback = bool(getattr(self, "meta_learner_fallback", True))
+        self.meta_learner_fallback_lr = float(
+            np.clip(getattr(self, "meta_learner_fallback_lr", 0.03), 1e-5, 0.5)
+        )
         floor = float(np.clip(getattr(self, "meta_learner_ready_prob_floor", 0.42), 0.0, 1.0))
         ceil = float(np.clip(getattr(self, "meta_learner_ready_prob_ceiling", 0.58), 0.0, 1.0))
         if floor > ceil:
