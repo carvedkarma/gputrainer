@@ -29,6 +29,8 @@ class RiskConstitution:
         self.cfg = cfg
         self.state = RiskState()
         self.realized_r_history: List[float] = []
+        self._recent_high_conv_rr: List[float] = []
+        self._recent_high_conv_max = int(max(getattr(cfg, "high_conviction_expectancy_window", 64), 8))
 
     def _to_bar_index(self, ts_ms: int | None = None, bar_index: int | None = None) -> int:
         if bar_index is not None:
@@ -84,6 +86,7 @@ class RiskConstitution:
         uncertainty: float,
         regime: int | None = None,
         conviction: float | None = None,
+        allow_conviction_boost: bool = True,
     ) -> float:
         """
         Apply uncertainty-aware fractional sizing.
@@ -95,7 +98,7 @@ class RiskConstitution:
         size_mult = conf * (1.0 + safe_edge)
         conv = float(np.clip(conviction if conviction is not None else conf, 0.0, 1.0))
         score_thr = float(np.clip(getattr(self.cfg, "conviction_score_threshold", 0.62), 0.0, 1.0))
-        if conv >= score_thr:
+        if allow_conviction_boost and conv >= score_thr:
             boost = float(np.clip(getattr(self.cfg, "conviction_boost", 0.35), 0.0, 2.0))
             span = max(1.0 - score_thr, 1e-6)
             gain = 1.0 + boost * ((conv - score_thr) / span)
@@ -103,6 +106,11 @@ class RiskConstitution:
         max_mult = float(max(getattr(self.cfg, "conviction_max_size_mult", self.cfg.max_size_mult), self.cfg.max_size_mult))
         size_mult = np.clip(size_mult, self.cfg.min_size_mult, max_mult)
         return float(size_mult)
+
+    def high_conviction_expectancy(self) -> float:
+        if not self._recent_high_conv_rr:
+            return 0.0
+        return float(np.mean(np.asarray(self._recent_high_conv_rr, dtype=np.float64)))
 
     def sized_r(self, expected_r: float, uncertainty: float) -> float:
         # Legacy alias retained for compatibility.
@@ -116,11 +124,19 @@ class RiskConstitution:
         edge: float | None = None,
         uncertainty: float | None = None,
         bar_index: int | None = None,
+        conviction: float | None = None,
     ) -> None:
         _ = (edge, uncertainty)
         bar_index = self._to_bar_index(ts_ms=ts_ms, bar_index=bar_index)
         self._update_calendar(bar_index)
         self.realized_r_history.append(float(realized_r))
+        if conviction is not None:
+            conv = float(np.clip(conviction, 0.0, 1.0))
+            thr = float(np.clip(getattr(self.cfg, "precision_high_conviction", 0.72), 0.0, 1.0))
+            if conv >= thr:
+                self._recent_high_conv_rr.append(float(realized_r))
+                if len(self._recent_high_conv_rr) > self._recent_high_conv_max:
+                    del self._recent_high_conv_rr[0 : len(self._recent_high_conv_rr) - self._recent_high_conv_max]
         self.state.daily_r += float(realized_r)
         self.state.weekly_r += float(realized_r)
         self.state.equity_r += float(realized_r)

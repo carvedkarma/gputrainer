@@ -5453,6 +5453,30 @@ Examples:
                         help="MYTHOS precision: leverage boost intensity on high-conviction setups (default: 0.35)")
     parser.add_argument("--mythos-conviction-max-size-mult", type=float, default=2.2,
                         help="MYTHOS precision: cap for leverage multiplier after conviction boost (default: 2.2)")
+    parser.add_argument("--mythos-conviction-recent-window", type=int, default=64,
+                        help="MYTHOS precision: recent high-conviction trades used to confirm leverage boost (default: 64)")
+    parser.add_argument("--mythos-conviction-recent-min-trades", type=int, default=20,
+                        help="MYTHOS precision: minimum recent high-conviction trades before leverage boost can activate (default: 20)")
+    parser.add_argument("--mythos-conviction-recent-min-expectancy", type=float, default=0.05,
+                        help="MYTHOS precision: minimum recent high-conviction expectancy required for leverage boost (default: 0.05)")
+    parser.add_argument("--mythos-short-boost-enable", action="store_true", default=True,
+                        help="MYTHOS adaptive: enable short-side edge boost when short side outperforms (default: enabled)")
+    parser.add_argument("--mythos-no-short-boost-enable", dest="mythos_short_boost_enable", action="store_false",
+                        help="MYTHOS adaptive: disable short-side outperformance boost")
+    parser.add_argument("--mythos-short-boost-window", type=int, default=96,
+                        help="MYTHOS adaptive: side performance window used for short outperformance boost (default: 96)")
+    parser.add_argument("--mythos-short-boost-min-trades", type=int, default=20,
+                        help="MYTHOS adaptive: minimum side trades in window before short boost can activate (default: 20)")
+    parser.add_argument("--mythos-short-boost-threshold-r", type=float, default=0.08,
+                        help="MYTHOS adaptive: required short expectancy edge over long to activate boost (default: 0.08)")
+    parser.add_argument("--mythos-short-boost-edge", type=float, default=0.004,
+                        help="MYTHOS adaptive: additive edge boost when short side outperforms (default: 0.004)")
+    parser.add_argument("--mythos-short-boost-confidence", type=float, default=0.03,
+                        help="MYTHOS adaptive: confidence boost when short side outperforms (default: 0.03)")
+    parser.add_argument("--mythos-meta-bootstrap-samples", type=int, default=1024,
+                        help="MYTHOS v7: bootstrap samples from training analog memory to pre-warm meta learner (default: 1024)")
+    parser.add_argument("--mythos-meta-bootstrap-epochs", type=int, default=2,
+                        help="MYTHOS v7: bootstrap passes over synthetic meta warmup samples (default: 2)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")
@@ -6473,6 +6497,15 @@ Examples:
                 conviction_score_threshold=args.mythos_conviction_score_threshold,
                 conviction_boost=args.mythos_conviction_boost,
                 conviction_max_size_mult=args.mythos_conviction_max_size_mult,
+                conviction_recent_window=args.mythos_conviction_recent_window,
+                conviction_recent_min_trades=args.mythos_conviction_recent_min_trades,
+                conviction_recent_min_expectancy=args.mythos_conviction_recent_min_expectancy,
+                short_boost_enable=args.mythos_short_boost_enable,
+                short_boost_window=args.mythos_short_boost_window,
+                short_boost_min_trades=args.mythos_short_boost_min_trades,
+                short_boost_threshold_r=args.mythos_short_boost_threshold_r,
+                short_boost_edge=args.mythos_short_boost_edge,
+                short_boost_confidence=args.mythos_short_boost_confidence,
                 drawdown_edge_start_r=args.mythos_drawdown_edge_start_r,
                 drawdown_edge_step_r=args.mythos_drawdown_edge_step_r,
                 drawdown_edge_boost=args.mythos_drawdown_edge_boost,
@@ -6524,6 +6557,8 @@ Examples:
                 meta_learner_uncertainty_penalty=args.mythos_meta_uncertainty_gain,
                 meta_learner_fallback=args.mythos_meta_fallback,
                 meta_learner_fallback_lr=args.mythos_meta_fallback_lr,
+                meta_bootstrap_samples=args.mythos_meta_bootstrap_samples,
+                meta_bootstrap_epochs=args.mythos_meta_bootstrap_epochs,
                 meta_learner_min_train_samples=args.mythos_meta_min_train_samples,
                 meta_learner_warmup_samples=args.mythos_meta_warmup_samples,
                 meta_learner_ready_prob_floor=args.mythos_meta_ready_prob_floor,

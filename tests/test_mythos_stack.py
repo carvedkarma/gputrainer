@@ -252,3 +252,50 @@ def test_conviction_score_increases_with_better_signal_quality():
     assert 0.0 <= low <= 1.0
     assert 0.0 <= high <= 1.0
     assert high > low
+
+
+def test_meta_bootstrap_activates_learner_readiness():
+    cfg = MythosConfig(
+        use_meta_learner=True,
+        meta_learner_fallback=True,
+        meta_bootstrap_samples=128,
+        meta_bootstrap_epochs=2,
+        meta_learner_min_train_samples=256,
+    )
+    meta = NeuralMetaLearner(cfg=cfg, n_features=5)
+    rng = np.random.default_rng(123)
+    X = rng.normal(0.0, 1.0, size=(200, 5)).astype(np.float64)
+    rr = rng.normal(0.05, 0.6, size=200).astype(np.float64)
+    sides = np.where(rng.random(200) > 0.5, 1, -1).astype(np.int64)
+    applied = meta.bootstrap_from_memory(X=X, realized_r=rr, sides=sides)
+    assert applied is True
+    assert meta.is_ready() is True
+
+
+def test_conviction_boost_requires_positive_recent_quality():
+    cfg = MythosConfig(
+        conviction_score_threshold=0.6,
+        conviction_boost=0.6,
+        conviction_max_size_mult=2.3,
+        conviction_recent_window=16,
+        conviction_recent_min_trades=6,
+        conviction_recent_min_expectancy=0.05,
+    )
+    risk = RiskConstitution(cfg)
+    base = risk.position_size_multiplier(edge=0.03, uncertainty=0.15, conviction=0.9)
+    neg_hist = [-0.3, -0.2, -0.4, -0.1, -0.2, -0.25]
+    with_neg = risk.position_size_multiplier(
+        edge=0.03,
+        uncertainty=0.15,
+        conviction=0.9,
+        high_conviction_recent=neg_hist,
+    )
+    pos_hist = [0.4, 0.2, 0.3, 0.1, 0.5, 0.2]
+    with_pos = risk.position_size_multiplier(
+        edge=0.03,
+        uncertainty=0.15,
+        conviction=0.9,
+        high_conviction_recent=pos_hist,
+    )
+    assert with_neg <= base
+    assert with_pos > base

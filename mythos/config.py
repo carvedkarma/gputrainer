@@ -62,6 +62,9 @@ class MythosConfig:
     side_health_penalty: float = 0.02
     side_health_boost: float = 0.008
     side_health_decay: float = 0.97
+    side_aggression_boost: float = 0.006
+    side_aggression_min_gap: float = 0.05
+    side_aggression_underweight_gain: float = 0.60
     precision_min_confidence: float = 0.0
     precision_min_edge: float = 0.0
     precision_min_conviction: float = 0.52
@@ -70,9 +73,13 @@ class MythosConfig:
     conviction_weight_confidence: float = 0.30
     conviction_weight_uncertainty: float = 0.25
     conviction_weight_meta: float = 0.15
-    conviction_score_threshold: float = 0.70
-    conviction_boost: float = 1.30
+    conviction_score_threshold: float = 0.62
+    conviction_boost: float = 0.35
     conviction_max_size_mult: float = 2.2
+    conviction_guard_window: int = 32
+    conviction_guard_min_trades: int = 8
+    conviction_guard_min_expectancy_r: float = 0.03
+    conviction_requires_meta_ready: bool = True
     # Backward-compatible aliases for older CLI wiring.
     conviction_size_gate: float = 0.70
     conviction_size_boost: float = 1.30
@@ -131,6 +138,11 @@ class MythosConfig:
     meta_learner_uncertainty_penalty: float = 0.80
     meta_learner_fallback: bool = True
     meta_learner_fallback_lr: float = 0.03
+    meta_bootstrap_enable: bool = True
+    meta_bootstrap_samples: int = 1024
+    meta_bootstrap_min_samples: int = 64
+    meta_bootstrap_edge_cap: float = 0.04
+    meta_bootstrap_conf_gain: float = 0.12
     # Aliases used by CLI for readability.
     meta_learner_edge_gain: float = 0.30
     meta_learner_confidence_gain: float = 0.20
@@ -180,6 +192,15 @@ class MythosConfig:
         self.side_health_penalty = float(max(getattr(self, "side_health_penalty", 0.02), 0.0))
         self.side_health_boost = float(max(getattr(self, "side_health_boost", 0.008), 0.0))
         self.side_health_decay = float(np.clip(getattr(self, "side_health_decay", 0.97), 0.80, 0.999))
+        self.side_aggression_boost = float(
+            np.clip(getattr(self, "side_aggression_boost", 0.006), 0.0, 0.05)
+        )
+        self.side_aggression_min_gap = float(
+            np.clip(getattr(self, "side_aggression_min_gap", 0.05), 0.0, 1.0)
+        )
+        self.side_aggression_underweight_gain = float(
+            np.clip(getattr(self, "side_aggression_underweight_gain", 0.60), 0.0, 3.0)
+        )
         self.precision_min_confidence = float(
             np.clip(getattr(self, "precision_min_confidence", 0.0), 0.0, 1.0)
         )
@@ -201,12 +222,20 @@ class MythosConfig:
         self.conviction_score_threshold = float(
             np.clip(getattr(self, "conviction_score_threshold", self.conviction_size_gate), 0.0, 1.0)
         )
-        self.conviction_boost = float(
-            np.clip(getattr(self, "conviction_boost", self.conviction_size_boost), 1.0, 3.0)
-        )
+        boost_raw = float(getattr(self, "conviction_boost", 0.35))
+        # Backward compatibility: old aliases used multiplicative form (e.g. 1.30 means +0.30).
+        if boost_raw > 1.0:
+            boost_raw -= 1.0
+        self.conviction_boost = float(np.clip(boost_raw, 0.0, 2.0))
         self.conviction_max_size_mult = float(
             max(getattr(self, "conviction_max_size_mult", 2.2), self.max_size_mult)
         )
+        self.conviction_guard_window = int(max(getattr(self, "conviction_guard_window", 32), 8))
+        self.conviction_guard_min_trades = int(max(getattr(self, "conviction_guard_min_trades", 8), 1))
+        self.conviction_guard_min_expectancy_r = float(
+            getattr(self, "conviction_guard_min_expectancy_r", 0.03)
+        )
+        self.conviction_requires_meta_ready = bool(getattr(self, "conviction_requires_meta_ready", True))
         self.side_fail_hard_pause = bool(getattr(self, "side_fail_hard_pause", False))
         # Keep neural-expert naming aligned across revisions.
         self.use_gpu_neural_expert = bool(self.enable_gpu_neural_experts)
@@ -224,6 +253,15 @@ class MythosConfig:
         self.meta_learner_fallback = bool(getattr(self, "meta_learner_fallback", True))
         self.meta_learner_fallback_lr = float(
             np.clip(getattr(self, "meta_learner_fallback_lr", 0.03), 1e-5, 0.5)
+        )
+        self.meta_bootstrap_enable = bool(getattr(self, "meta_bootstrap_enable", True))
+        self.meta_bootstrap_samples = int(max(getattr(self, "meta_bootstrap_samples", 1024), 0))
+        self.meta_bootstrap_min_samples = int(max(getattr(self, "meta_bootstrap_min_samples", 64), 16))
+        self.meta_bootstrap_edge_cap = float(
+            np.clip(getattr(self, "meta_bootstrap_edge_cap", 0.04), 0.001, 1.0)
+        )
+        self.meta_bootstrap_conf_gain = float(
+            np.clip(getattr(self, "meta_bootstrap_conf_gain", 0.12), 0.0, 0.49)
         )
         floor = float(np.clip(getattr(self, "meta_learner_ready_prob_floor", 0.42), 0.0, 1.0))
         ceil = float(np.clip(getattr(self, "meta_learner_ready_prob_ceiling", 0.58), 0.0, 1.0))

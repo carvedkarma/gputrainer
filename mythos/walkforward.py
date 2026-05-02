@@ -621,6 +621,61 @@ class NeuralMetaLearner:
         }
 
 
+def _bootstrap_meta(meta: NeuralMetaLearner, train_feat: pd.DataFrame, train_regime: np.ndarray) -> None:
+    if not meta.is_active() or train_feat.empty:
+        return
+    cols = [c for c in MYTHOS_STATE_COLS if c in train_feat.columns]
+    if not cols:
+        return
+    X = train_feat[cols].to_numpy(dtype=np.float64)
+    n = len(X)
+    if n <= 8:
+        return
+    raw = (
+        0.55 * train_feat["fwd_ret_4"].to_numpy(dtype=np.float64)
+        + 0.45 * train_feat["fwd_ret_16"].to_numpy(dtype=np.float64)
+    )
+    vol = np.maximum(
+        0.5
+        * (
+            train_feat["vol_16"].to_numpy(dtype=np.float64)
+            + train_feat["vol_64"].to_numpy(dtype=np.float64)
+        ),
+        1e-6,
+    )
+    norm = raw / (vol * np.sqrt(8.0))
+    norm = np.clip(norm, -2.0, 2.0)
+    q_hi = float(np.quantile(norm, 0.55))
+    q_lo = float(np.quantile(norm, 0.45))
+    # Use directional proxy labels to warm start meta learner so it doesn't stay inactive
+    # in folds where realized trades are sparse.
+    for i in range(n):
+        rr = float(norm[i])
+        if rr >= q_hi:
+            side = 1
+            target_rr = abs(rr) + 0.05
+        elif rr <= q_lo:
+            side = -1
+            target_rr = abs(rr) + 0.05
+        else:
+            # neutral points are still useful for negative examples
+            side = 1 if rr >= 0.0 else -1
+            target_rr = -abs(rr)
+        edge = float(max(abs(rr) * 0.6 + 0.004, 0.0))
+        conf = float(np.clip(0.5 + 0.3 * abs(rr), 0.35, 0.95))
+        unc = float(np.clip(0.4 - 0.2 * abs(rr), 0.05, 0.8))
+        reg = int(train_regime[i]) if i < len(train_regime) else 0
+        meta.update(
+            x=X[i],
+            edge=edge,
+            confidence=conf,
+            uncertainty=unc,
+            regime=reg,
+            side=side,
+            realized_r=target_rr,
+        )
+
+
 def _conviction_score(
     edge: float,
     confidence: float,
@@ -683,6 +738,31 @@ def _counterfactual_pass(
     if adjusted_edge >= (0.75 * min_adv) and analog_adv >= (-0.5 * min_adv):
         return True
     return combo >= min_adv
+
+
+def _short_aggression_boost(
+    side: int,
+    long_recent: List[float],
+    short_recent: List[float],
+    cfg: MythosConfig,
+) -> float:
+    if int(side) != -1:
+        return 0.0
+    min_n = int(max(getattr(cfg, "short_aggr_min_trades", 12), 2))
+    if len(short_recent) < min_n:
+        return 0.0
+    if len(long_recent) < min_n:
+        return 0.0
+    long_exp = float(np.mean(np.array(long_recent, dtype=np.float64)))
+    short_exp = float(np.mean(np.array(short_recent, dtype=np.float64)))
+    edge = short_exp - long_exp
+    trig = float(max(getattr(cfg, "short_aggr_expectancy_trigger", 0.04), 0.0))
+    if edge <= trig:
+        return 0.0
+    gain = float(max(getattr(cfg, "short_aggr_edge_boost", 0.0035), 0.0))
+    cap = float(max(getattr(cfg, "short_aggr_max_boost", 0.03), 0.0))
+    scale = min((edge - trig) / max(trig, 1e-6), 1.0)
+    return float(min(gain * (1.0 + scale), cap))
 
 
 def _select_fold_metric(fold: Dict[str, object], metric: str) -> float:
@@ -865,6 +945,36 @@ def _run_fold(
     governor = V3ExecutionGovernor(cfg)
     adaptive = V4AdaptiveBrain(cfg)
     meta = NeuralMetaLearner(cfg=cfg, n_features=X_tr.shape[1])
+    meta_bootstrap_n = int(max(getattr(cfg, "meta_bootstrap_trades", 0), 0))
+    if meta_bootstrap_n > 0:
+        usable = min(meta_bootstrap_n, max(len(train_feat) - cfg.horizon - 1, 0))
+        if usable > 0:
+            close_tr = train_feat["close"].to_numpy(dtype=np.float64)
+            high_tr = train_feat["high"].to_numpy(dtype=np.float64)
+            low_tr = train_feat["low"].to_numpy(dtype=np.float64)
+            atr_tr = _compute_atr(close_tr, high_tr, low_tr, period=14)
+            for j in range(usable):
+                s = 1 if float(train_feat.iloc[j]["fwd_ret_4"]) >= 0.0 else -1
+                rr = _barrier_outcome(
+                    close=close_tr,
+                    high=high_tr,
+                    low=low_tr,
+                    idx=j,
+                    side=s,
+                    tp_mult=cfg.tp_mult,
+                    sl_mult=cfg.sl_mult,
+                    horizon=cfg.horizon,
+                    atr=atr_tr,
+                )
+                meta.update(
+                    x=X_tr[j],
+                    edge=float(abs(train_feat.iloc[j]["fwd_ret_4"])),
+                    confidence=float(np.clip(0.5 + 0.5 * np.tanh(abs(train_feat.iloc[j]["fwd_ret_4"]) / 0.01), 0.0, 1.0)),
+                    uncertainty=float(np.clip(train_feat.iloc[j]["vol_16"] * 2.0, 0.01, 2.0)),
+                    regime=int(train_regime[j]),
+                    side=int(s),
+                    realized_r=float(rr),
+                )
 
     risk = RiskConstitution(cfg)
     close = test_feat["close"].to_numpy(dtype=np.float64)
