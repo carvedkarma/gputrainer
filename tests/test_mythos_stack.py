@@ -16,6 +16,8 @@ from mythos.walkforward import (
     V3ExecutionGovernor,
     _conviction_score,
     _counterfactual_pass,
+    _allow_conviction_leverage,
+    _estimate_execution_cost_r,
 )
 
 
@@ -351,3 +353,84 @@ def test_sure_and_leverage_gate_thresholds_are_normalized():
     assert cfg.leverage_recent_window >= 8
     assert cfg.leverage_recent_min_trades >= 1
     assert cfg.leverage_recent_min_hit_rate == 0.0
+
+
+def test_execution_cost_and_leverage_policy_knobs_are_normalized():
+    cfg = MythosConfig(
+        leverage_policy_window=0,
+        leverage_policy_min_trades=0,
+        leverage_policy_min_hit_rate=2.0,
+        leverage_policy_context_weight=1.5,
+        leverage_policy_cold_start_conviction_extra=0.9,
+        execution_fee_bps=-5.0,
+        execution_slippage_bps=-2.0,
+        execution_cost_cap_r=9.0,
+    )
+    assert cfg.leverage_policy_window >= 8
+    assert cfg.leverage_policy_min_trades >= 1
+    assert cfg.leverage_policy_min_hit_rate == 1.0
+    assert cfg.leverage_policy_context_weight == 1.0
+    assert cfg.leverage_policy_cold_start_conviction_extra == 0.5
+    assert cfg.execution_fee_bps == 0.0
+    assert cfg.execution_slippage_bps == 0.0
+    assert cfg.execution_cost_cap_r == 5.0
+
+
+def test_execution_cost_r_increases_with_fee_and_uncertainty():
+    low_cost_cfg = MythosConfig(
+        min_expected_r=0.01,
+        execution_fee_bps=1.0,
+        execution_slippage_bps=1.0,
+        execution_cost_cap_r=0.5,
+    )
+    high_cost_cfg = MythosConfig(
+        min_expected_r=0.01,
+        execution_fee_bps=10.0,
+        execution_slippage_bps=8.0,
+        execution_cost_cap_r=0.5,
+    )
+    low = _estimate_execution_cost_r(edge=0.015, uncertainty=0.2, cfg=low_cost_cfg)
+    high = _estimate_execution_cost_r(edge=0.015, uncertainty=1.2, cfg=high_cost_cfg)
+    assert high > low
+    assert 0.0 <= low <= low_cost_cfg.execution_cost_cap_r
+    assert 0.0 <= high <= high_cost_cfg.execution_cost_cap_r
+
+
+def test_leverage_policy_gate_blocks_weak_context_when_history_ready():
+    cfg = MythosConfig(
+        leverage_policy_window=32,
+        leverage_policy_min_trades=8,
+        leverage_policy_min_hit_rate=0.55,
+        leverage_policy_min_expectancy=0.02,
+        leverage_policy_context_weight=0.7,
+        leverage_recent_window=32,
+        leverage_recent_min_trades=8,
+        leverage_recent_min_hit_rate=0.5,
+        leverage_recent_min_expectancy=0.0,
+    )
+    weak_history = [-0.2, -0.1, -0.15, -0.05, -0.08, -0.04, -0.03, -0.06]
+    weak_ctx = [0.35] * len(weak_history)
+    strong_history = [0.3, 0.2, 0.15, 0.1, 0.2, 0.25, 0.05, 0.18]
+    strong_ctx = [0.8] * len(strong_history)
+    blocked = _allow_conviction_leverage(
+        is_sure_signal=True,
+        edge=0.03,
+        confidence=0.68,
+        conviction=0.9,
+        context_score=0.4,
+        leveraged_recent_rr=weak_history,
+        leveraged_recent_ctx=weak_ctx,
+        cfg=cfg,
+    )
+    allowed = _allow_conviction_leverage(
+        is_sure_signal=True,
+        edge=0.03,
+        confidence=0.68,
+        conviction=0.9,
+        context_score=0.85,
+        leveraged_recent_rr=strong_history,
+        leveraged_recent_ctx=strong_ctx,
+        cfg=cfg,
+    )
+    assert blocked is False
+    assert allowed is True

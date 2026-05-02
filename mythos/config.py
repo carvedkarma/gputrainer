@@ -97,6 +97,15 @@ class MythosConfig:
     leverage_recent_min_trades: int = 20
     leverage_recent_min_hit_rate: float = 0.53
     leverage_recent_min_expectancy: float = 0.05
+    leverage_policy_window: int = 160
+    leverage_policy_min_trades: int = 24
+    leverage_policy_min_hit_rate: float = 0.54
+    leverage_policy_min_expectancy: float = 0.06
+    leverage_policy_context_weight: float = 0.60
+    leverage_policy_cold_start_conviction_extra: float = 0.08
+    execution_fee_bps: float = 4.0
+    execution_slippage_bps: float = 2.0
+    execution_cost_cap_r: float = 0.35
     conviction_guard_window: int = 32
     conviction_guard_min_trades: int = 8
     conviction_guard_min_expectancy_r: float = 0.03
@@ -294,6 +303,25 @@ class MythosConfig:
         )
         self.leverage_recent_min_expectancy = float(
             getattr(self, "leverage_recent_min_expectancy", 0.05)
+        )
+        self.leverage_policy_window = int(max(getattr(self, "leverage_policy_window", 160), 8))
+        self.leverage_policy_min_trades = int(max(getattr(self, "leverage_policy_min_trades", 24), 1))
+        self.leverage_policy_min_hit_rate = float(
+            np.clip(getattr(self, "leverage_policy_min_hit_rate", 0.54), 0.0, 1.0)
+        )
+        self.leverage_policy_min_expectancy = float(
+            getattr(self, "leverage_policy_min_expectancy", 0.06)
+        )
+        self.leverage_policy_context_weight = float(
+            np.clip(getattr(self, "leverage_policy_context_weight", 0.60), 0.0, 1.0)
+        )
+        self.leverage_policy_cold_start_conviction_extra = float(
+            np.clip(getattr(self, "leverage_policy_cold_start_conviction_extra", 0.08), 0.0, 0.5)
+        )
+        self.execution_fee_bps = float(max(getattr(self, "execution_fee_bps", 4.0), 0.0))
+        self.execution_slippage_bps = float(max(getattr(self, "execution_slippage_bps", 2.0), 0.0))
+        self.execution_cost_cap_r = float(
+            np.clip(getattr(self, "execution_cost_cap_r", 0.35), 0.0, 5.0)
         )
         self.conviction_guard_window = int(
             max(getattr(self, "conviction_guard_window", self.conviction_recent_window), 8)

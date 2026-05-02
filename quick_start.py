@@ -5459,6 +5459,60 @@ Examples:
                         help="MYTHOS precision: minimum recent high-conviction trades before leverage boost can activate (default: 20)")
     parser.add_argument("--mythos-conviction-recent-min-expectancy", type=float, default=0.05,
                         help="MYTHOS precision: minimum recent high-conviction expectancy required for leverage boost (default: 0.05)")
+    parser.add_argument("--mythos-sure-min-analog-hits", type=int, default=12,
+                        help="MYTHOS precision: minimum analog memory hits required for a signal to be considered sure (default: 12)")
+    parser.add_argument("--mythos-sure-min-analog-ratio", type=float, default=0.20,
+                        help="MYTHOS precision: minimum analog hit ratio vs analog-k for sure signals (default: 0.20)")
+    parser.add_argument("--mythos-sure-meta-strength-min", type=float, default=0.10,
+                        help="MYTHOS precision: minimum meta decisiveness for sure signals (default: 0.10)")
+    parser.add_argument("--mythos-sure-edge-buffer", type=float, default=0.001,
+                        help="MYTHOS precision: edge buffer above min edge threshold for sure signals (default: 0.001)")
+    parser.add_argument("--mythos-sure-confidence-buffer", type=float, default=0.03,
+                        help="MYTHOS precision: confidence buffer above min confidence for sure signals (default: 0.03)")
+    parser.add_argument("--mythos-sure-recent-window", type=int, default=96,
+                        help="MYTHOS precision: rolling window for sure-signal quality checks (default: 96)")
+    parser.add_argument("--mythos-sure-recent-min-trades", type=int, default=24,
+                        help="MYTHOS precision: min sure trades before sure quality gate becomes strict (default: 24)")
+    parser.add_argument("--mythos-sure-recent-min-hit-rate", type=float, default=0.52,
+                        help="MYTHOS precision: minimum recent sure hit-rate for continued sure qualification (default: 0.52)")
+    parser.add_argument("--mythos-sure-recent-min-expectancy", type=float, default=0.04,
+                        help="MYTHOS precision: minimum recent sure expectancy-R for sure qualification (default: 0.04)")
+    parser.add_argument("--mythos-sure-cold-start-conviction-extra", type=float, default=0.04,
+                        help="MYTHOS precision: extra conviction required during sure cold-start period (default: 0.04)")
+    parser.add_argument("--mythos-sure-cold-start-meta-extra", type=float, default=0.06,
+                        help="MYTHOS precision: extra meta decisiveness required during sure cold-start period (default: 0.06)")
+    parser.add_argument("--mythos-leverage-edge-buffer", type=float, default=0.003,
+                        help="MYTHOS leverage policy: edge buffer above min edge threshold for leverage activation (default: 0.003)")
+    parser.add_argument("--mythos-leverage-confidence-buffer", type=float, default=0.04,
+                        help="MYTHOS leverage policy: confidence buffer above min confidence for leverage activation (default: 0.04)")
+    parser.add_argument("--mythos-leverage-conviction-buffer", type=float, default=0.04,
+                        help="MYTHOS leverage policy: conviction buffer above score threshold for leverage activation (default: 0.04)")
+    parser.add_argument("--mythos-leverage-recent-window", type=int, default=120,
+                        help="MYTHOS leverage policy: rolling window for sure+leveraged quality checks (default: 120)")
+    parser.add_argument("--mythos-leverage-recent-min-trades", type=int, default=20,
+                        help="MYTHOS leverage policy: min sure+leveraged trades before strict leverage quality checks (default: 20)")
+    parser.add_argument("--mythos-leverage-recent-min-hit-rate", type=float, default=0.53,
+                        help="MYTHOS leverage policy: minimum recent sure+leveraged hit-rate (default: 0.53)")
+    parser.add_argument("--mythos-leverage-recent-min-expectancy", type=float, default=0.05,
+                        help="MYTHOS leverage policy: minimum recent sure+leveraged expectancy-R (default: 0.05)")
+    parser.add_argument("--mythos-leverage-policy-window", type=int, default=160,
+                        help="MYTHOS leverage policy: contextual policy window for leverage decisions (default: 160)")
+    parser.add_argument("--mythos-leverage-policy-min-trades", type=int, default=24,
+                        help="MYTHOS leverage policy: min trades for contextual policy reliability (default: 24)")
+    parser.add_argument("--mythos-leverage-policy-min-hit-rate", type=float, default=0.54,
+                        help="MYTHOS leverage policy: minimum blended hit-rate for leverage policy approval (default: 0.54)")
+    parser.add_argument("--mythos-leverage-policy-min-expectancy", type=float, default=0.06,
+                        help="MYTHOS leverage policy: minimum blended expectancy-R for leverage policy approval (default: 0.06)")
+    parser.add_argument("--mythos-leverage-policy-context-weight", type=float, default=0.60,
+                        help="MYTHOS leverage policy: weight on context score vs realized leverage history (default: 0.60)")
+    parser.add_argument("--mythos-leverage-policy-cold-start-conviction-extra", type=float, default=0.08,
+                        help="MYTHOS leverage policy: extra conviction needed before leverage during policy cold-start (default: 0.08)")
+    parser.add_argument("--mythos-execution-fee-bps", type=float, default=4.0,
+                        help="MYTHOS net intelligence: execution fee in bps applied in per-trade net-R accounting (default: 4.0)")
+    parser.add_argument("--mythos-execution-slippage-bps", type=float, default=2.0,
+                        help="MYTHOS net intelligence: slippage in bps applied in per-trade net-R accounting (default: 2.0)")
+    parser.add_argument("--mythos-execution-cost-cap-r", type=float, default=0.35,
+                        help="MYTHOS net intelligence: cap on deducted execution cost per trade in R-units (default: 0.35)")
     parser.add_argument("--mythos-short-boost-enable", action="store_true", default=True,
                         help="MYTHOS adaptive: enable short-side edge boost when short side outperforms (default: enabled)")
     parser.add_argument("--mythos-no-short-boost-enable", dest="mythos_short_boost_enable", action="store_false",
@@ -6500,6 +6554,33 @@ Examples:
                 conviction_recent_window=args.mythos_conviction_recent_window,
                 conviction_recent_min_trades=args.mythos_conviction_recent_min_trades,
                 conviction_recent_min_expectancy=args.mythos_conviction_recent_min_expectancy,
+                sure_min_analog_hits=args.mythos_sure_min_analog_hits,
+                sure_min_analog_ratio=args.mythos_sure_min_analog_ratio,
+                sure_meta_strength_min=args.mythos_sure_meta_strength_min,
+                sure_edge_buffer=args.mythos_sure_edge_buffer,
+                sure_confidence_buffer=args.mythos_sure_confidence_buffer,
+                sure_recent_window=args.mythos_sure_recent_window,
+                sure_recent_min_trades=args.mythos_sure_recent_min_trades,
+                sure_recent_min_hit_rate=args.mythos_sure_recent_min_hit_rate,
+                sure_recent_min_expectancy=args.mythos_sure_recent_min_expectancy,
+                sure_cold_start_conviction_extra=args.mythos_sure_cold_start_conviction_extra,
+                sure_cold_start_meta_extra=args.mythos_sure_cold_start_meta_extra,
+                leverage_edge_buffer=args.mythos_leverage_edge_buffer,
+                leverage_confidence_buffer=args.mythos_leverage_confidence_buffer,
+                leverage_conviction_buffer=args.mythos_leverage_conviction_buffer,
+                leverage_recent_window=args.mythos_leverage_recent_window,
+                leverage_recent_min_trades=args.mythos_leverage_recent_min_trades,
+                leverage_recent_min_hit_rate=args.mythos_leverage_recent_min_hit_rate,
+                leverage_recent_min_expectancy=args.mythos_leverage_recent_min_expectancy,
+                leverage_policy_window=args.mythos_leverage_policy_window,
+                leverage_policy_min_trades=args.mythos_leverage_policy_min_trades,
+                leverage_policy_min_hit_rate=args.mythos_leverage_policy_min_hit_rate,
+                leverage_policy_min_expectancy=args.mythos_leverage_policy_min_expectancy,
+                leverage_policy_context_weight=args.mythos_leverage_policy_context_weight,
+                leverage_policy_cold_start_conviction_extra=args.mythos_leverage_policy_cold_start_conviction_extra,
+                execution_fee_bps=args.mythos_execution_fee_bps,
+                execution_slippage_bps=args.mythos_execution_slippage_bps,
+                execution_cost_cap_r=args.mythos_execution_cost_cap_r,
                 short_boost_enable=args.mythos_short_boost_enable,
                 short_boost_window=args.mythos_short_boost_window,
                 short_boost_min_trades=args.mythos_short_boost_min_trades,
@@ -6612,6 +6693,14 @@ Examples:
                 "[MYTHOS] Leverage gate: approved=%s blocked_candidates=%s",
                 agg.get("leverage_boost_approved"),
                 agg.get("leverage_blocked_candidates"),
+            )
+            log.info(
+                "[MYTHOS] Net execution: cost_totalR=%s net_totalR=%s net_expectancy=%s net_win_rate=%s net_sure_lev_hit=%s",
+                agg.get("execution_cost_total_r"),
+                agg.get("net_total_r"),
+                agg.get("net_expectancy_r"),
+                agg.get("net_win_rate"),
+                agg.get("net_sure_leveraged_hit_rate"),
             )
             if agg.get("best_model_path"):
                 log.info(

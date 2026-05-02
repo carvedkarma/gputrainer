@@ -784,7 +784,9 @@ def _allow_conviction_leverage(
     edge: float,
     confidence: float,
     conviction: float,
+    context_score: float,
     leveraged_recent_rr: List[float],
+    leveraged_recent_ctx: List[float],
     cfg: MythosConfig,
 ) -> bool:
     if not bool(is_sure_signal):
@@ -818,7 +820,79 @@ def _allow_conviction_leverage(
         # Cold start: require exceptionally strong conviction before any boost.
         if float(conviction) < min(conv_floor + 0.05, 1.0):
             return False
+    policy_stats = _recent_quality_stats(
+        leveraged_recent_rr,
+        window=int(max(getattr(cfg, "leverage_policy_window", 160), 8)),
+        min_trades=int(max(getattr(cfg, "leverage_policy_min_trades", 24), 1)),
+    )
+    policy_hit_floor = float(np.clip(getattr(cfg, "leverage_policy_min_hit_rate", 0.54), 0.0, 1.0))
+    policy_exp_floor = float(getattr(cfg, "leverage_policy_min_expectancy", 0.06))
+    ctx_w = float(np.clip(getattr(cfg, "leverage_policy_context_weight", 0.60), 0.0, 1.0))
+    p_window = int(max(getattr(cfg, "leverage_policy_window", 160), 8))
+    recent_ctx = leveraged_recent_ctx[-p_window:] if leveraged_recent_ctx else []
+    hist_ctx = float(np.mean(np.asarray(recent_ctx, dtype=np.float64))) if recent_ctx else 0.5
+    blended_hit = float((1.0 - ctx_w) * float(policy_stats["hit_rate"]) + ctx_w * float(context_score))
+    blended_exp = float((1.0 - ctx_w) * float(policy_stats["expectancy"]) + ctx_w * max(hist_ctx - 0.5, 0.0))
+    if bool(policy_stats["ready"]):
+        if blended_hit < policy_hit_floor or blended_exp < policy_exp_floor:
+            return False
+    else:
+        cold_extra = float(
+            np.clip(getattr(cfg, "leverage_policy_cold_start_conviction_extra", 0.08), 0.0, 0.5)
+        )
+        if float(conviction) < min(conv_floor + cold_extra, 1.0):
+            return False
+        if float(context_score) < max(policy_hit_floor - 0.08, 0.50):
+            return False
     return True
+
+
+def _estimate_execution_cost_r(
+    *,
+    edge: float,
+    uncertainty: float,
+    cfg: MythosConfig,
+) -> float:
+    unit = float(max(getattr(cfg, "min_expected_r", 0.01), 1e-6))
+    fee_bps = float(max(getattr(cfg, "execution_fee_bps", 4.0), 0.0))
+    slippage_bps = float(max(getattr(cfg, "execution_slippage_bps", 2.0), 0.0))
+    raw_frac = float((fee_bps + slippage_bps) / 10000.0)
+    base_r = float(raw_frac / unit)
+    unc_mult = float(1.0 + 0.35 * np.clip(uncertainty, 0.0, 2.0))
+    edge_relief = float(1.0 - 0.15 * np.clip(edge / max(2.0 * unit, 1e-6), 0.0, 1.0))
+    cost_r = float(base_r * unc_mult * edge_relief)
+    cap_r = float(np.clip(getattr(cfg, "execution_cost_cap_r", 0.35), 0.0, 5.0))
+    return float(np.clip(cost_r, 0.0, cap_r))
+
+
+def _leverage_context_score(
+    *,
+    edge: float,
+    confidence: float,
+    uncertainty: float,
+    conviction: float,
+    meta_p: float,
+    analog_hits: float,
+    cfg: MythosConfig,
+) -> float:
+    unit = float(max(getattr(cfg, "min_expected_r", 0.01), 1e-6))
+    edge_n = float(np.clip(max(edge, 0.0) / max(unit * 2.5, 1e-6), 0.0, 1.0))
+    conf_n = float(np.clip(confidence, 0.0, 1.0))
+    unc_n = float(np.clip(1.0 / (1.0 + max(uncertainty, 0.0)), 0.0, 1.0))
+    conv_n = float(np.clip(conviction, 0.0, 1.0))
+    meta_n = float(np.clip(abs(meta_p - 0.5) * 2.0, 0.0, 1.0))
+    analog_n = float(
+        np.clip(float(analog_hits) / max(float(getattr(cfg, "analog_k", 48)), 1.0), 0.0, 1.0)
+    )
+    score = (
+        0.24 * conv_n
+        + 0.20 * edge_n
+        + 0.16 * conf_n
+        + 0.10 * unc_n
+        + 0.15 * meta_n
+        + 0.15 * analog_n
+    )
+    return float(np.clip(score, 0.0, 1.0))
 
 
 def _counterfactual_pass(
@@ -1109,6 +1183,7 @@ def _run_fold(
     X_te = test_feat[xcols].to_numpy(dtype=np.float64)
 
     trades: List[float] = []
+    gross_trades: List[float] = []
     skip_counts = {
         "low_confidence": 0,
         "edge_below_floor": 0,
@@ -1142,8 +1217,10 @@ def _run_fold(
     sure_leveraged_total_r = 0.0
     leverage_blocked_candidates = 0
     leverage_boost_approved = 0
+    execution_cost_total_r = 0.0
     sure_recent_rr: List[float] = []
     sure_lev_recent_rr: List[float] = []
+    sure_lev_recent_ctx: List[float] = []
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
         x = X_te[i]
@@ -1289,13 +1366,25 @@ def _run_fold(
             conviction=conviction,
             allow_conviction_boost=False,
         )
+        context_score = _leverage_context_score(
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            conviction=conviction,
+            meta_p=meta_p,
+            analog_hits=analog_hits,
+            cfg=cfg,
+        )
         lev_recent_window = int(max(getattr(cfg, "leverage_recent_window", 120), 8))
+        lev_policy_window = int(max(getattr(cfg, "leverage_policy_window", 160), 8))
         leverage_allowed = _allow_conviction_leverage(
             is_sure_signal=is_sure_signal,
             edge=edge,
             confidence=confidence,
             conviction=conviction,
+            context_score=context_score,
             leveraged_recent_rr=sure_lev_recent_rr,
+            leveraged_recent_ctx=sure_lev_recent_ctx,
             cfg=cfg,
         )
         if is_sure_signal and not leverage_allowed:
@@ -1310,7 +1399,14 @@ def _run_fold(
             allow_conviction_boost=leverage_allowed,
         )
         leveraged = bool(size > (base_size + 1e-9))
-        rr = float(realized * size)
+        rr_gross = float(realized * size)
+        execution_cost_r = _estimate_execution_cost_r(
+            edge=edge,
+            uncertainty=uncertainty,
+            cfg=cfg,
+        )
+        rr = float(rr_gross - execution_cost_r)
+        execution_cost_total_r += float(execution_cost_r)
         risk.record_trade(rr, int(timestamps[i]), edge=edge, uncertainty=uncertainty, conviction=conviction)
         governor.record_trade(side=side, realized_r=rr, bar_idx=i)
         router.update_reliability(expert_name=expert_name, realized_r=rr, regime=regime)
@@ -1325,6 +1421,7 @@ def _run_fold(
             realized_r=rr,
         )
         trades.append(rr)
+        gross_trades.append(rr_gross)
         if is_sure_signal:
             sure_trades += 1
             sure_total_r += rr
@@ -1344,6 +1441,9 @@ def _run_fold(
             sure_lev_recent_rr.append(rr)
             if len(sure_lev_recent_rr) > lev_recent_window:
                 del sure_lev_recent_rr[0 : len(sure_lev_recent_rr) - lev_recent_window]
+            sure_lev_recent_ctx.append(float(context_score))
+            if len(sure_lev_recent_ctx) > lev_policy_window:
+                del sure_lev_recent_ctx[0 : len(sure_lev_recent_ctx) - lev_policy_window]
             if rr > 0.0:
                 sure_leveraged_hits += 1
         recent_trade_rr.append(rr)
@@ -1369,6 +1469,7 @@ def _run_fold(
     gross_loss = float(-np.sum(np.array([t for t in trades if t < 0.0], dtype=np.float64))) if n else 0.0
     profit_factor = (gross_profit / gross_loss) if gross_loss > 1e-9 else (float("inf") if gross_profit > 0.0 else 0.0)
     total_r = float(np.sum(trades)) if n else 0.0
+    gross_total_r = float(np.sum(gross_trades)) if n else 0.0
     expect = float(np.mean(trades)) if n else 0.0
     wr = float(np.mean(np.array(trades) > 0)) if n else 0.0
     long_n = len(long_trades)
@@ -1421,6 +1522,11 @@ def _run_fold(
         "high_conviction_trades": int(high_conv_trades),
         "high_conviction_win_rate": round(float(high_conv_wins / max(high_conv_trades, 1)), 4),
         "high_conviction_total_r": round(float(high_conv_r_sum), 4),
+        "gross_total_r": round(float(gross_total_r), 4),
+        "net_total_r": round(float(total_r), 4),
+        "execution_cost_total_r": round(float(execution_cost_total_r), 4),
+        "net_expectancy_r": round(float(expect), 4),
+        "net_win_rate": round(float(wr), 4),
         "sure_trades": int(sure_trades),
         "sure_hits": int(sure_hits),
         "sure_win_rate": round(float(sure_hits / max(sure_trades, 1)), 4),
@@ -1433,6 +1539,7 @@ def _run_fold(
         "sure_leveraged_hits": int(sure_leveraged_hits),
         "sure_leveraged_hit_rate": round(float(sure_leveraged_hits / max(sure_leveraged_trades, 1)), 4),
         "sure_leveraged_total_r": round(float(sure_leveraged_total_r), 4),
+        "net_sure_leveraged_hit_rate": round(float(sure_leveraged_hits / max(sure_leveraged_trades, 1)), 4),
         "leverage_boost_approved": int(leverage_boost_approved),
         "leverage_blocked_candidates": int(leverage_blocked_candidates),
         "status": status,
@@ -1574,6 +1681,8 @@ def run_mythos_walk_forward(
     total_sure_lev_trades = int(sum(int(r.get("sure_leveraged_trades", 0)) for r in reports))
     total_sure_lev_hits = int(sum(int(r.get("sure_leveraged_hits", 0)) for r in reports))
     total_sure_lev_r = float(sum(float(r.get("sure_leveraged_total_r", 0.0)) for r in reports))
+    total_execution_cost_r = float(sum(float(r.get("execution_cost_total_r", 0.0)) for r in reports))
+    total_gross_r = float(sum(float(r.get("gross_total_r", r.get("total_r", 0.0))) for r in reports))
     total_lev_boost_approved = int(sum(int(r.get("leverage_boost_approved", 0)) for r in reports))
     total_lev_blocked = int(sum(int(r.get("leverage_blocked_candidates", 0)) for r in reports))
     cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
@@ -1610,6 +1719,11 @@ def run_mythos_walk_forward(
         "high_conviction_trades": total_high_conv_trades,
         "high_conviction_win_rate": round(float(total_high_conv_wins / max(total_high_conv_trades, 1)), 4),
         "high_conviction_total_r": round(total_high_conv_r, 4),
+        "gross_total_r": round(total_gross_r, 4),
+        "net_total_r": round(total_r, 4),
+        "execution_cost_total_r": round(total_execution_cost_r, 4),
+        "net_expectancy_r": round((total_r / total_trades) if total_trades else 0.0, 4),
+        "net_win_rate": round(agg_win_rate, 4),
         "sure_trades": total_sure_trades,
         "sure_hits": total_sure_hits,
         "sure_win_rate": round(float(total_sure_hits / max(total_sure_trades, 1)), 4),
@@ -1622,6 +1736,7 @@ def run_mythos_walk_forward(
         "sure_leveraged_hits": total_sure_lev_hits,
         "sure_leveraged_hit_rate": round(float(total_sure_lev_hits / max(total_sure_lev_trades, 1)), 4),
         "sure_leveraged_total_r": round(total_sure_lev_r, 4),
+        "net_sure_leveraged_hit_rate": round(float(total_sure_lev_hits / max(total_sure_lev_trades, 1)), 4),
         "leverage_boost_approved": total_lev_boost_approved,
         "leverage_blocked_candidates": total_lev_blocked,
         "flip_pressure_bars": total_flip_pressure_bars,
