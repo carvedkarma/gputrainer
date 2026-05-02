@@ -6590,6 +6590,24 @@ Examples:
                 "[MYTHOS] High-conviction stats: trades=%s win=%s totalR=%s",
                 agg.get("high_conviction_trades"), agg.get("high_conviction_win_rate"), agg.get("high_conviction_total_r"),
             )
+            log.info(
+                "[MYTHOS] Intelligence certainty: sure trades=%s hits=%s win=%s totalR=%s",
+                agg.get("sure_trades"),
+                agg.get("sure_hits"),
+                agg.get("sure_win_rate"),
+                agg.get("sure_total_r"),
+            )
+            log.info(
+                "[MYTHOS] Leverage execution: leveraged trades=%s hits=%s hit_rate=%s totalR=%s | sure+leveraged=%s hits=%s hit_rate=%s totalR=%s",
+                agg.get("leveraged_trades"),
+                agg.get("leveraged_hits"),
+                agg.get("leveraged_hit_rate"),
+                agg.get("leveraged_total_r"),
+                agg.get("sure_leveraged_trades"),
+                agg.get("sure_leveraged_hits"),
+                agg.get("sure_leveraged_hit_rate"),
+                agg.get("sure_leveraged_total_r"),
+            )
             if agg.get("best_model_path"):
                 log.info(
                     "[MYTHOS] Best model: metric=%s value=%s path=%s",

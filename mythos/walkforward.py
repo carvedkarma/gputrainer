@@ -1007,6 +1007,15 @@ def _run_fold(
     high_conv_trades = 0
     high_conv_wins = 0
     high_conv_r_sum = 0.0
+    sure_trades = 0
+    sure_hits = 0
+    sure_total_r = 0.0
+    leveraged_trades = 0
+    leveraged_hits = 0
+    leveraged_total_r = 0.0
+    sure_leveraged_trades = 0
+    sure_leveraged_hits = 0
+    sure_leveraged_total_r = 0.0
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
         x = X_te[i]
@@ -1090,6 +1099,10 @@ def _run_fold(
             meta_p=meta_p,
             cfg=cfg,
         )
+        high_conv_thresh = float(np.clip(getattr(cfg, "precision_high_conviction", 0.72), 0.0, 1.0))
+        require_meta_for_leverage = bool(getattr(cfg, "conviction_requires_meta_ready", True))
+        sure_meta_ok = (not require_meta_for_leverage) or meta_ready
+        is_sure_signal = side != 0 and conviction >= high_conv_thresh and sure_meta_ok
         min_conv = float(np.clip(getattr(cfg, "precision_min_conviction", 0.52), 0.0, 1.0))
         if side != 0 and conviction < min_conv:
             skip_counts["low_conviction"] += 1
@@ -1130,14 +1143,23 @@ def _run_fold(
             horizon=cfg.horizon,
             atr=atr,
         )
+        base_size = risk.position_size_multiplier(
+            edge=edge,
+            uncertainty=uncertainty,
+            regime=regime,
+            conviction=conviction,
+            allow_conviction_boost=False,
+        )
         size = risk.position_size_multiplier(
             edge=edge,
             uncertainty=uncertainty,
             regime=regime,
             conviction=conviction,
+            allow_conviction_boost=is_sure_signal,
         )
+        leveraged = bool(size > (base_size + 1e-9))
         rr = float(realized * size)
-        risk.record_trade(rr, int(timestamps[i]), edge=edge, uncertainty=uncertainty)
+        risk.record_trade(rr, int(timestamps[i]), edge=edge, uncertainty=uncertainty, conviction=conviction)
         governor.record_trade(side=side, realized_r=rr, bar_idx=i)
         router.update_reliability(expert_name=expert_name, realized_r=rr, regime=regime)
         adaptive.update_after_trade(expert_name=expert_name, regime=regime, realized_r=rr, side=side)
@@ -1151,6 +1173,21 @@ def _run_fold(
             realized_r=rr,
         )
         trades.append(rr)
+        if is_sure_signal:
+            sure_trades += 1
+            sure_total_r += rr
+            if rr > 0.0:
+                sure_hits += 1
+        if leveraged:
+            leveraged_trades += 1
+            leveraged_total_r += rr
+            if rr > 0.0:
+                leveraged_hits += 1
+        if is_sure_signal and leveraged:
+            sure_leveraged_trades += 1
+            sure_leveraged_total_r += rr
+            if rr > 0.0:
+                sure_leveraged_hits += 1
         recent_trade_rr.append(rr)
         max_recent = int(max(getattr(cfg, "transition_min_samples", 6) * 4, 16))
         if len(recent_trade_rr) > max_recent:
@@ -1161,7 +1198,6 @@ def _run_fold(
         else:
             n_short += 1
             short_trades.append(rr)
-        high_conv_thresh = float(np.clip(getattr(cfg, "precision_high_conviction", 0.72), 0.0, 1.0))
         if conviction >= high_conv_thresh:
             high_conv_trades += 1
             high_conv_r_sum += rr
@@ -1227,6 +1263,18 @@ def _run_fold(
         "high_conviction_trades": int(high_conv_trades),
         "high_conviction_win_rate": round(float(high_conv_wins / max(high_conv_trades, 1)), 4),
         "high_conviction_total_r": round(float(high_conv_r_sum), 4),
+        "sure_trades": int(sure_trades),
+        "sure_hits": int(sure_hits),
+        "sure_win_rate": round(float(sure_hits / max(sure_trades, 1)), 4),
+        "sure_total_r": round(float(sure_total_r), 4),
+        "leveraged_trades": int(leveraged_trades),
+        "leveraged_hits": int(leveraged_hits),
+        "leveraged_hit_rate": round(float(leveraged_hits / max(leveraged_trades, 1)), 4),
+        "leveraged_total_r": round(float(leveraged_total_r), 4),
+        "sure_leveraged_trades": int(sure_leveraged_trades),
+        "sure_leveraged_hits": int(sure_leveraged_hits),
+        "sure_leveraged_hit_rate": round(float(sure_leveraged_hits / max(sure_leveraged_trades, 1)), 4),
+        "sure_leveraged_total_r": round(float(sure_leveraged_total_r), 4),
         "status": status,
         "promotion": asdict(promotion),
         "_model_state": {"world_model": wm, "experts": experts, "router": router, "adaptive": adaptive},
@@ -1294,13 +1342,17 @@ def run_mythos_walk_forward(
                     brain=model_state.get("adaptive"),
                 )
         log.info(
-            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d",
+            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d",
             i,
             fold["total_trades"],
             fold["total_r"],
             fold["status"],
             fold["long_trades"],
             fold["short_trades"],
+            fold.get("sure_trades", 0),
+            fold.get("sure_win_rate", 0.0),
+            fold.get("sure_leveraged_trades", 0),
+            fold.get("sure_leveraged_hits", 0),
         )
 
     total_trades = int(sum(r["total_trades"] for r in reports))
@@ -1351,6 +1403,15 @@ def run_mythos_walk_forward(
             for r in reports
         )
     )
+    total_sure_trades = int(sum(int(r.get("sure_trades", 0)) for r in reports))
+    total_sure_hits = int(sum(int(r.get("sure_hits", 0)) for r in reports))
+    total_sure_r = float(sum(float(r.get("sure_total_r", 0.0)) for r in reports))
+    total_leveraged_trades = int(sum(int(r.get("leveraged_trades", 0)) for r in reports))
+    total_leveraged_hits = int(sum(int(r.get("leveraged_hits", 0)) for r in reports))
+    total_leveraged_r = float(sum(float(r.get("leveraged_total_r", 0.0)) for r in reports))
+    total_sure_lev_trades = int(sum(int(r.get("sure_leveraged_trades", 0)) for r in reports))
+    total_sure_lev_hits = int(sum(int(r.get("sure_leveraged_hits", 0)) for r in reports))
+    total_sure_lev_r = float(sum(float(r.get("sure_leveraged_total_r", 0.0)) for r in reports))
     cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
     act = sum(1 for r in reports if r["status"] == "ACTIVE")
     low = sum(1 for r in reports if r["status"] == "LOW_CONF")
@@ -1385,6 +1446,18 @@ def run_mythos_walk_forward(
         "high_conviction_trades": total_high_conv_trades,
         "high_conviction_win_rate": round(float(total_high_conv_wins / max(total_high_conv_trades, 1)), 4),
         "high_conviction_total_r": round(total_high_conv_r, 4),
+        "sure_trades": total_sure_trades,
+        "sure_hits": total_sure_hits,
+        "sure_win_rate": round(float(total_sure_hits / max(total_sure_trades, 1)), 4),
+        "sure_total_r": round(total_sure_r, 4),
+        "leveraged_trades": total_leveraged_trades,
+        "leveraged_hits": total_leveraged_hits,
+        "leveraged_hit_rate": round(float(total_leveraged_hits / max(total_leveraged_trades, 1)), 4),
+        "leveraged_total_r": round(total_leveraged_r, 4),
+        "sure_leveraged_trades": total_sure_lev_trades,
+        "sure_leveraged_hits": total_sure_lev_hits,
+        "sure_leveraged_hit_rate": round(float(total_sure_lev_hits / max(total_sure_lev_trades, 1)), 4),
+        "sure_leveraged_total_r": round(total_sure_lev_r, 4),
         "flip_pressure_bars": total_flip_pressure_bars,
         "flip_pressure_rate": round(float(total_flip_pressure_bars / max(total_trades, 1)), 4),
         "counterfactual_rejects": total_cf_rejects,

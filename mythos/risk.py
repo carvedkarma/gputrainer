@@ -86,6 +86,7 @@ class RiskConstitution:
         uncertainty: float,
         regime: int | None = None,
         conviction: float | None = None,
+        high_conviction_recent: List[float] | None = None,
         allow_conviction_boost: bool = True,
     ) -> float:
         """
@@ -98,7 +99,14 @@ class RiskConstitution:
         size_mult = conf * (1.0 + safe_edge)
         conv = float(np.clip(conviction if conviction is not None else conf, 0.0, 1.0))
         score_thr = float(np.clip(getattr(self.cfg, "conviction_score_threshold", 0.62), 0.0, 1.0))
-        if allow_conviction_boost and conv >= score_thr:
+        guard_window = int(max(getattr(self.cfg, "conviction_guard_window", 32), 1))
+        guard_min_trades = int(max(getattr(self.cfg, "conviction_guard_min_trades", 8), 1))
+        guard_min_expectancy = float(getattr(self.cfg, "conviction_guard_min_expectancy_r", 0.03))
+        hist_src = high_conviction_recent if high_conviction_recent is not None else self._recent_high_conv_rr
+        hist = [float(v) for v in hist_src[-guard_window:]] if hist_src else []
+        hist_expectancy = float(np.mean(np.asarray(hist, dtype=np.float64))) if hist else 0.0
+        hist_ready = len(hist) >= guard_min_trades and hist_expectancy >= guard_min_expectancy
+        if allow_conviction_boost and conv >= score_thr and hist_ready:
             boost = float(np.clip(getattr(self.cfg, "conviction_boost", 0.35), 0.0, 2.0))
             span = max(1.0 - score_thr, 1e-6)
             gain = 1.0 + boost * ((conv - score_thr) / span)
@@ -111,6 +119,9 @@ class RiskConstitution:
         if not self._recent_high_conv_rr:
             return 0.0
         return float(np.mean(np.asarray(self._recent_high_conv_rr, dtype=np.float64)))
+
+    def high_conviction_trade_count(self) -> int:
+        return int(len(self._recent_high_conv_rr))
 
     def sized_r(self, expected_r: float, uncertainty: float) -> float:
         # Legacy alias retained for compatibility.

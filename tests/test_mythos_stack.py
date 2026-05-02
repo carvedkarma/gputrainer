@@ -299,3 +299,30 @@ def test_conviction_boost_requires_positive_recent_quality():
     )
     assert with_neg <= base
     assert with_pos > base
+
+
+def test_conviction_boost_disabled_without_recent_quality():
+    cfg = MythosConfig(
+        conviction_score_threshold=0.6,
+        conviction_boost=0.6,
+        conviction_max_size_mult=2.3,
+        conviction_guard_window=8,
+        conviction_guard_min_trades=4,
+        conviction_guard_min_expectancy_r=0.05,
+    )
+    risk = RiskConstitution(cfg)
+    no_quality = risk.position_size_multiplier(
+        edge=0.03,
+        uncertainty=0.15,
+        conviction=0.9,
+        high_conviction_recent=[0.01, -0.02, 0.02, 0.01],
+        allow_conviction_boost=True,
+    )
+    blocked = risk.position_size_multiplier(
+        edge=0.03,
+        uncertainty=0.15,
+        conviction=0.9,
+        high_conviction_recent=[0.01, -0.02, 0.02, 0.01],
+        allow_conviction_boost=False,
+    )
+    assert abs(no_quality - blocked) < 1e-9
