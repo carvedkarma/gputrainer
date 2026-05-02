@@ -103,6 +103,11 @@ class MythosConfig:
     leverage_policy_min_expectancy: float = 0.06
     leverage_policy_context_weight: float = 0.60
     leverage_policy_cold_start_conviction_extra: float = 0.08
+    leverage_net_edge_floor: float = 0.002
+    leverage_side_policy_enable: bool = True
+    leverage_side_min_trades: int = 12
+    leverage_side_min_hit_rate: float = 0.52
+    leverage_side_min_expectancy: float = 0.03
     execution_fee_bps: float = 4.0
     execution_slippage_bps: float = 2.0
     execution_cost_cap_r: float = 0.35
@@ -317,6 +322,15 @@ class MythosConfig:
         )
         self.leverage_policy_cold_start_conviction_extra = float(
             np.clip(getattr(self, "leverage_policy_cold_start_conviction_extra", 0.08), 0.0, 0.5)
+        )
+        self.leverage_net_edge_floor = float(max(getattr(self, "leverage_net_edge_floor", 0.002), 0.0))
+        self.leverage_side_policy_enable = bool(getattr(self, "leverage_side_policy_enable", True))
+        self.leverage_side_min_trades = int(max(getattr(self, "leverage_side_min_trades", 12), 1))
+        self.leverage_side_min_hit_rate = float(
+            np.clip(getattr(self, "leverage_side_min_hit_rate", 0.52), 0.0, 1.0)
+        )
+        self.leverage_side_min_expectancy = float(
+            getattr(self, "leverage_side_min_expectancy", 0.03)
         )
         self.execution_fee_bps = float(max(getattr(self, "execution_fee_bps", 4.0), 0.0))
         self.execution_slippage_bps = float(max(getattr(self, "execution_slippage_bps", 2.0), 0.0))

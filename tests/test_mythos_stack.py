@@ -18,6 +18,7 @@ from mythos.walkforward import (
     _counterfactual_pass,
     _allow_conviction_leverage,
     _estimate_execution_cost_r,
+    _side_policy_ok,
 )
 
 
@@ -434,3 +435,18 @@ def test_leverage_policy_gate_blocks_weak_context_when_history_ready():
     )
     assert blocked is False
     assert allowed is True
+
+
+def test_side_policy_blocks_leverage_on_weak_side_history():
+    cfg = MythosConfig(
+        leverage_side_policy_enable=True,
+        leverage_side_min_trades=6,
+        leverage_side_min_hit_rate=0.55,
+        leverage_side_min_expectancy=0.02,
+    )
+    weak_side = {1: [-0.2, -0.1, -0.15, -0.05, -0.04, -0.08]}
+    strong_side = {-1: [0.2, 0.1, 0.15, 0.05, 0.18, 0.07]}
+    assert _side_policy_ok(side=1, side_rr_hist=weak_side, cfg=cfg) is False
+    assert _side_policy_ok(side=-1, side_rr_hist=strong_side, cfg=cfg) is True
+
+

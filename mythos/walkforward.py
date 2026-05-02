@@ -847,6 +847,41 @@ def _allow_conviction_leverage(
     return True
 
 
+def _net_edge_ok(
+    *,
+    edge: float,
+    uncertainty: float,
+    cfg: MythosConfig,
+) -> bool:
+    cost_r = _estimate_execution_cost_r(edge=edge, uncertainty=uncertainty, cfg=cfg)
+    net_edge = float(edge - cost_r)
+    floor = float(max(getattr(cfg, "leverage_net_edge_floor", 0.002), 0.0))
+    return bool(net_edge >= floor)
+
+
+def _side_policy_ok(
+    *,
+    side: int,
+    side_rr_hist: Dict[int, List[float]],
+    cfg: MythosConfig,
+) -> bool:
+    if not bool(getattr(cfg, "leverage_side_policy_enable", True)):
+        return True
+    s = int(side)
+    if s not in (-1, 1):
+        return False
+    hist = list(side_rr_hist.get(s, []))
+    min_n = int(max(getattr(cfg, "leverage_side_min_trades", 12), 1))
+    if len(hist) < min_n:
+        return True
+    arr = np.asarray(hist[-max(min_n, 64):], dtype=np.float64)
+    hit_rate = float(np.mean(arr > 0.0)) if arr.size else 0.0
+    expectancy = float(np.mean(arr)) if arr.size else 0.0
+    min_hit = float(np.clip(getattr(cfg, "leverage_side_min_hit_rate", 0.52), 0.0, 1.0))
+    min_exp = float(getattr(cfg, "leverage_side_min_expectancy", 0.03))
+    return bool(hit_rate >= min_hit and expectancy >= min_exp)
+
+
 def _estimate_execution_cost_r(
     *,
     edge: float,
@@ -1221,6 +1256,7 @@ def _run_fold(
     sure_recent_rr: List[float] = []
     sure_lev_recent_rr: List[float] = []
     sure_lev_recent_ctx: List[float] = []
+    side_quality_rr: Dict[int, List[float]] = {1: [], -1: []}
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
         x = X_te[i]
@@ -1387,6 +1423,11 @@ def _run_fold(
             leveraged_recent_ctx=sure_lev_recent_ctx,
             cfg=cfg,
         )
+        net_edge_est = float(edge - _estimate_execution_cost_r(edge=edge, uncertainty=uncertainty, cfg=cfg))
+        if net_edge_est < float(max(getattr(cfg, "leverage_net_edge_floor", 0.002), 0.0)):
+            leverage_allowed = False
+        if leverage_allowed and not _side_policy_ok(side=side, side_rr_hist=side_quality_rr, cfg=cfg):
+            leverage_allowed = False
         if is_sure_signal and not leverage_allowed:
             leverage_blocked_candidates += 1
         if leverage_allowed:
@@ -1456,6 +1497,10 @@ def _run_fold(
         else:
             n_short += 1
             short_trades.append(rr)
+        side_hist = side_quality_rr.setdefault(int(side), [])
+        side_hist.append(rr)
+        if len(side_hist) > 128:
+            del side_hist[0 : len(side_hist) - 128]
         if conviction >= high_conv_thresh:
             high_conv_trades += 1
             high_conv_r_sum += rr

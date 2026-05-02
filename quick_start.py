@@ -5507,6 +5507,19 @@ Examples:
                         help="MYTHOS leverage policy: weight on context score vs realized leverage history (default: 0.60)")
     parser.add_argument("--mythos-leverage-policy-cold-start-conviction-extra", type=float, default=0.08,
                         help="MYTHOS leverage policy: extra conviction needed before leverage during policy cold-start (default: 0.08)")
+    parser.add_argument("--mythos-leverage-net-edge-floor", type=float, default=0.002,
+                        help="MYTHOS leverage policy: minimum estimated net edge (after execution cost) to allow leverage boost (default: 0.002)")
+    parser.add_argument("--mythos-leverage-side-policy-enable", dest="mythos_leverage_side_policy_enable", action="store_true",
+                        help="MYTHOS leverage policy: require side-specific recent quality before leverage boost (default: enabled)")
+    parser.add_argument("--mythos-no-leverage-side-policy-enable", dest="mythos_leverage_side_policy_enable", action="store_false",
+                        help="MYTHOS leverage policy: disable side-specific leverage quality gating")
+    parser.set_defaults(mythos_leverage_side_policy_enable=True)
+    parser.add_argument("--mythos-leverage-side-min-trades", type=int, default=12,
+                        help="MYTHOS leverage policy: minimum recent side trades before strict side leverage gating (default: 12)")
+    parser.add_argument("--mythos-leverage-side-min-hit-rate", type=float, default=0.52,
+                        help="MYTHOS leverage policy: minimum side-specific recent hit-rate to allow leverage boost (default: 0.52)")
+    parser.add_argument("--mythos-leverage-side-min-expectancy", type=float, default=0.03,
+                        help="MYTHOS leverage policy: minimum side-specific recent expectancy-R to allow leverage boost (default: 0.03)")
     parser.add_argument("--mythos-execution-fee-bps", type=float, default=4.0,
                         help="MYTHOS net intelligence: execution fee in bps applied in per-trade net-R accounting (default: 4.0)")
     parser.add_argument("--mythos-execution-slippage-bps", type=float, default=2.0,
@@ -6578,6 +6591,11 @@ Examples:
                 leverage_policy_min_expectancy=args.mythos_leverage_policy_min_expectancy,
                 leverage_policy_context_weight=args.mythos_leverage_policy_context_weight,
                 leverage_policy_cold_start_conviction_extra=args.mythos_leverage_policy_cold_start_conviction_extra,
+                leverage_net_edge_floor=args.mythos_leverage_net_edge_floor,
+                leverage_side_policy_enable=args.mythos_leverage_side_policy_enable,
+                leverage_side_min_trades=args.mythos_leverage_side_min_trades,
+                leverage_side_min_hit_rate=args.mythos_leverage_side_min_hit_rate,
+                leverage_side_min_expectancy=args.mythos_leverage_side_min_expectancy,
                 execution_fee_bps=args.mythos_execution_fee_bps,
                 execution_slippage_bps=args.mythos_execution_slippage_bps,
                 execution_cost_cap_r=args.mythos_execution_cost_cap_r,
