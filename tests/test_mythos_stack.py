@@ -450,3 +450,17 @@ def test_side_policy_blocks_leverage_on_weak_side_history():
     assert _side_policy_ok(side=-1, side_rr_hist=strong_side, cfg=cfg) is True
 
 
+def test_net_edge_floor_blocks_leverage_when_cost_dominates():
+    cfg = MythosConfig(
+        min_expected_r=0.01,
+        execution_fee_bps=10.0,
+        execution_slippage_bps=10.0,
+        execution_cost_cap_r=0.5,
+        leverage_net_edge_floor=0.02,
+    )
+    edge = 0.015
+    uncertainty = 1.0
+    net_edge = edge - _estimate_execution_cost_r(edge=edge, uncertainty=uncertainty, cfg=cfg)
+    assert net_edge < cfg.leverage_net_edge_floor
+
+
