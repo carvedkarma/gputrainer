@@ -76,6 +76,9 @@ class MythosConfig:
     conviction_score_threshold: float = 0.62
     conviction_boost: float = 0.35
     conviction_max_size_mult: float = 2.2
+    conviction_recent_window: int = 64
+    conviction_recent_min_trades: int = 12
+    conviction_recent_min_expectancy: float = 0.03
     conviction_guard_window: int = 32
     conviction_guard_min_trades: int = 8
     conviction_guard_min_expectancy_r: float = 0.03
@@ -94,6 +97,12 @@ class MythosConfig:
     side_fail_cooldown_bars: int = 24
     side_fail_ema_alpha: float = 0.25
     side_fail_hard_pause: bool = False
+    short_boost_enable: bool = True
+    short_boost_window: int = 96
+    short_boost_min_trades: int = 24
+    short_boost_threshold_r: float = 0.08
+    short_boost_edge: float = 0.0045
+    short_boost_confidence: float = 0.03
     flip_intensity_trigger: float = 0.35
     flip_harden_hold_bars: int = 24
     instability_edge_mult: float = 0.70
@@ -140,6 +149,7 @@ class MythosConfig:
     meta_learner_fallback_lr: float = 0.03
     meta_bootstrap_enable: bool = True
     meta_bootstrap_samples: int = 1024
+    meta_bootstrap_epochs: int = 1
     meta_bootstrap_min_samples: int = 64
     meta_bootstrap_edge_cap: float = 0.04
     meta_bootstrap_conf_gain: float = 0.12
@@ -230,13 +240,32 @@ class MythosConfig:
         self.conviction_max_size_mult = float(
             max(getattr(self, "conviction_max_size_mult", 2.2), self.max_size_mult)
         )
-        self.conviction_guard_window = int(max(getattr(self, "conviction_guard_window", 32), 8))
-        self.conviction_guard_min_trades = int(max(getattr(self, "conviction_guard_min_trades", 8), 1))
-        self.conviction_guard_min_expectancy_r = float(
-            getattr(self, "conviction_guard_min_expectancy_r", 0.03)
+        self.conviction_recent_window = int(max(getattr(self, "conviction_recent_window", 64), 8))
+        self.conviction_recent_min_trades = int(max(getattr(self, "conviction_recent_min_trades", 12), 1))
+        self.conviction_recent_min_expectancy = float(
+            getattr(self, "conviction_recent_min_expectancy", 0.03)
         )
+        self.conviction_guard_window = int(
+            max(getattr(self, "conviction_guard_window", self.conviction_recent_window), 8)
+        )
+        self.conviction_guard_min_trades = int(
+            max(getattr(self, "conviction_guard_min_trades", self.conviction_recent_min_trades), 1)
+        )
+        self.conviction_guard_min_expectancy_r = float(
+            getattr(self, "conviction_guard_min_expectancy_r", self.conviction_recent_min_expectancy)
+        )
+        # Compatibility aliases consumed by risk sizing and older walk-forward revisions.
+        self.high_conviction_expectancy_window = int(self.conviction_recent_window)
         self.conviction_requires_meta_ready = bool(getattr(self, "conviction_requires_meta_ready", True))
         self.side_fail_hard_pause = bool(getattr(self, "side_fail_hard_pause", False))
+        self.short_boost_enable = bool(getattr(self, "short_boost_enable", True))
+        self.short_boost_window = int(max(getattr(self, "short_boost_window", 96), 8))
+        self.short_boost_min_trades = int(max(getattr(self, "short_boost_min_trades", 24), 1))
+        self.short_boost_threshold_r = float(getattr(self, "short_boost_threshold_r", 0.08))
+        self.short_boost_edge = float(max(getattr(self, "short_boost_edge", 0.0045), 0.0))
+        self.short_boost_confidence = float(
+            np.clip(getattr(self, "short_boost_confidence", 0.03), 0.0, 1.0)
+        )
         # Keep neural-expert naming aligned across revisions.
         self.use_gpu_neural_expert = bool(self.enable_gpu_neural_experts)
         self.neural_expert_hidden_dim = int(self.neural_expert_hidden)
@@ -256,6 +285,10 @@ class MythosConfig:
         )
         self.meta_bootstrap_enable = bool(getattr(self, "meta_bootstrap_enable", True))
         self.meta_bootstrap_samples = int(max(getattr(self, "meta_bootstrap_samples", 1024), 0))
+        self.meta_bootstrap_epochs = int(max(getattr(self, "meta_bootstrap_epochs", 1), 1))
+        self.meta_bootstrap_trades = int(
+            max(getattr(self, "meta_bootstrap_trades", self.meta_bootstrap_samples), 0)
+        )
         self.meta_bootstrap_min_samples = int(max(getattr(self, "meta_bootstrap_min_samples", 64), 16))
         self.meta_bootstrap_edge_cap = float(
             np.clip(getattr(self, "meta_bootstrap_edge_cap", 0.04), 0.001, 1.0)
