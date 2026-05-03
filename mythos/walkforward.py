@@ -1056,6 +1056,15 @@ def _apply_intelligence_adjustment(
     regime_side_stats: Dict[Tuple[int, int], Dict[str, float]],
     expert_stats: Dict[str, Dict[str, float]],
     cfg: MythosConfig,
+    bar_idx: int = 0,
+    switched_so_far: int = 0,
+    intelligence_mode_bars: int = 0,
+    last_switch_bar: int = -10_000_000,
+    instability: float = 0.0,
+    flip_pressure: float = 0.0,
+    change_mode: float = 0.0,
+    long_trade_count: int = 0,
+    short_trade_count: int = 0,
 ) -> Dict[str, float]:
     s = int(side)
     if not bool(getattr(cfg, "intelligence_enable", True)) or s not in (-1, 1):
@@ -1093,20 +1102,64 @@ def _apply_intelligence_adjustment(
     switched = False
     if bool(getattr(cfg, "intelligence_side_switch_enable", True)):
         other = -s
-        other_side = _intelligence_bucket_score(side_stats.setdefault(other, _intelligence_bucket()), cfg)
-        other_reg = _intelligence_bucket_score(regime_side_stats.setdefault((int(regime), other), _intelligence_bucket()), cfg)
+        own_bucket = side_stats.setdefault(s, _intelligence_bucket())
+        other_bucket = side_stats.setdefault(other, _intelligence_bucket())
+        own_reg_bucket = regime_side_stats.setdefault((int(regime), s), _intelligence_bucket())
+        other_reg_bucket = regime_side_stats.setdefault((int(regime), other), _intelligence_bucket())
+        other_side = _intelligence_bucket_score(other_bucket, cfg)
+        other_reg = _intelligence_bucket_score(other_reg_bucket, cfg)
         other_score = float(0.55 * other_reg + 0.45 * other_side)
         gap = float(other_score - score)
         min_gap = float(np.clip(getattr(cfg, "intelligence_side_switch_min_gap", 0.30), 0.0, 2.0))
         min_adv = float(np.clip(getattr(cfg, "intelligence_side_switch_min_analog_adv", 0.0015), 0.0, 0.50))
         conv_guard = float(np.clip(getattr(cfg, "intelligence_side_switch_conviction_guard", 0.58), 0.0, 1.0))
-        # Switch only when live conviction is weak and historical evidence is clearly better opposite side.
-        if float(conviction) < conv_guard and gap >= min_gap and float(analog_edge) < min_adv:
+        can_switch = _can_intelligence_switch_side(
+            bar_idx=int(bar_idx),
+            switched_so_far=int(switched_so_far),
+            intelligence_mode_bars=int(intelligence_mode_bars),
+            last_switch_bar=int(last_switch_bar),
+            cfg=cfg,
+        )
+        min_side_samples = int(max(getattr(cfg, "intelligence_side_switch_min_samples", 48), 1))
+        own_n = int(max(own_bucket.get("n", 0.0), 0.0))
+        other_n = int(max(other_bucket.get("n", 0.0), 0.0))
+        own_reg_n = int(max(own_reg_bucket.get("n", 0.0), 0.0))
+        other_reg_n = int(max(other_reg_bucket.get("n", 0.0), 0.0))
+        has_depth = bool(
+            own_n >= min_side_samples
+            and other_n >= min_side_samples
+            and own_reg_n >= max(8, min_side_samples // 2)
+            and other_reg_n >= max(8, min_side_samples // 2)
+        )
+        own_exp = float(own_bucket.get("exp_ema", 0.0))
+        other_exp = float(other_bucket.get("exp_ema", 0.0))
+        own_reg_exp = float(own_reg_bucket.get("exp_ema", 0.0))
+        other_reg_exp = float(other_reg_bucket.get("exp_ema", 0.0))
+        min_unit = float(max(getattr(cfg, "min_expected_r", 0.01), 1e-4))
+        has_quality_advantage = bool(
+            other_exp > own_exp + 0.35 * min_unit and other_reg_exp > own_reg_exp + 0.20 * min_unit
+        )
+        unstable = bool(float(flip_pressure) > 0.5 or float(change_mode) > 0.5 or float(instability) >= 1.05)
+        total_side = int(max(int(long_trade_count) + int(short_trade_count), 0))
+        if total_side >= 40 and other == 1:
+            long_share = float(int(long_trade_count) / max(total_side, 1))
+            # Resist switching into already-dominant longs unless opposite evidence is overwhelming.
+            min_gap += float(np.clip(max(long_share - 0.58, 0.0) * 1.5, 0.0, 0.35))
+        # Switch only when live conviction is weak, state is stable, and opposite-side quality is decisively better.
+        if (
+            can_switch
+            and has_depth
+            and has_quality_advantage
+            and not unstable
+            and float(conviction) < conv_guard
+            and gap >= min_gap
+            and float(analog_edge) < min_adv
+        ):
             s = other
             switched = True
-            edge2 = float(max(edge2 + 0.25 * min(max_adj, pos_scale * min(gap, 1.0)), 0.0))
-            conf2 = float(np.clip(conf2 + 0.03, 0.0, 1.0))
-            unc2 = float(np.clip(unc2 * 1.05, 0.005, 2.0))
+            edge2 = float(max(edge2 + 0.15 * min(max_adj, pos_scale * min(gap, 1.0)), 0.0))
+            conf2 = float(np.clip(conf2 + 0.015, 0.0, 1.0))
+            unc2 = float(np.clip(unc2 * 1.03, 0.005, 2.0))
 
     return {
         "side": float(s),
@@ -1829,6 +1882,7 @@ def _run_fold(
     intelligence_score_sum = 0.0
     intelligence_side_switches = 0
     intelligence_mode_bars = 0
+    intelligence_last_switch_bar = -10_000_000
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
         x = X_te[i]
@@ -1930,6 +1984,15 @@ def _run_fold(
             regime_side_stats=intelligence_regime_side_stats,
             expert_stats=intelligence_expert_stats,
             cfg=cfg,
+            bar_idx=i,
+            switched_so_far=intelligence_side_switches,
+            intelligence_mode_bars=intelligence_mode_bars,
+            last_switch_bar=intelligence_last_switch_bar,
+            instability=float(adapted.get("shock", 0.0)) + float(adapted.get("flip", 0.0)),
+            flip_pressure=float(adapted.get("flip_pressure", 0.0)),
+            change_mode=float(adapted.get("change_mode", 0.0)),
+            long_trade_count=len(long_trades),
+            short_trade_count=len(short_trades),
         )
         side = int(round(float(intel.get("side", side))))
         edge = float(intel.get("edge", edge))
@@ -1941,6 +2004,7 @@ def _run_fold(
             intelligence_mode_bars += 1
         if float(intel.get("switched", 0.0)) > 0.5:
             intelligence_side_switches += 1
+            intelligence_last_switch_bar = int(i)
         is_sure_signal = _is_sure_signal(
             side=side,
             edge=edge,
@@ -2234,7 +2298,7 @@ def _run_fold(
         "nonconformity_winner_ref_count": int(len(winner_nonconformity_scores)),
         "intelligence_mode_bars": int(intelligence_mode_bars),
         "intelligence_side_switches": int(intelligence_side_switches),
-        "intelligence_avg_score": round(float(intelligence_score_sum / max(len(trades), 1)), 6),
+        "intelligence_avg_score": round(float(intelligence_score_sum / max(intelligence_mode_bars, 1)), 6),
         "skip_reasons": {k: int(v) for k, v in skip_counts.items()},
         "long_trades": n_long,
         "short_trades": n_short,
@@ -2427,9 +2491,9 @@ def run_mythos_walk_forward(
     total_intelligence_mode_bars = int(sum(int(r.get("intelligence_mode_bars", 0)) for r in reports))
     total_intelligence_side_switches = int(sum(int(r.get("intelligence_side_switches", 0)) for r in reports))
     weighted_intelligence_score_num = float(
-        sum(float(r.get("intelligence_avg_score", 0.0)) * int(r.get("total_trades", 0)) for r in reports)
+        sum(float(r.get("intelligence_avg_score", 0.0)) * int(r.get("intelligence_mode_bars", 0)) for r in reports)
     )
-    aggregate_intelligence_avg_score = float(weighted_intelligence_score_num / max(total_trades, 1))
+    aggregate_intelligence_avg_score = float(weighted_intelligence_score_num / max(total_intelligence_mode_bars, 1))
     cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
     bayes_quality_reject_rate = float(
         total_bayes_quality_rejects / max(total_bayes_quality_rejects + total_trades, 1)
