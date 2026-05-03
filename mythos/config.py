@@ -81,6 +81,7 @@ class MythosConfig:
     intelligence_side_switch_min_analog_adv: float = 0.0015
     intelligence_side_switch_conviction_guard: float = 0.58
     intelligence_side_switch_warmup_trades: int = 40
+    intelligence_side_switch_min_samples: int = 48
     intelligence_side_switch_cooldown_bars: int = 48
     intelligence_side_switch_max_rate: float = 0.20
     adaptive_side_target_strength: float = 0.22
@@ -367,6 +368,9 @@ class MythosConfig:
         )
         self.intelligence_side_switch_warmup_trades = int(
             max(getattr(self, "intelligence_side_switch_warmup_trades", 40), 0)
+        )
+        self.intelligence_side_switch_min_samples = int(
+            max(getattr(self, "intelligence_side_switch_min_samples", 48), 1)
         )
         self.intelligence_side_switch_cooldown_bars = int(
             max(getattr(self, "intelligence_side_switch_cooldown_bars", 48), 0)

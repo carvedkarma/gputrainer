@@ -5370,8 +5370,12 @@ Examples:
                         help="MYTHOS intelligence: block side switching when conviction is above this threshold (default: 0.58)")
     parser.add_argument("--mythos-intelligence-side-switch-cooldown-bars", type=int, default=16,
                         help="MYTHOS intelligence: minimum bars between quality-driven side switches (default: 16)")
-    parser.add_argument("--mythos-intelligence-max-switch-rate", type=float, default=0.08,
+    parser.add_argument("--mythos-intelligence-side-switch-max-rate", dest="mythos_intelligence_side_switch_max_rate", type=float, default=0.08,
                         help="MYTHOS intelligence: maximum fraction of bars allowed to side-switch before throttling (default: 0.08)")
+    parser.add_argument("--mythos-intelligence-max-switch-rate", dest="mythos_intelligence_side_switch_max_rate", type=float,
+                        help="Alias for --mythos-intelligence-side-switch-max-rate")
+    parser.add_argument("--mythos-intelligence-side-switch-min-samples", dest="mythos_intelligence_side_switch_warmup_trades", type=int, default=40,
+                        help="MYTHOS intelligence: minimum intelligence-active bars before side switching can activate (default: 40)")
     parser.add_argument("--mythos-adaptive-side-target-strength", type=float, default=0.22,
                         help="MYTHOS adaptive: how strongly side health shifts long/short target mix (default: 0.22)")
     parser.add_argument("--mythos-adaptive-side-target-min", type=float, default=0.35,

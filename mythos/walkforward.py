@@ -1131,8 +1131,8 @@ def _can_intelligence_switch_side(
     cooldown = int(max(getattr(cfg, "intelligence_side_switch_cooldown_bars", 96), 1))
     if int(bar_idx) - int(last_switch_bar) < cooldown:
         return False
-    warmup = int(max(getattr(cfg, "intelligence_side_switch_warmup_bars", 256), 1))
-    if int(bar_idx) < warmup:
+    warmup = int(max(getattr(cfg, "intelligence_side_switch_warmup_trades", 40), 0))
+    if int(intelligence_mode_bars) < warmup:
         return False
     if int(intelligence_mode_bars) <= 0:
         return True

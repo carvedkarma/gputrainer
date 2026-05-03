@@ -152,6 +152,7 @@ def test_intelligence_knobs_are_normalized():
         intelligence_side_switch_conviction_guard=2.0,
         intelligence_side_switch_cooldown_bars=-1,
         intelligence_side_switch_max_rate=2.0,
+        intelligence_side_switch_min_samples=0,
     )
     assert cfg.intelligence_min_samples == 1
     assert cfg.intelligence_ema_alpha == 1.0
@@ -168,3 +169,4 @@ def test_intelligence_knobs_are_normalized():
     assert cfg.intelligence_side_switch_conviction_guard == 1.0
     assert cfg.intelligence_side_switch_cooldown_bars == 0
     assert cfg.intelligence_side_switch_max_rate == 1.0
+    assert cfg.intelligence_side_switch_min_samples == 1
