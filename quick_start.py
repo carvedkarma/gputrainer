@@ -5256,14 +5256,24 @@ Examples:
                         help="MYTHOS hard emergency stop: halt new trades once peak-to-trough drawdown reaches this R (default: 12.0)")
     parser.add_argument("--mythos-drawdown-size-start-r", type=float, default=6.0,
                         help="MYTHOS size throttle: drawdown level where position-size throttling starts (default: 6.0)")
+    parser.add_argument("--mythos-dd-size-throttle-start-r", dest="mythos_drawdown_size_start_r", type=float,
+                        help="Alias for --mythos-drawdown-size-start-r")
     parser.add_argument("--mythos-drawdown-size-full-r", type=float, default=14.0,
                         help="MYTHOS size throttle: drawdown level where minimum throttle is reached (default: 14.0)")
+    parser.add_argument("--mythos-dd-size-throttle-end-r", dest="mythos_drawdown_size_full_r", type=float,
+                        help="Alias for --mythos-drawdown-size-full-r")
     parser.add_argument("--mythos-drawdown-size-min-scale", type=float, default=0.35,
                         help="MYTHOS size throttle: minimum size scaling under deep drawdown (default: 0.35)")
+    parser.add_argument("--mythos-dd-size-throttle-min", dest="mythos_drawdown_size_min_scale", type=float,
+                        help="Alias for --mythos-drawdown-size-min-scale")
     parser.add_argument("--mythos-disable-conviction-boost-dd-r", type=float, default=6.0,
                         help="MYTHOS leverage safety: disable conviction boost once drawdown reaches this R (default: 6.0)")
     parser.add_argument("--mythos-disable-leverage-dd-r", type=float, default=6.0,
                         help="MYTHOS leverage safety: disable leverage once drawdown reaches this R (default: 6.0)")
+    parser.add_argument("--mythos-dd-disable-leverage-r", dest="mythos_disable_leverage_dd_r", type=float,
+                        help="Alias for --mythos-disable-leverage-dd-r")
+    parser.add_argument("--mythos-dd-risk-recovery-r", type=float, default=3.0,
+                        help="MYTHOS leverage safety: drawdown level to re-enable leverage after disable threshold (default: 3.0)")
     parser.add_argument("--mythos-cooldown-bars", type=int, default=4,
                         help="MYTHOS bars of cooldown after each executed trade (default: 4)")
     parser.add_argument("--mythos-max-trades-per-day", type=int, default=8,
@@ -6678,10 +6688,16 @@ Examples:
                 daily_loss_cap_r=args.mythos_daily_loss_cap,
                 weekly_loss_cap_r=args.mythos_weekly_loss_cap,
                 emergency_stop_r=args.mythos_emergency_stop_r,
-                dd_size_throttle_start_r=args.mythos_dd_size_throttle_start_r,
-                dd_size_throttle_end_r=args.mythos_dd_size_throttle_end_r,
-                dd_size_throttle_min=args.mythos_dd_size_throttle_min,
-                dd_disable_leverage_r=args.mythos_dd_disable_leverage_r,
+                emergency_max_drawdown_r=args.mythos_emergency_max_drawdown_r,
+                drawdown_size_start_r=args.mythos_drawdown_size_start_r,
+                drawdown_size_full_r=args.mythos_drawdown_size_full_r,
+                drawdown_size_min_scale=args.mythos_drawdown_size_min_scale,
+                disable_conviction_boost_drawdown_r=args.mythos_disable_conviction_boost_dd_r,
+                disable_leverage_drawdown_r=args.mythos_disable_leverage_dd_r,
+                dd_size_throttle_start_r=args.mythos_drawdown_size_start_r,
+                dd_size_throttle_end_r=args.mythos_drawdown_size_full_r,
+                dd_size_throttle_min=args.mythos_drawdown_size_min_scale,
+                dd_disable_leverage_r=args.mythos_disable_leverage_dd_r,
                 dd_risk_recovery_r=args.mythos_dd_risk_recovery_r,
                 cooldown_bars=args.mythos_cooldown_bars,
                 max_trades_per_day=args.mythos_max_trades_per_day,
