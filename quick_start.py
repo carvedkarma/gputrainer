@@ -5322,6 +5322,42 @@ Examples:
                         help="MYTHOS side rebalance: block short boost when short expectancy lags long by this guard (default: 0.06)")
     parser.add_argument("--mythos-side-rebalance-max-adjust", type=float, default=0.012,
                         help="MYTHOS side rebalance: cap on per-trade edge adjustment from rebalance nudges (default: 0.012)")
+    parser.add_argument("--mythos-intelligence-enable", dest="mythos_intelligence_enable", action="store_true",
+                        help="MYTHOS intelligence: enable online quality learner to recalibrate edge/confidence/uncertainty (default: enabled)")
+    parser.add_argument("--mythos-no-intelligence-enable", dest="mythos_intelligence_enable", action="store_false",
+                        help="MYTHOS intelligence: disable online quality learner recalibration")
+    parser.set_defaults(mythos_intelligence_enable=True)
+    parser.add_argument("--mythos-intelligence-min-samples", type=int, default=24,
+                        help="MYTHOS intelligence: minimum samples per bucket before quality adjustments activate (default: 24)")
+    parser.add_argument("--mythos-intelligence-ema-alpha", type=float, default=0.08,
+                        help="MYTHOS intelligence: EMA alpha for online quality memory updates (default: 0.08)")
+    parser.add_argument("--mythos-intelligence-hit-weight", type=float, default=0.55,
+                        help="MYTHOS intelligence: score weight on hit-rate quality signal (default: 0.55)")
+    parser.add_argument("--mythos-intelligence-expectancy-weight", type=float, default=0.45,
+                        help="MYTHOS intelligence: score weight on expectancy quality signal (default: 0.45)")
+    parser.add_argument("--mythos-intelligence-variance-penalty", type=float, default=0.18,
+                        help="MYTHOS intelligence: penalty weight for unstable/high-variance quality buckets (default: 0.18)")
+    parser.add_argument("--mythos-intelligence-edge-scale", type=float, default=0.010,
+                        help="MYTHOS intelligence: positive score to edge boost scale (default: 0.010)")
+    parser.add_argument("--mythos-intelligence-negative-edge-scale", type=float, default=0.012,
+                        help="MYTHOS intelligence: negative score to edge penalty scale (default: 0.012)")
+    parser.add_argument("--mythos-intelligence-conf-scale", type=float, default=0.06,
+                        help="MYTHOS intelligence: score to confidence adjustment scale (default: 0.06)")
+    parser.add_argument("--mythos-intelligence-uncertainty-scale", type=float, default=0.30,
+                        help="MYTHOS intelligence: score to uncertainty adjustment scale (default: 0.30)")
+    parser.add_argument("--mythos-intelligence-max-edge-adjust", type=float, default=0.020,
+                        help="MYTHOS intelligence: cap on per-trade edge adjustment from quality learner (default: 0.020)")
+    parser.add_argument("--mythos-intelligence-side-switch-enable", dest="mythos_intelligence_side_switch_enable", action="store_true",
+                        help="MYTHOS intelligence: allow quality-driven side switch when opposite side has stronger evidence (default: enabled)")
+    parser.add_argument("--mythos-no-intelligence-side-switch-enable", dest="mythos_intelligence_side_switch_enable", action="store_false",
+                        help="MYTHOS intelligence: disable quality-driven side switch")
+    parser.set_defaults(mythos_intelligence_side_switch_enable=True)
+    parser.add_argument("--mythos-intelligence-side-switch-min-gap", type=float, default=0.30,
+                        help="MYTHOS intelligence: minimum opposite-side quality score gap required to switch side (default: 0.30)")
+    parser.add_argument("--mythos-intelligence-side-switch-min-analog-adv", type=float, default=0.0015,
+                        help="MYTHOS intelligence: only allow side switch when chosen side analog edge is below this floor (default: 0.0015)")
+    parser.add_argument("--mythos-intelligence-side-switch-conviction-guard", type=float, default=0.58,
+                        help="MYTHOS intelligence: block side switching when conviction is above this threshold (default: 0.58)")
     parser.add_argument("--mythos-adaptive-side-target-strength", type=float, default=0.22,
                         help="MYTHOS adaptive: how strongly side health shifts long/short target mix (default: 0.22)")
     parser.add_argument("--mythos-adaptive-side-target-min", type=float, default=0.35,
@@ -6673,6 +6709,21 @@ Examples:
                 side_rebalance_conf_boost=args.mythos_side_rebalance_conf_boost,
                 side_rebalance_quality_guard=args.mythos_side_rebalance_quality_guard,
                 side_rebalance_max_adjust=args.mythos_side_rebalance_max_adjust,
+                intelligence_enable=args.mythos_intelligence_enable,
+                intelligence_min_samples=args.mythos_intelligence_min_samples,
+                intelligence_ema_alpha=args.mythos_intelligence_ema_alpha,
+                intelligence_hit_weight=args.mythos_intelligence_hit_weight,
+                intelligence_expectancy_weight=args.mythos_intelligence_expectancy_weight,
+                intelligence_variance_penalty=args.mythos_intelligence_variance_penalty,
+                intelligence_edge_scale=args.mythos_intelligence_edge_scale,
+                intelligence_negative_edge_scale=args.mythos_intelligence_negative_edge_scale,
+                intelligence_conf_scale=args.mythos_intelligence_conf_scale,
+                intelligence_uncertainty_scale=args.mythos_intelligence_uncertainty_scale,
+                intelligence_max_edge_adjust=args.mythos_intelligence_max_edge_adjust,
+                intelligence_side_switch_enable=args.mythos_intelligence_side_switch_enable,
+                intelligence_side_switch_min_gap=args.mythos_intelligence_side_switch_min_gap,
+                intelligence_side_switch_min_analog_adv=args.mythos_intelligence_side_switch_min_analog_adv,
+                intelligence_side_switch_conviction_guard=args.mythos_intelligence_side_switch_conviction_guard,
                 adaptive_side_target_strength=args.mythos_adaptive_side_target_strength,
                 adaptive_side_target_min=args.mythos_adaptive_side_target_min,
                 adaptive_side_target_max=args.mythos_adaptive_side_target_max,
@@ -6894,6 +6945,13 @@ Examples:
                 agg.get("nonconformity_overrides"),
                 agg.get("nonconformity_ready_checks"),
                 agg.get("nonconformity_winner_ref_count"),
+            )
+            log.info(
+                "[MYTHOS] Intelligence engine: mode_bars=%s mode_rate=%s side_switches=%s avg_score=%s",
+                agg.get("intelligence_mode_bars"),
+                agg.get("intelligence_mode_rate"),
+                agg.get("intelligence_side_switches"),
+                agg.get("intelligence_avg_score"),
             )
             if agg.get("best_model_path"):
                 log.info(

@@ -984,6 +984,140 @@ def _adaptive_rebalance_adjustment(
     return {"edge_adjust": 0.0, "conf_adjust": 0.0}
 
 
+def _intelligence_bucket() -> Dict[str, float]:
+    return {"n": 0.0, "hit_ema": 0.5, "exp_ema": 0.0, "var_ema": 0.0}
+
+
+def _update_intelligence_state(
+    *,
+    side: int,
+    regime: int,
+    expert_name: str,
+    realized_r: float,
+    side_stats: Dict[int, Dict[str, float]],
+    regime_side_stats: Dict[Tuple[int, int], Dict[str, float]],
+    expert_stats: Dict[str, Dict[str, float]],
+    cfg: MythosConfig,
+) -> None:
+    s = int(side)
+    if s not in (-1, 1):
+        return
+    alpha = float(np.clip(getattr(cfg, "intelligence_ema_alpha", 0.08), 0.01, 1.0))
+    rr = float(realized_r)
+    hit = 1.0 if rr > 0.0 else 0.0
+
+    def _touch(bucket: Dict[str, float]) -> None:
+        n = float(max(bucket.get("n", 0.0), 0.0) + 1.0)
+        hit_ema = float(bucket.get("hit_ema", 0.5))
+        exp_ema = float(bucket.get("exp_ema", 0.0))
+        var_ema = float(max(bucket.get("var_ema", 0.0), 0.0))
+        hit_ema = (1.0 - alpha) * hit_ema + alpha * hit
+        exp_ema = (1.0 - alpha) * exp_ema + alpha * rr
+        resid = rr - exp_ema
+        var_ema = (1.0 - alpha) * var_ema + alpha * (resid * resid)
+        bucket["n"] = n
+        bucket["hit_ema"] = float(np.clip(hit_ema, 0.0, 1.0))
+        bucket["exp_ema"] = exp_ema
+        bucket["var_ema"] = float(max(var_ema, 0.0))
+
+    _touch(side_stats.setdefault(s, _intelligence_bucket()))
+    _touch(regime_side_stats.setdefault((int(regime), s), _intelligence_bucket()))
+    if expert_name:
+        _touch(expert_stats.setdefault(str(expert_name), _intelligence_bucket()))
+
+
+def _intelligence_bucket_score(bucket: Dict[str, float], cfg: MythosConfig) -> float:
+    min_n = int(max(getattr(cfg, "intelligence_min_samples", 24), 1))
+    n = int(max(bucket.get("n", 0.0), 0.0))
+    if n < min_n:
+        return 0.0
+    hit_w = float(np.clip(getattr(cfg, "intelligence_hit_weight", 0.55), 0.0, 2.0))
+    exp_w = float(np.clip(getattr(cfg, "intelligence_expectancy_weight", 0.45), 0.0, 2.0))
+    var_w = float(np.clip(getattr(cfg, "intelligence_variance_penalty", 0.18), 0.0, 2.0))
+    unit = float(max(getattr(cfg, "min_expected_r", 0.01), 1e-6))
+    hit_term = float((float(bucket.get("hit_ema", 0.5)) - 0.5) * 2.0)
+    exp_term = float(np.tanh(float(bucket.get("exp_ema", 0.0)) / max(2.0 * unit, 1e-6)))
+    var_term = float(np.tanh(float(np.sqrt(max(bucket.get("var_ema", 0.0), 0.0))) / max(3.0 * unit, 1e-6)))
+    score = hit_w * hit_term + exp_w * exp_term - var_w * var_term
+    return float(np.clip(score, -2.0, 2.0))
+
+
+def _apply_intelligence_adjustment(
+    *,
+    side: int,
+    regime: int,
+    expert_name: str,
+    edge: float,
+    confidence: float,
+    uncertainty: float,
+    conviction: float,
+    analog_edge: float,
+    side_stats: Dict[int, Dict[str, float]],
+    regime_side_stats: Dict[Tuple[int, int], Dict[str, float]],
+    expert_stats: Dict[str, Dict[str, float]],
+    cfg: MythosConfig,
+) -> Dict[str, float]:
+    s = int(side)
+    if not bool(getattr(cfg, "intelligence_enable", True)) or s not in (-1, 1):
+        return {
+            "side": float(s),
+            "edge": float(edge),
+            "confidence": float(np.clip(confidence, 0.0, 1.0)),
+            "uncertainty": float(np.clip(uncertainty, 0.005, 2.0)),
+            "score": 0.0,
+            "switched": 0.0,
+        }
+    side_score = _intelligence_bucket_score(side_stats.setdefault(s, _intelligence_bucket()), cfg)
+    reg_score = _intelligence_bucket_score(regime_side_stats.setdefault((int(regime), s), _intelligence_bucket()), cfg)
+    exp_score = _intelligence_bucket_score(expert_stats.setdefault(str(expert_name), _intelligence_bucket()), cfg)
+    score = float(0.45 * reg_score + 0.35 * side_score + 0.20 * exp_score)
+
+    max_adj = float(np.clip(getattr(cfg, "intelligence_max_edge_adjust", 0.020), 0.0, 0.50))
+    pos_scale = float(np.clip(getattr(cfg, "intelligence_edge_scale", 0.010), 0.0, 0.20))
+    neg_scale = float(np.clip(getattr(cfg, "intelligence_negative_edge_scale", 0.012), 0.0, 0.20))
+    conf_scale = float(np.clip(getattr(cfg, "intelligence_conf_scale", 0.06), 0.0, 0.50))
+    unc_scale = float(np.clip(getattr(cfg, "intelligence_uncertainty_scale", 0.30), 0.0, 1.50))
+
+    if score >= 0.0:
+        edge_adj = float(np.clip(score * pos_scale, 0.0, max_adj))
+    else:
+        edge_adj = float(-np.clip(abs(score) * neg_scale, 0.0, max_adj))
+    edge2 = float(max(edge + edge_adj, 0.0))
+    conf2 = float(np.clip(confidence + score * conf_scale, 0.0, 1.0))
+    if score >= 0.0:
+        unc_mult = float(max(1.0 - unc_scale * min(score, 1.0), 0.5))
+    else:
+        unc_mult = float(1.0 + unc_scale * min(abs(score), 1.0))
+    unc2 = float(np.clip(uncertainty * unc_mult, 0.005, 2.0))
+
+    switched = False
+    if bool(getattr(cfg, "intelligence_side_switch_enable", True)):
+        other = -s
+        other_side = _intelligence_bucket_score(side_stats.setdefault(other, _intelligence_bucket()), cfg)
+        other_reg = _intelligence_bucket_score(regime_side_stats.setdefault((int(regime), other), _intelligence_bucket()), cfg)
+        other_score = float(0.55 * other_reg + 0.45 * other_side)
+        gap = float(other_score - score)
+        min_gap = float(np.clip(getattr(cfg, "intelligence_side_switch_min_gap", 0.30), 0.0, 2.0))
+        min_adv = float(np.clip(getattr(cfg, "intelligence_side_switch_min_analog_adv", 0.0015), 0.0, 0.50))
+        conv_guard = float(np.clip(getattr(cfg, "intelligence_side_switch_conviction_guard", 0.58), 0.0, 1.0))
+        # Switch only when live conviction is weak and historical evidence is clearly better opposite side.
+        if float(conviction) < conv_guard and gap >= min_gap and float(analog_edge) < min_adv:
+            s = other
+            switched = True
+            edge2 = float(max(edge2 + 0.25 * min(max_adj, pos_scale * min(gap, 1.0)), 0.0))
+            conf2 = float(np.clip(conf2 + 0.03, 0.0, 1.0))
+            unc2 = float(np.clip(unc2 * 1.05, 0.005, 2.0))
+
+    return {
+        "side": float(s),
+        "edge": edge2,
+        "confidence": conf2,
+        "uncertainty": unc2,
+        "score": score,
+        "switched": float(1.0 if switched else 0.0),
+    }
+
+
 def _is_sure_signal(
     *,
     side: int,
@@ -1647,6 +1781,9 @@ def _run_fold(
     nonconformity_rejects = 0
     nonconformity_overrides = 0
     nonconformity_ready_checks = 0
+    intelligence_active_bars = 0
+    intelligence_switched_sides = 0
+    intelligence_score_acc = 0.0
     sure_recent_rr: List[float] = []
     sure_lev_recent_rr: List[float] = []
     sure_lev_recent_ctx: List[float] = []
@@ -1662,7 +1799,13 @@ def _run_fold(
         ),
     }
     bayes_regime_side_stats: Dict[Tuple[int, int], Dict[str, float]] = {}
+    intelligence_side_stats: Dict[int, Dict[str, float]] = {1: _intelligence_bucket(), -1: _intelligence_bucket()}
+    intelligence_regime_side_stats: Dict[Tuple[int, int], Dict[str, float]] = {}
+    intelligence_expert_stats: Dict[str, Dict[str, float]] = {}
     side_quality_rr: Dict[int, List[float]] = {1: [], -1: []}
+    intelligence_score_sum = 0.0
+    intelligence_side_switches = 0
+    intelligence_mode_bars = 0
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
         x = X_te[i]
@@ -1751,6 +1894,30 @@ def _run_fold(
         )
         high_conv_thresh = float(np.clip(getattr(cfg, "precision_high_conviction", 0.72), 0.0, 1.0))
         analog_hits = float(analog.get("analog_hits", 0.0))
+        intel = _apply_intelligence_adjustment(
+            side=side,
+            regime=regime,
+            expert_name=expert_name,
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            conviction=conviction,
+            analog_edge=float(analog.get("analog_edge", 0.0)),
+            side_stats=intelligence_side_stats,
+            regime_side_stats=intelligence_regime_side_stats,
+            expert_stats=intelligence_expert_stats,
+            cfg=cfg,
+        )
+        side = int(round(float(intel.get("side", side))))
+        edge = float(intel.get("edge", edge))
+        confidence = float(np.clip(intel.get("confidence", confidence), 0.0, 1.0))
+        uncertainty = float(np.clip(intel.get("uncertainty", uncertainty), 0.005, 2.0))
+        intel_score = float(intel.get("score", 0.0))
+        intelligence_score_sum += intel_score
+        if abs(intel_score) > 1e-9:
+            intelligence_mode_bars += 1
+        if float(intel.get("switched", 0.0)) > 0.5:
+            intelligence_side_switches += 1
         is_sure_signal = _is_sure_signal(
             side=side,
             edge=edge,
@@ -1779,13 +1946,15 @@ def _run_fold(
         if not governor.allow_by_streak(i, side=side):
             skip_counts["streak_pause"] += 1
             continue
-        if not _counterfactual_pass(
+        if not _adaptive_counterfactual_pass(
             analog_mem=analog_mem,
             x=x,
             side=side,
             edge=edge,
             uncertainty=uncertainty,
             cfg=cfg,
+            accepted_trades=len(trades),
+            cf_rejects=cf_rejects,
         ):
             cf_rejects += 1
             skip_counts["counterfactual_reject"] += 1
@@ -1815,13 +1984,14 @@ def _run_fold(
             analog_hits=analog_hits,
             cfg=cfg,
         )
-        nonconf_gate = _nonconformity_gate(
+        nonconf_gate = _adaptive_nonconformity_gate(
             score=nonconf_score,
             conviction=conviction,
             edge=edge,
             confidence=confidence,
             total_trades=len(trades),
             winner_scores=winner_nonconformity_scores,
+            nonconformity_rejects=nonconformity_rejects,
             cfg=cfg,
         )
         if float(nonconf_gate.get("ready", 0.0)) > 0.5:
@@ -1911,6 +2081,16 @@ def _run_fold(
             realized_r=rr,
             side_stats=bayes_side_stats,
             regime_side_stats=bayes_regime_side_stats,
+            cfg=cfg,
+        )
+        _update_intelligence_state(
+            side=side,
+            regime=regime,
+            expert_name=expert_name,
+            realized_r=rr,
+            side_stats=intelligence_side_stats,
+            regime_side_stats=intelligence_regime_side_stats,
+            expert_stats=intelligence_expert_stats,
             cfg=cfg,
         )
         meta.update(
@@ -2029,6 +2209,9 @@ def _run_fold(
         "bayes_quality_ready_checks": int(bayes_quality_ready_checks),
         "nonconformity_ready_checks": int(nonconformity_ready_checks),
         "nonconformity_winner_ref_count": int(len(winner_nonconformity_scores)),
+        "intelligence_mode_bars": int(intelligence_mode_bars),
+        "intelligence_side_switches": int(intelligence_side_switches),
+        "intelligence_avg_score": round(float(intelligence_score_sum / max(len(trades), 1)), 6),
         "skip_reasons": {k: int(v) for k, v in skip_counts.items()},
         "long_trades": n_long,
         "short_trades": n_short,
@@ -2126,7 +2309,7 @@ def run_mythos_walk_forward(
                     brain=model_state.get("adaptive"),
                 )
         log.info(
-            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d lev_boost=%d lev_blocked=%d bayes_rej=%d nonconf_rej=%d nonconf_ovr=%d",
+            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d lev_boost=%d lev_blocked=%d bayes_rej=%d nonconf_rej=%d nonconf_ovr=%d intel_mode=%d intel_switch=%d intel_avg=%s",
             i,
             fold["total_trades"],
             fold["total_r"],
@@ -2142,6 +2325,9 @@ def run_mythos_walk_forward(
             fold.get("bayes_quality_rejects", 0),
             fold.get("nonconformity_rejects", 0),
             fold.get("nonconformity_overrides", 0),
+            fold.get("intelligence_mode_bars", 0),
+            fold.get("intelligence_side_switches", 0),
+            fold.get("intelligence_avg_score", 0.0),
         )
 
     total_trades = int(sum(r["total_trades"] for r in reports))
@@ -2215,6 +2401,12 @@ def run_mythos_walk_forward(
     total_nonconformity_winner_ref_count = int(
         sum(int(r.get("nonconformity_winner_ref_count", 0)) for r in reports)
     )
+    total_intelligence_mode_bars = int(sum(int(r.get("intelligence_mode_bars", 0)) for r in reports))
+    total_intelligence_side_switches = int(sum(int(r.get("intelligence_side_switches", 0)) for r in reports))
+    weighted_intelligence_score_num = float(
+        sum(float(r.get("intelligence_avg_score", 0.0)) * int(r.get("total_trades", 0)) for r in reports)
+    )
+    aggregate_intelligence_avg_score = float(weighted_intelligence_score_num / max(total_trades, 1))
     cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
     bayes_quality_reject_rate = float(
         total_bayes_quality_rejects / max(total_bayes_quality_rejects + total_trades, 1)
@@ -2287,6 +2479,10 @@ def run_mythos_walk_forward(
         "nonconformity_overrides": total_nonconformity_overrides,
         "nonconformity_ready_checks": total_nonconformity_ready_checks,
         "nonconformity_winner_ref_count": total_nonconformity_winner_ref_count,
+        "intelligence_mode_bars": total_intelligence_mode_bars,
+        "intelligence_mode_rate": round(float(total_intelligence_mode_bars / max(total_trades, 1)), 4),
+        "intelligence_side_switches": total_intelligence_side_switches,
+        "intelligence_avg_score": round(aggregate_intelligence_avg_score, 6),
         "skip_reasons": total_skip_reasons,
         "active_folds": act,
         "low_conf_folds": low,

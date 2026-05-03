@@ -133,3 +133,34 @@ def test_capital_protection_knobs_are_normalized():
     assert cfg.drawdown_size_min_scale == 0.05
     assert cfg.disable_conviction_boost_drawdown_r == 0.0
     assert cfg.disable_leverage_drawdown_r == 0.0
+
+
+def test_intelligence_knobs_are_normalized():
+    cfg = MythosConfig(
+        intelligence_min_samples=0,
+        intelligence_ema_alpha=2.0,
+        intelligence_hit_weight=-1.0,
+        intelligence_expectancy_weight=3.0,
+        intelligence_variance_penalty=-1.0,
+        intelligence_edge_scale=-1.0,
+        intelligence_negative_edge_scale=-1.0,
+        intelligence_conf_scale=2.0,
+        intelligence_uncertainty_scale=3.0,
+        intelligence_max_edge_adjust=3.0,
+        intelligence_side_switch_min_gap=3.0,
+        intelligence_side_switch_min_analog_adv=-1.0,
+        intelligence_side_switch_conviction_guard=2.0,
+    )
+    assert cfg.intelligence_min_samples == 1
+    assert cfg.intelligence_ema_alpha == 1.0
+    assert cfg.intelligence_hit_weight == 0.0
+    assert cfg.intelligence_expectancy_weight == 2.0
+    assert cfg.intelligence_variance_penalty == 0.0
+    assert cfg.intelligence_edge_scale == 0.0
+    assert cfg.intelligence_negative_edge_scale == 0.0
+    assert cfg.intelligence_conf_scale == 0.5
+    assert cfg.intelligence_uncertainty_scale == 1.5
+    assert cfg.intelligence_max_edge_adjust == 0.5
+    assert cfg.intelligence_side_switch_min_gap == 2.0
+    assert cfg.intelligence_side_switch_min_analog_adv == 0.0
+    assert cfg.intelligence_side_switch_conviction_guard == 1.0

@@ -17,15 +17,18 @@ from mythos.walkforward import (
     _adaptive_counterfactual_pass,
     _adaptive_nonconformity_gate,
     _adaptive_rebalance_adjustment,
+    _apply_intelligence_adjustment,
     _bayes_quality_gate,
     _conviction_score,
     _counterfactual_pass,
     _allow_conviction_leverage,
     _estimate_execution_cost_r,
+    _intelligence_bucket,
     _nonconformity_gate,
     _nonconformity_score,
     _side_policy_ok,
     _update_bayes_quality_state,
+    _update_intelligence_state,
 )
 
 

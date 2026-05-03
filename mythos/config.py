@@ -65,6 +65,21 @@ class MythosConfig:
     side_rebalance_conf_boost: float = 0.02
     side_rebalance_quality_guard: float = 0.06
     side_rebalance_max_adjust: float = 0.012
+    intelligence_enable: bool = True
+    intelligence_min_samples: int = 24
+    intelligence_ema_alpha: float = 0.08
+    intelligence_hit_weight: float = 0.55
+    intelligence_expectancy_weight: float = 0.45
+    intelligence_variance_penalty: float = 0.18
+    intelligence_edge_scale: float = 0.010
+    intelligence_negative_edge_scale: float = 0.012
+    intelligence_conf_scale: float = 0.06
+    intelligence_uncertainty_scale: float = 0.30
+    intelligence_max_edge_adjust: float = 0.020
+    intelligence_side_switch_enable: bool = True
+    intelligence_side_switch_min_gap: float = 0.30
+    intelligence_side_switch_min_analog_adv: float = 0.0015
+    intelligence_side_switch_conviction_guard: float = 0.58
     adaptive_side_target_strength: float = 0.22
     adaptive_side_target_min: float = 0.35
     adaptive_side_target_max: float = 0.65
@@ -305,6 +320,47 @@ class MythosConfig:
         )
         self.side_rebalance_max_adjust = float(
             np.clip(getattr(self, "side_rebalance_max_adjust", 0.012), 0.0, 0.10)
+        )
+        self.intelligence_enable = bool(getattr(self, "intelligence_enable", True))
+        self.intelligence_min_samples = int(max(getattr(self, "intelligence_min_samples", 24), 1))
+        self.intelligence_ema_alpha = float(
+            np.clip(getattr(self, "intelligence_ema_alpha", 0.08), 0.01, 1.0)
+        )
+        self.intelligence_hit_weight = float(
+            np.clip(getattr(self, "intelligence_hit_weight", 0.55), 0.0, 2.0)
+        )
+        self.intelligence_expectancy_weight = float(
+            np.clip(getattr(self, "intelligence_expectancy_weight", 0.45), 0.0, 2.0)
+        )
+        self.intelligence_variance_penalty = float(
+            np.clip(getattr(self, "intelligence_variance_penalty", 0.18), 0.0, 2.0)
+        )
+        self.intelligence_edge_scale = float(
+            np.clip(getattr(self, "intelligence_edge_scale", 0.010), 0.0, 0.20)
+        )
+        self.intelligence_negative_edge_scale = float(
+            np.clip(getattr(self, "intelligence_negative_edge_scale", 0.012), 0.0, 0.20)
+        )
+        self.intelligence_conf_scale = float(
+            np.clip(getattr(self, "intelligence_conf_scale", 0.06), 0.0, 0.50)
+        )
+        self.intelligence_uncertainty_scale = float(
+            np.clip(getattr(self, "intelligence_uncertainty_scale", 0.30), 0.0, 1.50)
+        )
+        self.intelligence_max_edge_adjust = float(
+            np.clip(getattr(self, "intelligence_max_edge_adjust", 0.020), 0.0, 0.50)
+        )
+        self.intelligence_side_switch_enable = bool(
+            getattr(self, "intelligence_side_switch_enable", True)
+        )
+        self.intelligence_side_switch_min_gap = float(
+            np.clip(getattr(self, "intelligence_side_switch_min_gap", 0.30), 0.0, 2.0)
+        )
+        self.intelligence_side_switch_min_analog_adv = float(
+            np.clip(getattr(self, "intelligence_side_switch_min_analog_adv", 0.0015), 0.0, 0.50)
+        )
+        self.intelligence_side_switch_conviction_guard = float(
+            np.clip(getattr(self, "intelligence_side_switch_conviction_guard", 0.58), 0.0, 1.0)
         )
         tmin = float(np.clip(getattr(self, "adaptive_side_target_min", 0.35), 0.05, 0.95))
         tmax = float(np.clip(getattr(self, "adaptive_side_target_max", 0.65), 0.05, 0.95))
