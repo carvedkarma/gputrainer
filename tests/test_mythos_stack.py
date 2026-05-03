@@ -610,45 +610,6 @@ def test_adaptive_counterfactual_relaxes_when_reject_rate_overshoots():
     assert relaxed is True
 
 
-def test_adaptive_counterfactual_stress_mode_relaxes_with_low_execution():
-    class _StubAnalog:
-        def query(self, x, side):
-            return {"analog_edge": 0.0014 if side == 1 else 0.0013, "analog_conf": 0.52, "analog_hits": 24.0}
-
-    cfg = MythosConfig(
-        counterfactual_min_advantage_r=0.01,
-        counterfactual_margin=0.01,
-        counterfactual_target_reject_rate=0.70,
-        counterfactual_reject_tolerance=0.05,
-        counterfactual_adaptive_relax=0.35,
-        counterfactual_adaptive_min_adv_floor=0.25,
-    )
-    strict = _adaptive_counterfactual_pass(
-        analog_mem=_StubAnalog(),
-        x=np.array([0.0], dtype=np.float64),
-        side=1,
-        edge=0.006,
-        uncertainty=0.35,
-        cfg=cfg,
-        accepted_trades=20,
-        cf_rejects=90,
-        stress_relax=0.0,
-    )
-    stress = _adaptive_counterfactual_pass(
-        analog_mem=_StubAnalog(),
-        x=np.array([0.0], dtype=np.float64),
-        side=1,
-        edge=0.006,
-        uncertainty=0.35,
-        cfg=cfg,
-        accepted_trades=20,
-        cf_rejects=90,
-        stress_relax=0.6,
-    )
-    assert strict is False
-    assert stress is True
-
-
 def test_adaptive_nonconformity_soft_override_activates():
     cfg = MythosConfig(
         nonconformity_enable=True,

@@ -1500,7 +1500,6 @@ def _adaptive_counterfactual_pass(
     cfg: MythosConfig,
     accepted_trades: int,
     cf_rejects: int,
-    stress_relax: float = 0.0,
 ) -> bool:
     target = float(np.clip(getattr(cfg, "counterfactual_target_reject_rate", 0.70), 0.0, 0.99))
     tol = float(np.clip(getattr(cfg, "counterfactual_reject_tolerance", 0.10), 0.0, 0.5))
@@ -1508,8 +1507,7 @@ def _adaptive_counterfactual_pass(
     min_floor = float(np.clip(getattr(cfg, "counterfactual_adaptive_min_adv_floor", 0.25), 0.05, 1.0))
     obs = float(cf_rejects / max(cf_rejects + accepted_trades, 1))
     overshoot = float(max(obs - (target + tol), 0.0))
-    stress = float(np.clip(stress_relax, 0.0, 1.0))
-    if overshoot <= 0.0 and stress <= 0.0:
+    if overshoot <= 0.0:
         return _counterfactual_pass(
             analog_mem=analog_mem,
             x=x,
@@ -1519,11 +1517,8 @@ def _adaptive_counterfactual_pass(
             cfg=cfg,
         )
     orig_min_adv = float(max(getattr(cfg, "counterfactual_min_advantage_r", 0.006), 0.0))
-    relax = float(np.clip(relax_gain * overshoot + stress, 0.0, 0.95))
-    # Under stress, allow min-adv floor to soften further so fold can recover
-    # instead of spiraling into low-trade reject choke.
-    eff_floor = float(max(min_floor * (1.0 - 0.5 * stress), 0.05))
-    adj_min_adv = float(max(orig_min_adv * (1.0 - relax), orig_min_adv * eff_floor))
+    relax = float(np.clip(relax_gain * overshoot, 0.0, 0.95))
+    adj_min_adv = float(max(orig_min_adv * (1.0 - relax), orig_min_adv * min_floor))
     adj_margin = float(max(getattr(cfg, "counterfactual_margin", 0.006), 0.0) * (1.0 - 0.6 * relax))
     adj_risk_pen = float(max(getattr(cfg, "counterfactual_risk_penalty", 0.6), 0.0) * (1.0 - 0.5 * relax))
     orig = (
@@ -2072,27 +2067,6 @@ def _run_fold(
         if not governor.allow_by_streak(i, side=side):
             skip_counts["streak_pause"] += 1
             continue
-        stress_relax = 0.0
-        total_seen = int(max(len(trades) + cf_rejects, 0))
-        if total_seen >= 40:
-            cf_rate = float(cf_rejects / max(total_seen, 1))
-            target = float(np.clip(getattr(cfg, "counterfactual_target_reject_rate", 0.70), 0.0, 0.99))
-            tol = float(np.clip(getattr(cfg, "counterfactual_reject_tolerance", 0.10), 0.0, 0.5))
-            rw = int(max(getattr(cfg, "leverage_recent_window", 120), 8))
-            recent_rr = trades[-rw:] if trades else []
-            lev_recent_rr = sure_lev_recent_rr[-rw:] if sure_lev_recent_rr else []
-            recent_expect = float(np.mean(np.asarray(recent_rr, dtype=np.float64))) if recent_rr else 0.0
-            recent_hit = float(np.mean(np.asarray(recent_rr, dtype=np.float64) > 0.0)) if recent_rr else 0.0
-            lev_participation = float(len(lev_recent_rr) / max(len(recent_rr), 1))
-            lev_expect = float(np.mean(np.asarray(lev_recent_rr, dtype=np.float64))) if lev_recent_rr else 0.0
-            if (
-                cf_rate > (target + tol + 0.04)
-                and len(recent_rr) >= 12
-                and (recent_expect <= 0.01 or recent_hit <= 0.49)
-                and (lev_participation < 0.12 or lev_expect < 0.03)
-            ):
-                overshoot = float(max(cf_rate - (target + tol), 0.0))
-                stress_relax = float(np.clip(0.20 + 0.8 * overshoot, 0.0, 0.60))
         if not _adaptive_counterfactual_pass(
             analog_mem=analog_mem,
             x=x,
@@ -2102,7 +2076,6 @@ def _run_fold(
             cfg=cfg,
             accepted_trades=len(trades),
             cf_rejects=cf_rejects,
-            stress_relax=stress_relax,
         ):
             cf_rejects += 1
             skip_counts["counterfactual_reject"] += 1
