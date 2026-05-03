@@ -6295,6 +6295,8 @@ Examples:
 
     parser.add_argument("--live", action="store_true",
                         help="Run continuous live multi-asset inference loop")
+    parser.add_argument("--live-model", type=str, default="v5", choices=["v5", "mythos"],
+                        help="Model backend for live/paper loop: v5 checkpoints or mythos artifact runtime (default: v5)")
     parser.add_argument("--symbols", type=str, default="BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,AVAXUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,LINKUSDT,LTCUSDT,NEARUSDT,PEPEUSDT,SUIUSDT,AAVEUSDT,ARBUSDT,DOTUSDT,MATICUSDT,FILUSDT,APTUSDT,OPUSDT",
                         help="Comma-separated symbols to monitor (default: all 20 symbols)")
     parser.add_argument("--interval", type=str, default="15m",
@@ -6511,6 +6513,7 @@ Examples:
             v5_live_threshold=getattr(args, 'v5_live_threshold', None),
             v5_mae_floor=getattr(args, 'v5_live_mae_floor', None),
             predictive_sltp=getattr(args, 'v5_predictive_sltp', False),
+            live_model=args.live_model,
         )
         runner.learning_manager = learning_mgr
 
