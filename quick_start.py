@@ -5374,7 +5374,7 @@ Examples:
                         help="MYTHOS intelligence: maximum fraction of bars allowed to side-switch before throttling (default: 0.08)")
     parser.add_argument("--mythos-intelligence-max-switch-rate", dest="mythos_intelligence_side_switch_max_rate", type=float,
                         help="Alias for --mythos-intelligence-side-switch-max-rate")
-    parser.add_argument("--mythos-intelligence-side-switch-min-samples", dest="mythos_intelligence_side_switch_warmup_trades", type=int, default=40,
+    parser.add_argument("--mythos-intelligence-side-switch-min-samples", dest="mythos_intelligence_side_switch_min_samples", type=int, default=40,
                         help="MYTHOS intelligence: minimum intelligence-active bars before side switching can activate (default: 40)")
     parser.add_argument("--mythos-adaptive-side-target-strength", type=float, default=0.22,
                         help="MYTHOS adaptive: how strongly side health shifts long/short target mix (default: 0.22)")
@@ -6749,7 +6749,8 @@ Examples:
                 intelligence_side_switch_min_analog_adv=args.mythos_intelligence_side_switch_min_analog_adv,
                 intelligence_side_switch_conviction_guard=args.mythos_intelligence_side_switch_conviction_guard,
                 intelligence_side_switch_cooldown_bars=args.mythos_intelligence_side_switch_cooldown_bars,
-                intelligence_max_switch_rate=args.mythos_intelligence_max_switch_rate,
+                intelligence_side_switch_max_rate=args.mythos_intelligence_side_switch_max_rate,
+                intelligence_side_switch_min_samples=args.mythos_intelligence_side_switch_min_samples,
                 adaptive_side_target_strength=args.mythos_adaptive_side_target_strength,
                 adaptive_side_target_min=args.mythos_adaptive_side_target_min,
                 adaptive_side_target_max=args.mythos_adaptive_side_target_max,
