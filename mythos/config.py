@@ -80,6 +80,9 @@ class MythosConfig:
     intelligence_side_switch_min_gap: float = 0.30
     intelligence_side_switch_min_analog_adv: float = 0.0015
     intelligence_side_switch_conviction_guard: float = 0.58
+    intelligence_side_switch_warmup_trades: int = 40
+    intelligence_side_switch_cooldown_bars: int = 48
+    intelligence_side_switch_max_rate: float = 0.20
     adaptive_side_target_strength: float = 0.22
     adaptive_side_target_min: float = 0.35
     adaptive_side_target_max: float = 0.65
@@ -361,6 +364,15 @@ class MythosConfig:
         )
         self.intelligence_side_switch_conviction_guard = float(
             np.clip(getattr(self, "intelligence_side_switch_conviction_guard", 0.58), 0.0, 1.0)
+        )
+        self.intelligence_side_switch_warmup_trades = int(
+            max(getattr(self, "intelligence_side_switch_warmup_trades", 40), 0)
+        )
+        self.intelligence_side_switch_cooldown_bars = int(
+            max(getattr(self, "intelligence_side_switch_cooldown_bars", 48), 0)
+        )
+        self.intelligence_side_switch_max_rate = float(
+            np.clip(getattr(self, "intelligence_side_switch_max_rate", 0.20), 0.0, 1.0)
         )
         tmin = float(np.clip(getattr(self, "adaptive_side_target_min", 0.35), 0.05, 0.95))
         tmax = float(np.clip(getattr(self, "adaptive_side_target_max", 0.65), 0.05, 0.95))

@@ -1118,6 +1118,29 @@ def _apply_intelligence_adjustment(
     }
 
 
+def _can_intelligence_switch_side(
+    *,
+    bar_idx: int,
+    switched_so_far: int,
+    intelligence_mode_bars: int,
+    last_switch_bar: int,
+    cfg: MythosConfig,
+) -> bool:
+    if not bool(getattr(cfg, "intelligence_side_switch_enable", True)):
+        return False
+    cooldown = int(max(getattr(cfg, "intelligence_side_switch_cooldown_bars", 96), 1))
+    if int(bar_idx) - int(last_switch_bar) < cooldown:
+        return False
+    warmup = int(max(getattr(cfg, "intelligence_side_switch_warmup_bars", 256), 1))
+    if int(bar_idx) < warmup:
+        return False
+    if int(intelligence_mode_bars) <= 0:
+        return True
+    max_rate = float(np.clip(getattr(cfg, "intelligence_side_switch_max_rate", 0.10), 0.0, 1.0))
+    obs_rate = float(switched_so_far / max(intelligence_mode_bars, 1))
+    return bool(obs_rate <= max_rate)
+
+
 def _is_sure_signal(
     *,
     side: int,

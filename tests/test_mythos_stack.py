@@ -681,6 +681,49 @@ def test_risk_emergency_stop_and_size_throttle_behave_safely():
     assert sized <= base
 
 
+def test_intelligence_side_switch_is_capped_and_not_forced():
+    cfg = MythosConfig(
+        intelligence_enable=True,
+        intelligence_min_samples=4,
+        intelligence_side_switch_enable=True,
+        intelligence_side_switch_min_gap=0.2,
+        intelligence_side_switch_min_analog_adv=0.01,
+        intelligence_side_switch_conviction_guard=0.8,
+        intelligence_switch_rate_cap=0.2,
+        intelligence_switch_cooldown_bars=5,
+    )
+    side_stats = {
+        1: {"n": 20.0, "hit_ema": 0.35, "exp_ema": -0.06, "var_ema": 0.02},
+        -1: {"n": 20.0, "hit_ema": 0.66, "exp_ema": 0.09, "var_ema": 0.02},
+    }
+    reg_stats = {
+        (2, 1): {"n": 20.0, "hit_ema": 0.34, "exp_ema": -0.06, "var_ema": 0.02},
+        (2, -1): {"n": 20.0, "hit_ema": 0.70, "exp_ema": 0.10, "var_ema": 0.02},
+    }
+    exp_stats = {"trend_long": {"n": 20.0, "hit_ema": 0.40, "exp_ema": -0.02, "var_ema": 0.02}}
+    # Force clamp by setting already-high switch rate and cooldown active.
+    adj = _apply_intelligence_adjustment(
+        side=1,
+        regime=2,
+        expert_name="trend_long",
+        edge=0.012,
+        confidence=0.58,
+        uncertainty=0.35,
+        conviction=0.4,
+        analog_edge=0.0,
+        side_stats=side_stats,
+        regime_side_stats=reg_stats,
+        expert_stats=exp_stats,
+        accepted_trades=50,
+        side_switches=20,
+        bar_idx=10,
+        last_switch_bar=8,
+        cfg=cfg,
+    )
+    assert int(round(float(adj["side"]))) == 1
+    assert adj["switched"] == 0.0
+
+
 def test_intelligence_adjustment_boosts_quality_after_positive_history():
     cfg = MythosConfig(
         intelligence_enable=True,
