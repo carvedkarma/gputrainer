@@ -1338,6 +1338,32 @@ def _allow_conviction_leverage(
     return True
 
 
+def _legacy_stable_leverage_ok(
+    *,
+    is_sure_signal: bool,
+    conviction: float,
+    edge: float,
+    confidence: float,
+    cfg: MythosConfig,
+) -> bool:
+    """
+    Legacy-stable permissive leverage gate:
+    keep strong conviction boosts active to restore historical participation.
+    """
+    if not bool(is_sure_signal):
+        return False
+    conv_floor = float(np.clip(getattr(cfg, "precision_high_conviction", 0.72), 0.0, 1.0))
+    edge_floor = float(max(getattr(cfg, "min_edge_threshold", 0.01), 0.0))
+    conf_floor = float(np.clip(getattr(cfg, "min_confidence", 0.50), 0.0, 1.0))
+    if float(conviction) < conv_floor:
+        return False
+    if float(edge) < edge_floor:
+        return False
+    if float(confidence) < conf_floor:
+        return False
+    return True
+
+
 def _net_edge_ok(
     *,
     edge: float,
@@ -1879,6 +1905,14 @@ def _run_fold(
     intelligence_regime_side_stats: Dict[Tuple[int, int], Dict[str, float]] = {}
     intelligence_expert_stats: Dict[str, Dict[str, float]] = {}
     side_quality_rr: Dict[int, List[float]] = {1: [], -1: []}
+    legacy_stable_mode = bool(
+        (not bool(getattr(cfg, "bayes_quality_enable", True)))
+        and (not bool(getattr(cfg, "nonconformity_enable", True)))
+        and (not bool(getattr(cfg, "side_rebalance_enable", True)))
+        and (not bool(getattr(cfg, "intelligence_enable", True)))
+        and float(max(getattr(cfg, "execution_fee_bps", 0.0), 0.0)) <= 1e-9
+        and float(max(getattr(cfg, "execution_slippage_bps", 0.0), 0.0)) <= 1e-9
+    )
     intelligence_score_sum = 0.0
     intelligence_side_switches = 0
     intelligence_mode_bars = 0
@@ -2121,16 +2155,25 @@ def _run_fold(
         )
         lev_recent_window = int(max(getattr(cfg, "leverage_recent_window", 120), 8))
         lev_policy_window = int(max(getattr(cfg, "leverage_policy_window", 160), 8))
-        leverage_allowed = _allow_conviction_leverage(
-            is_sure_signal=is_sure_signal,
-            edge=edge,
-            confidence=confidence,
-            conviction=conviction,
-            context_score=context_score,
-            leveraged_recent_rr=sure_lev_recent_rr,
-            leveraged_recent_ctx=sure_lev_recent_ctx,
-            cfg=cfg,
-        )
+        if legacy_stable_mode:
+            leverage_allowed = _legacy_stable_leverage_ok(
+                is_sure_signal=is_sure_signal,
+                conviction=conviction,
+                edge=edge,
+                confidence=confidence,
+                cfg=cfg,
+            )
+        else:
+            leverage_allowed = _allow_conviction_leverage(
+                is_sure_signal=is_sure_signal,
+                edge=edge,
+                confidence=confidence,
+                conviction=conviction,
+                context_score=context_score,
+                leveraged_recent_rr=sure_lev_recent_rr,
+                leveraged_recent_ctx=sure_lev_recent_ctx,
+                cfg=cfg,
+            )
         if risk.should_disable_leverage():
             leverage_allowed = False
         net_edge_est = float(edge - _estimate_execution_cost_r(edge=edge, uncertainty=uncertainty, cfg=cfg))
@@ -2140,8 +2183,18 @@ def _run_fold(
             leverage_allowed = False
         if is_sure_signal and not leverage_allowed:
             leverage_blocked_candidates += 1
+        # Count approval only when it yields actual boosted size, so diagnostics
+        # align with realized leveraged_trades and avoid false approval inflation.
         if leverage_allowed:
-            leverage_boost_approved += 1
+            projected_size = risk.position_size_multiplier(
+                edge=edge,
+                uncertainty=uncertainty,
+                regime=regime,
+                conviction=conviction,
+                allow_conviction_boost=True,
+            )
+            if projected_size > (base_size + 1e-9):
+                leverage_boost_approved += 1
         size = risk.position_size_multiplier(
             edge=edge,
             uncertainty=uncertainty,
