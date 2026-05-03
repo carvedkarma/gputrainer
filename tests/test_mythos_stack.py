@@ -679,3 +679,98 @@ def test_risk_emergency_stop_and_size_throttle_behave_safely():
     base = 1.0 / (1.0 + 0.2) * (1.0 + 0.03)
     sized = risk.position_size_multiplier(edge=0.03, uncertainty=0.2, conviction=0.9)
     assert sized <= base
+
+
+def test_intelligence_adjustment_boosts_quality_after_positive_history():
+    cfg = MythosConfig(
+        intelligence_enable=True,
+        intelligence_min_samples=6,
+        intelligence_ema_alpha=0.2,
+        intelligence_edge_scale=0.02,
+        intelligence_conf_scale=0.08,
+        intelligence_uncertainty_scale=0.25,
+    )
+    side_stats = {1: _intelligence_bucket(), -1: _intelligence_bucket()}
+    regime_stats = {}
+    expert_stats = {}
+    for _ in range(20):
+        _update_intelligence_state(
+            side=1,
+            regime=2,
+            expert_name="trend_long",
+            realized_r=0.9,
+            side_stats=side_stats,
+            regime_side_stats=regime_stats,
+            expert_stats=expert_stats,
+            cfg=cfg,
+        )
+    out = _apply_intelligence_adjustment(
+        side=1,
+        regime=2,
+        expert_name="trend_long",
+        edge=0.01,
+        confidence=0.55,
+        uncertainty=0.40,
+        conviction=0.70,
+        analog_advantage=0.01,
+        side_stats=side_stats,
+        regime_side_stats=regime_stats,
+        expert_stats=expert_stats,
+        cfg=cfg,
+    )
+    assert out["side"] == 1.0
+    assert out["edge"] > 0.01
+    assert out["confidence"] >= 0.55
+    assert out["uncertainty"] <= 0.40
+    assert out["score"] > 0.0
+
+
+def test_intelligence_adjustment_can_switch_side_when_opposite_is_clearly_better():
+    cfg = MythosConfig(
+        intelligence_enable=True,
+        intelligence_min_samples=6,
+        intelligence_side_switch_enable=True,
+        intelligence_side_switch_min_gap=0.20,
+        intelligence_side_switch_min_analog_adv=0.001,
+        intelligence_side_switch_conviction_guard=0.75,
+    )
+    side_stats = {1: _intelligence_bucket(), -1: _intelligence_bucket()}
+    regime_stats = {}
+    expert_stats = {}
+    for _ in range(24):
+        _update_intelligence_state(
+            side=1,
+            regime=0,
+            expert_name="router_long",
+            realized_r=-0.8,
+            side_stats=side_stats,
+            regime_side_stats=regime_stats,
+            expert_stats=expert_stats,
+            cfg=cfg,
+        )
+        _update_intelligence_state(
+            side=-1,
+            regime=0,
+            expert_name="router_short",
+            realized_r=0.9,
+            side_stats=side_stats,
+            regime_side_stats=regime_stats,
+            expert_stats=expert_stats,
+            cfg=cfg,
+        )
+    out = _apply_intelligence_adjustment(
+        side=1,
+        regime=0,
+        expert_name="router_long",
+        edge=0.012,
+        confidence=0.56,
+        uncertainty=0.35,
+        conviction=0.40,
+        analog_advantage=-0.01,
+        side_stats=side_stats,
+        regime_side_stats=regime_stats,
+        expert_stats=expert_stats,
+        cfg=cfg,
+    )
+    assert out["side"] == -1.0
+    assert out["switched"] == 1.0
