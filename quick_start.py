@@ -74,6 +74,62 @@ LS_RATIO_FEATURE_NAMES = ["ls_ratio", "ls_deviation", "ls_extreme", "crowd_senti
 LS_RATIO_FEATURE_COUNT = len(LS_RATIO_FEATURE_NAMES)
 
 
+def _apply_mythos_profile_overrides(args) -> list:
+    """
+    Apply deterministic MYTHOS profile overrides before constructing MythosConfig.
+    Returns a list of (name, old, new) changes.
+    """
+    profile = str(getattr(args, "mythos_profile", "modern")).strip().lower()
+    if profile in {"modern", "default"}:
+        return []
+    if profile != "legacy-stable":
+        return []
+
+    # Legacy-stable profile approximates pre-collapse behavior by disabling
+    # the post-out-of-box stacked gates and drawdown throttles.
+    overrides = {
+        "mythos_bayes_quality_enable": False,
+        "mythos_nonconformity_enable": False,
+        "mythos_side_rebalance_enable": False,
+        "mythos_intelligence_enable": False,
+        "mythos_intelligence_side_switch_enable": False,
+        "mythos_counterfactual_target_reject_rate": 0.70,
+        "mythos_counterfactual_reject_tolerance": 0.10,
+        "mythos_counterfactual_adaptive_relax": 0.0,
+        "mythos_counterfactual_adaptive_min_adv_floor": 1.0,
+        "mythos_nonconformity_target_reject_rate": 0.48,
+        "mythos_nonconformity_reject_tolerance": 0.12,
+        "mythos_nonconformity_adaptive_relax": 0.0,
+        "mythos_nonconformity_adaptive_max_relax": 0.0,
+        "mythos_nonconformity_soft_override_margin": 0.0,
+        "mythos_leverage_side_policy_enable": False,
+        "mythos_execution_fee_bps": 0.0,
+        "mythos_execution_slippage_bps": 0.0,
+        "mythos_execution_cost_cap_r": 0.0,
+        "mythos_emergency_stop_r": -200.0,
+        "mythos_emergency_max_drawdown_r": 200.0,
+        "mythos_drawdown_size_start_r": 200.0,
+        "mythos_drawdown_size_full_r": 400.0,
+        "mythos_drawdown_size_min_scale": 1.0,
+        "mythos_disable_conviction_boost_dd_r": 200.0,
+        "mythos_disable_leverage_dd_r": 200.0,
+        "mythos_dd_risk_recovery_r": 190.0,
+        "mythos_meta_warmup_samples": 192,
+        "mythos_meta_ready_prob_floor": 0.47,
+        "mythos_meta_ready_prob_ceiling": 0.53,
+    }
+
+    changes = []
+    for name, value in overrides.items():
+        if not hasattr(args, name):
+            continue
+        old = getattr(args, name)
+        if old != value:
+            setattr(args, name, value)
+            changes.append((name, old, value))
+    return changes
+
+
 def check_gpu():
     try:
         import torch
@@ -5230,6 +5286,8 @@ Examples:
                         help="v5.0: Train V5 Forecaster (continuous market predictions + decision layer)")
     parser.add_argument("--train-mythos", action="store_true", default=False,
                         help="Train MYTHOS stack (world model + expert council + router) with walk-forward evaluation")
+    parser.add_argument("--mythos-profile", type=str, default="modern", choices=["modern", "legacy-stable"],
+                        help="MYTHOS behavior profile: modern (full stack) or legacy-stable (pre-collapse compatibility)")
     parser.add_argument("--mythos-train-months", type=int, default=12,
                         help="MYTHOS walk-forward training window in months (default: 12)")
     parser.add_argument("--mythos-test-months", type=int, default=1,
@@ -6272,6 +6330,11 @@ Examples:
                         help="Number of cycles for --verify-system/--verify-separation mode (default: 30)")
 
     args = parser.parse_args()
+    profile_changes = _apply_mythos_profile_overrides(args)
+    if getattr(args, "train_mythos", False) and profile_changes:
+        log.info("[MYTHOS PROFILE] %s applied with %s overrides", args.mythos_profile, len(profile_changes))
+        for name, old, new in profile_changes:
+            log.info("[MYTHOS PROFILE]   %s: %s -> %s", name, old, new)
 
     print()
     print("=" * 60)
