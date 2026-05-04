@@ -74,6 +74,90 @@ LS_RATIO_FEATURE_NAMES = ["ls_ratio", "ls_deviation", "ls_extreme", "crowd_senti
 LS_RATIO_FEATURE_COUNT = len(LS_RATIO_FEATURE_NAMES)
 
 
+def _apply_mythos_profile_overrides(args) -> list:
+    """
+    Apply deterministic MYTHOS profile overrides before constructing MythosConfig.
+    Returns a list of (name, old, new) changes.
+    """
+    profile = str(getattr(args, "mythos_profile", "modern")).strip().lower()
+    if profile in {"modern", "default"}:
+        return []
+    if profile != "legacy-stable":
+        return []
+
+    # Legacy-stable profile approximates pre-collapse behavior by disabling
+    # the post-out-of-box stacked gates and drawdown throttles.
+    overrides = {
+        "mythos_bayes_quality_enable": False,
+        "mythos_nonconformity_enable": False,
+        "mythos_side_rebalance_enable": False,
+        "mythos_intelligence_enable": False,
+        "mythos_intelligence_side_switch_enable": False,
+        "mythos_counterfactual_target_reject_rate": 0.95,
+        "mythos_counterfactual_reject_tolerance": 0.30,
+        "mythos_counterfactual_adaptive_relax": 0.85,
+        "mythos_counterfactual_adaptive_min_adv_floor": 0.10,
+        "mythos_nonconformity_target_reject_rate": 0.48,
+        "mythos_nonconformity_reject_tolerance": 0.12,
+        "mythos_nonconformity_adaptive_relax": 0.0,
+        "mythos_nonconformity_adaptive_max_relax": 0.0,
+        "mythos_nonconformity_soft_override_margin": 0.0,
+        "mythos_leverage_side_policy_enable": False,
+        "mythos_execution_fee_bps": 0.0,
+        "mythos_execution_slippage_bps": 0.0,
+        "mythos_execution_cost_cap_r": 0.0,
+        "mythos_emergency_stop_r": -200.0,
+        "mythos_emergency_max_drawdown_r": 200.0,
+        "mythos_drawdown_size_start_r": 200.0,
+        "mythos_drawdown_size_full_r": 400.0,
+        "mythos_drawdown_size_min_scale": 1.0,
+        "mythos_disable_conviction_boost_dd_r": 200.0,
+        "mythos_disable_leverage_dd_r": 200.0,
+        "mythos_dd_risk_recovery_r": 190.0,
+        # Recover pre-collapse leverage participation by removing strict
+        # sure/leverage policy gates introduced in newer stack revisions.
+        "mythos_sure_min_analog_hits": 0,
+        "mythos_sure_min_analog_ratio": 0.0,
+        "mythos_sure_meta_strength_min": 0.0,
+        "mythos_sure_edge_buffer": 0.0,
+        "mythos_sure_confidence_buffer": 0.0,
+        "mythos_sure_recent_min_trades": 0,
+        "mythos_sure_recent_min_hit_rate": 0.0,
+        "mythos_sure_recent_min_expectancy": -10.0,
+        "mythos_sure_cold_start_conviction_extra": 0.0,
+        "mythos_sure_cold_start_meta_extra": 0.0,
+        "mythos_leverage_edge_buffer": 0.0,
+        "mythos_leverage_confidence_buffer": 0.0,
+        "mythos_leverage_conviction_buffer": 0.0,
+        "mythos_leverage_recent_min_trades": 1,
+        "mythos_leverage_recent_min_hit_rate": 0.0,
+        "mythos_leverage_recent_min_expectancy": -10.0,
+        "mythos_leverage_policy_min_trades": 1,
+        "mythos_leverage_policy_min_hit_rate": 0.0,
+        "mythos_leverage_policy_min_expectancy": -10.0,
+        "mythos_leverage_policy_cold_start_conviction_extra": 0.0,
+        "mythos_leverage_net_edge_floor": 0.0,
+        "mythos_leverage_side_min_trades": 1,
+        "mythos_leverage_side_min_hit_rate": 0.0,
+        "mythos_leverage_side_min_expectancy": -10.0,
+        "mythos_conviction_boost": 0.40,
+        "mythos_conviction_max_size_mult": 2.4,
+        "mythos_meta_warmup_samples": 192,
+        "mythos_meta_ready_prob_floor": 0.47,
+        "mythos_meta_ready_prob_ceiling": 0.53,
+    }
+
+    changes = []
+    for name, value in overrides.items():
+        if not hasattr(args, name):
+            continue
+        old = getattr(args, name)
+        if old != value:
+            setattr(args, name, value)
+            changes.append((name, old, value))
+    return changes
+
+
 def check_gpu():
     try:
         import torch
@@ -5228,6 +5312,495 @@ Examples:
 
     parser.add_argument("--train-v5", action="store_true", default=False,
                         help="v5.0: Train V5 Forecaster (continuous market predictions + decision layer)")
+    parser.add_argument("--train-mythos", action="store_true", default=False,
+                        help="Train MYTHOS stack (world model + expert council + router) with walk-forward evaluation")
+    parser.add_argument("--mythos-profile", type=str, default="modern", choices=["modern", "legacy-stable"],
+                        help="MYTHOS behavior profile: modern (full stack) or legacy-stable (pre-collapse compatibility)")
+    parser.add_argument("--mythos-train-months", type=int, default=12,
+                        help="MYTHOS walk-forward training window in months (default: 12)")
+    parser.add_argument("--mythos-test-months", type=int, default=1,
+                        help="MYTHOS walk-forward test window in months (default: 1)")
+    parser.add_argument("--mythos-max-folds", type=int, default=None,
+                        help="MYTHOS: optional max number of most recent folds to run")
+    parser.add_argument("--mythos-n-regimes", type=int, default=4,
+                        help="MYTHOS world-model latent regime count (default: 4)")
+    parser.add_argument("--mythos-min-regime-confidence", type=float, default=0.45,
+                        help="MYTHOS minimum regime posterior confidence to allow routing (default: 0.45)")
+    parser.add_argument("--mythos-min-confidence", type=float, default=0.55,
+                        help="MYTHOS minimum router confidence to allow trading (default: 0.55)")
+    parser.add_argument("--mythos-min-expected-r", type=float, default=0.01,
+                        help="MYTHOS minimum expected R per trade to allow execution (default: 0.01)")
+    parser.add_argument("--mythos-edge-threshold", type=float, default=0.02,
+                        help="MYTHOS minimum edge threshold for promotion gate (default: 0.02)")
+    parser.add_argument("--mythos-daily-loss-cap", type=float, default=-4.0,
+                        help="MYTHOS daily loss cap in R (default: -4.0)")
+    parser.add_argument("--mythos-weekly-loss-cap", type=float, default=-12.0,
+                        help="MYTHOS weekly loss cap in R (default: -12.0)")
+    parser.add_argument("--mythos-emergency-stop-r", type=float, default=-18.0,
+                        help="MYTHOS hard emergency stop: halt new trades once fold equity reaches this floor in R (default: -18.0)")
+    parser.add_argument("--mythos-emergency-max-drawdown-r", type=float, default=12.0,
+                        help="MYTHOS hard emergency stop: halt new trades once peak-to-trough drawdown reaches this R (default: 12.0)")
+    parser.add_argument("--mythos-drawdown-size-start-r", type=float, default=6.0,
+                        help="MYTHOS size throttle: drawdown level where position-size throttling starts (default: 6.0)")
+    parser.add_argument("--mythos-dd-size-throttle-start-r", dest="mythos_drawdown_size_start_r", type=float,
+                        help="Alias for --mythos-drawdown-size-start-r")
+    parser.add_argument("--mythos-drawdown-size-full-r", type=float, default=14.0,
+                        help="MYTHOS size throttle: drawdown level where minimum throttle is reached (default: 14.0)")
+    parser.add_argument("--mythos-dd-size-throttle-end-r", dest="mythos_drawdown_size_full_r", type=float,
+                        help="Alias for --mythos-drawdown-size-full-r")
+    parser.add_argument("--mythos-drawdown-size-min-scale", type=float, default=0.35,
+                        help="MYTHOS size throttle: minimum size scaling under deep drawdown (default: 0.35)")
+    parser.add_argument("--mythos-dd-size-throttle-min", dest="mythos_drawdown_size_min_scale", type=float,
+                        help="Alias for --mythos-drawdown-size-min-scale")
+    parser.add_argument("--mythos-disable-conviction-boost-dd-r", type=float, default=6.0,
+                        help="MYTHOS leverage safety: disable conviction boost once drawdown reaches this R (default: 6.0)")
+    parser.add_argument("--mythos-disable-leverage-dd-r", type=float, default=6.0,
+                        help="MYTHOS leverage safety: disable leverage once drawdown reaches this R (default: 6.0)")
+    parser.add_argument("--mythos-dd-disable-leverage-r", dest="mythos_disable_leverage_dd_r", type=float,
+                        help="Alias for --mythos-disable-leverage-dd-r")
+    parser.add_argument("--mythos-dd-risk-recovery-r", type=float, default=3.0,
+                        help="MYTHOS leverage safety: drawdown level to re-enable leverage after disable threshold (default: 3.0)")
+    parser.add_argument("--mythos-cooldown-bars", type=int, default=4,
+                        help="MYTHOS bars of cooldown after each executed trade (default: 4)")
+    parser.add_argument("--mythos-max-trades-per-day", type=int, default=8,
+                        help="MYTHOS max trades/day before throttling (default: 8)")
+    parser.add_argument("--mythos-max-leverage", type=float, default=1.8,
+                        help="MYTHOS maximum leverage multiplier (default: 1.8)")
+    parser.add_argument("--mythos-vol-target", type=float, default=0.012,
+                        help="MYTHOS daily volatility target for sizing (default: 0.012)")
+    parser.add_argument("--mythos-min-trades", type=int, default=25,
+                        help="MYTHOS minimum trades for confidence classification (default: 25)")
+    parser.add_argument("--mythos-report-path", type=str, default="checkpoints/mythos_walkforward_report.json",
+                        help="MYTHOS output report path (default: checkpoints/mythos_walkforward_report.json)")
+    parser.add_argument("--mythos-save-best-model", action="store_true", default=True,
+                        help="MYTHOS: persist best fold model artifact (default: enabled)")
+    parser.add_argument("--mythos-no-save-best-model", dest="mythos_save_best_model", action="store_false",
+                        help="MYTHOS: disable best-model artifact persistence")
+    parser.add_argument("--mythos-best-model-metric", type=str, default="total_r",
+                        choices=["total_r", "expectancy_r", "win_rate", "robust_score"],
+                        help="MYTHOS: metric for selecting best fold model (default: total_r)")
+    parser.add_argument("--mythos-model-output-dir", type=str, default="checkpoints/mythos_models",
+                        help="MYTHOS: directory to save exported model artifacts")
+    parser.add_argument("--mythos-analog-k", type=int, default=48,
+                        help="MYTHOS v2: nearest analog memory neighbors (default: 48)")
+    parser.add_argument("--mythos-analog-blend", type=float, default=0.35,
+                        help="MYTHOS v2: blend weight for analog memory edge/confidence (default: 0.35)")
+    parser.add_argument("--mythos-online-reliability-alpha", type=float, default=0.08,
+                        help="MYTHOS v2: EMA speed for online reliability updates (default: 0.08)")
+    parser.add_argument("--mythos-reliability-regime-window", type=int, default=80,
+                        help="MYTHOS v2: rolling regime-specific reliability window (default: 80)")
+    parser.add_argument("--mythos-robust-score-dd-penalty", type=float, default=0.35,
+                        help="MYTHOS v2: drawdown penalty factor for robust_score metric (default: 0.35)")
+    parser.add_argument("--mythos-side-balance-window", type=int, default=160,
+                        help="MYTHOS v3: rolling window for side imbalance control (default: 160)")
+    parser.add_argument("--mythos-side-imbalance-soft-cap", type=float, default=0.82,
+                        help="MYTHOS v3: soft max side concentration before penalties (default: 0.82)")
+    parser.add_argument("--mythos-side-imbalance-edge-penalty", type=float, default=0.015,
+                        help="MYTHOS v3: edge penalty when one side dominates (default: 0.015)")
+    parser.add_argument("--mythos-side-rebalance-enable", dest="mythos_side_rebalance_enable", action="store_true",
+                        help="MYTHOS side rebalance: enable adaptive short/long rebalance nudges (default: enabled)")
+    parser.add_argument("--mythos-no-side-rebalance-enable", dest="mythos_side_rebalance_enable", action="store_false",
+                        help="MYTHOS side rebalance: disable adaptive short/long rebalance nudges")
+    parser.set_defaults(mythos_side_rebalance_enable=True)
+    parser.add_argument("--mythos-side-rebalance-warmup-trades", type=int, default=40,
+                        help="MYTHOS side rebalance: warmup accepted trades before rebalance nudges (default: 40)")
+    parser.add_argument("--mythos-side-rebalance-window", type=int, default=96,
+                        help="MYTHOS side rebalance: rolling window for side-share estimation (default: 96)")
+    parser.add_argument("--mythos-side-rebalance-short-target", type=float, default=0.32,
+                        help="MYTHOS side rebalance: target short-side share in active window (default: 0.32)")
+    parser.add_argument("--mythos-side-rebalance-short-boost", type=float, default=0.0035,
+                        help="MYTHOS side rebalance: max short edge boost when underweight (default: 0.0035)")
+    parser.add_argument("--mythos-side-rebalance-long-penalty", type=float, default=0.0030,
+                        help="MYTHOS side rebalance: long edge penalty when short side is underweight (default: 0.0030)")
+    parser.add_argument("--mythos-side-rebalance-conf-boost", type=float, default=0.02,
+                        help="MYTHOS side rebalance: short confidence boost when underweight (default: 0.02)")
+    parser.add_argument("--mythos-side-rebalance-quality-guard", type=float, default=0.06,
+                        help="MYTHOS side rebalance: block short boost when short expectancy lags long by this guard (default: 0.06)")
+    parser.add_argument("--mythos-side-rebalance-max-adjust", type=float, default=0.012,
+                        help="MYTHOS side rebalance: cap on per-trade edge adjustment from rebalance nudges (default: 0.012)")
+    parser.add_argument("--mythos-intelligence-enable", dest="mythos_intelligence_enable", action="store_true",
+                        help="MYTHOS intelligence: enable online quality learner to recalibrate edge/confidence/uncertainty (default: enabled)")
+    parser.add_argument("--mythos-no-intelligence-enable", dest="mythos_intelligence_enable", action="store_false",
+                        help="MYTHOS intelligence: disable online quality learner recalibration")
+    parser.set_defaults(mythos_intelligence_enable=True)
+    parser.add_argument("--mythos-intelligence-min-samples", type=int, default=24,
+                        help="MYTHOS intelligence: minimum samples per bucket before quality adjustments activate (default: 24)")
+    parser.add_argument("--mythos-intelligence-ema-alpha", type=float, default=0.08,
+                        help="MYTHOS intelligence: EMA alpha for online quality memory updates (default: 0.08)")
+    parser.add_argument("--mythos-intelligence-hit-weight", type=float, default=0.55,
+                        help="MYTHOS intelligence: score weight on hit-rate quality signal (default: 0.55)")
+    parser.add_argument("--mythos-intelligence-expectancy-weight", type=float, default=0.45,
+                        help="MYTHOS intelligence: score weight on expectancy quality signal (default: 0.45)")
+    parser.add_argument("--mythos-intelligence-variance-penalty", type=float, default=0.18,
+                        help="MYTHOS intelligence: penalty weight for unstable/high-variance quality buckets (default: 0.18)")
+    parser.add_argument("--mythos-intelligence-edge-scale", type=float, default=0.010,
+                        help="MYTHOS intelligence: positive score to edge boost scale (default: 0.010)")
+    parser.add_argument("--mythos-intelligence-negative-edge-scale", type=float, default=0.012,
+                        help="MYTHOS intelligence: negative score to edge penalty scale (default: 0.012)")
+    parser.add_argument("--mythos-intelligence-conf-scale", type=float, default=0.06,
+                        help="MYTHOS intelligence: score to confidence adjustment scale (default: 0.06)")
+    parser.add_argument("--mythos-intelligence-uncertainty-scale", type=float, default=0.30,
+                        help="MYTHOS intelligence: score to uncertainty adjustment scale (default: 0.30)")
+    parser.add_argument("--mythos-intelligence-max-edge-adjust", type=float, default=0.020,
+                        help="MYTHOS intelligence: cap on per-trade edge adjustment from quality learner (default: 0.020)")
+    parser.add_argument("--mythos-intelligence-side-switch-enable", dest="mythos_intelligence_side_switch_enable", action="store_true",
+                        help="MYTHOS intelligence: allow quality-driven side switch when opposite side has stronger evidence (default: enabled)")
+    parser.add_argument("--mythos-no-intelligence-side-switch-enable", dest="mythos_intelligence_side_switch_enable", action="store_false",
+                        help="MYTHOS intelligence: disable quality-driven side switch")
+    parser.set_defaults(mythos_intelligence_side_switch_enable=True)
+    parser.add_argument("--mythos-intelligence-side-switch-min-gap", type=float, default=0.30,
+                        help="MYTHOS intelligence: minimum opposite-side quality score gap required to switch side (default: 0.30)")
+    parser.add_argument("--mythos-intelligence-side-switch-min-analog-adv", type=float, default=0.0015,
+                        help="MYTHOS intelligence: only allow side switch when chosen side analog edge is below this floor (default: 0.0015)")
+    parser.add_argument("--mythos-intelligence-side-switch-conviction-guard", type=float, default=0.58,
+                        help="MYTHOS intelligence: block side switching when conviction is above this threshold (default: 0.58)")
+    parser.add_argument("--mythos-intelligence-side-switch-cooldown-bars", type=int, default=16,
+                        help="MYTHOS intelligence: minimum bars between quality-driven side switches (default: 16)")
+    parser.add_argument("--mythos-intelligence-side-switch-max-rate", dest="mythos_intelligence_side_switch_max_rate", type=float, default=0.08,
+                        help="MYTHOS intelligence: maximum fraction of bars allowed to side-switch before throttling (default: 0.08)")
+    parser.add_argument("--mythos-intelligence-max-switch-rate", dest="mythos_intelligence_side_switch_max_rate", type=float,
+                        help="Alias for --mythos-intelligence-side-switch-max-rate")
+    parser.add_argument("--mythos-intelligence-side-switch-min-samples", dest="mythos_intelligence_side_switch_min_samples", type=int, default=40,
+                        help="MYTHOS intelligence: minimum intelligence-active bars before side switching can activate (default: 40)")
+    parser.add_argument("--mythos-adaptive-side-target-strength", type=float, default=0.22,
+                        help="MYTHOS adaptive: how strongly side health shifts long/short target mix (default: 0.22)")
+    parser.add_argument("--mythos-adaptive-side-target-min", type=float, default=0.35,
+                        help="MYTHOS adaptive: minimum target long share (default: 0.35)")
+    parser.add_argument("--mythos-adaptive-side-target-max", type=float, default=0.65,
+                        help="MYTHOS adaptive: maximum target long share (default: 0.65)")
+    parser.add_argument("--mythos-side-health-penalty", type=float, default=0.02,
+                        help="MYTHOS adaptive: extra edge penalty scale for overrepresented weak side (default: 0.02)")
+    parser.add_argument("--mythos-side-health-boost", type=float, default=0.008,
+                        help="MYTHOS adaptive: edge boost scale for underrepresented healthier side (default: 0.008)")
+    parser.add_argument("--mythos-side-health-decay", type=float, default=0.97,
+                        help="MYTHOS adaptive: decay factor for side health memory (default: 0.97)")
+    parser.add_argument("--mythos-drawdown-edge-start-r", type=float, default=8.0,
+                        help="MYTHOS v3: drawdown level where edge floor starts tightening (default: 8.0)")
+    parser.add_argument("--mythos-drawdown-edge-step-r", type=float, default=4.0,
+                        help="MYTHOS v3: drawdown step for incremental edge floor tightening (default: 4.0)")
+    parser.add_argument("--mythos-drawdown-edge-boost", type=float, default=0.0025,
+                        help="MYTHOS v3: added edge floor per drawdown step (default: 0.0025)")
+    parser.add_argument("--mythos-loss-streak-trigger", type=int, default=4,
+                        help="MYTHOS v3: consecutive losses before cooldown pause (default: 4)")
+    parser.add_argument("--mythos-loss-streak-cooldown-bars", type=int, default=12,
+                        help="MYTHOS v3: bars to pause after loss streak trigger (default: 12)")
+    parser.add_argument("--mythos-side-fail-window", type=int, default=48,
+                        help="MYTHOS v5: rolling trades window used to detect failing long/short side (default: 48)")
+    parser.add_argument("--mythos-side-fail-min-trades", type=int, default=10,
+                        help="MYTHOS v5: minimum side trades in window before side-fail cooldown can trigger (default: 10)")
+    parser.add_argument("--mythos-side-fail-expectancy-r", type=float, default=-0.12,
+                        help="MYTHOS v5: side expectancy threshold that triggers side cooldown (default: -0.12)")
+    parser.add_argument("--mythos-side-fail-cooldown-bars", type=int, default=24,
+                        help="MYTHOS v5: bars to pause entries for a failing side (default: 24)")
+    parser.add_argument("--mythos-side-fail-hard-pause", dest="mythos_side_fail_hard_pause", action="store_true",
+                        help="MYTHOS adaptive: hard-pause failing side instead of soft adaptive downweighting")
+    parser.add_argument("--mythos-no-side-fail-hard-pause", dest="mythos_side_fail_hard_pause", action="store_false",
+                        help="MYTHOS adaptive: keep trading both sides and adaptively rebalance (default)")
+    parser.set_defaults(mythos_side_fail_hard_pause=False)
+    parser.add_argument("--mythos-online-allocator-lr", type=float, default=0.06,
+                        help="MYTHOS v4: online expert allocator learning rate (default: 0.06)")
+    parser.add_argument("--mythos-online-allocator-min-mult", type=float, default=0.75,
+                        help="MYTHOS v4: min multiplier for expert utility scaling (default: 0.75)")
+    parser.add_argument("--mythos-online-allocator-max-mult", type=float, default=1.55,
+                        help="MYTHOS v4: max multiplier for expert utility scaling (default: 1.55)")
+    parser.add_argument("--mythos-change-detect-z-thresh", type=float, default=2.6,
+                        help="MYTHOS v4: z-score trigger threshold for change detection (default: 2.6)")
+    parser.add_argument("--mythos-change-detect-confirm-bars", type=int, default=2,
+                        help="MYTHOS v4: consecutive bars required to confirm change mode (default: 2)")
+    parser.add_argument("--mythos-change-detect-cooldown-bars", type=int, default=24,
+                        help="MYTHOS v4: cooldown bars while change mode is active (default: 24)")
+    parser.add_argument("--mythos-change-edge-floor-boost", type=float, default=0.004,
+                        help="MYTHOS v4: additional edge floor during confirmed change mode (default: 0.004)")
+    parser.add_argument("--mythos-change-confidence-boost", type=float, default=0.03,
+                        help="MYTHOS v4: extra confidence requirement during change mode (default: 0.03)")
+    parser.add_argument("--mythos-change-uncertainty-mult", type=float, default=1.15,
+                        help="MYTHOS v4: uncertainty inflation during change mode (default: 1.15)")
+    parser.add_argument("--mythos-regime-flip-window", type=int, default=24,
+                        help="MYTHOS v5: bars used to track fast regime flip intensity (default: 24)")
+    parser.add_argument("--mythos-regime-flip-trigger", type=float, default=0.35,
+                        help="MYTHOS v5: flip intensity threshold to trigger instability mode (default: 0.35)")
+    parser.add_argument("--mythos-instability-edge-mult", type=float, default=0.70,
+                        help="MYTHOS v5: edge multiplier during instability mode (default: 0.70)")
+    parser.add_argument("--mythos-instability-confidence-drop", type=float, default=0.08,
+                        help="MYTHOS v5: confidence drop applied during instability mode (default: 0.08)")
+    parser.add_argument("--mythos-instability-uncertainty-mult", type=float, default=1.35,
+                        help="MYTHOS v5: uncertainty multiplier during instability mode (default: 1.35)")
+    parser.add_argument("--mythos-transition-learn-rate", type=float, default=0.12,
+                        help="MYTHOS v5: EMA learning rate for transition-state memory (default: 0.12)")
+    parser.add_argument("--mythos-transition-min-samples", type=int, default=6,
+                        help="MYTHOS v5: minimum observations before transition-state adjustments activate (default: 6)")
+    parser.add_argument("--mythos-transition-edge-gain", type=float, default=0.35,
+                        help="MYTHOS v5: transition-memory gain applied to edge scaling (default: 0.35)")
+    parser.add_argument("--mythos-transition-confidence-gain", type=float, default=0.06,
+                        help="MYTHOS v5: transition-memory gain applied to confidence adjustment (default: 0.06)")
+    parser.add_argument("--mythos-transition-uncertainty-gain", type=float, default=0.30,
+                        help="MYTHOS v5: transition-memory gain applied to uncertainty adjustment (default: 0.30)")
+    parser.add_argument("--mythos-flip-harden-hold-bars", type=int, default=18,
+                        help="MYTHOS v5: bars to keep strict guard after flip trigger (default: 18)")
+    parser.add_argument("--mythos-counterfactual-min-advantage-r", type=float, default=0.006,
+                        help="MYTHOS v5: minimum counterfactual edge advantage required to trade (default: 0.006)")
+    parser.add_argument("--mythos-counterfactual-risk-penalty", type=float, default=0.6,
+                        help="MYTHOS v5: uncertainty penalty in counterfactual gate (default: 0.6)")
+    parser.add_argument("--mythos-counterfactual-margin", type=float, default=0.006,
+                        help="MYTHOS v5: confidence margin bonus/penalty applied in counterfactual score (default: 0.006)")
+    parser.add_argument("--mythos-counterfactual-uncertainty-weight", type=float, default=0.50,
+                        help="MYTHOS v5: uncertainty penalty weight applied to alternative side score (default: 0.50)")
+    parser.add_argument("--mythos-counterfactual-min-alt-hits", type=int, default=8,
+                        help="MYTHOS v5: minimum analog hits per side before strict counterfactual filtering (default: 8)")
+    parser.add_argument("--mythos-use-neural-expert", action="store_true", default=True,
+                        help="MYTHOS v6: enable GPU neural expert in expert council (default: enabled)")
+    parser.add_argument("--mythos-no-use-neural-expert", dest="mythos_use_neural_expert", action="store_false",
+                        help="MYTHOS v6: disable GPU neural expert and use classic linear-only council")
+    parser.add_argument("--mythos-neural-experts", dest="mythos_use_neural_expert", action="store_true",
+                        help="Alias for --mythos-use-neural-expert")
+    parser.add_argument("--mythos-no-neural-experts", dest="mythos_use_neural_expert", action="store_false",
+                        help="Alias for --mythos-no-use-neural-expert")
+    parser.add_argument("--mythos-neural-device", type=str, default="auto", choices=["auto", "cuda", "cpu"],
+                        help="MYTHOS v6: neural expert runtime device preference (default: auto)")
+    parser.add_argument("--mythos-neural-hidden", type=int, default=64,
+                        help="MYTHOS v6: hidden width for neural expert MLP (default: 64)")
+    parser.add_argument("--mythos-neural-epochs", type=int, default=8,
+                        help="MYTHOS v6: training epochs for neural expert per fold (default: 8)")
+    parser.add_argument("--mythos-neural-lr", type=float, default=0.0015,
+                        help="MYTHOS v6: learning rate for neural expert optimizer (default: 0.0015)")
+    parser.add_argument("--mythos-neural-batch-size", type=int, default=512,
+                        help="MYTHOS v6: batch size for neural expert training (default: 512)")
+    parser.add_argument("--mythos-meta-learner", action="store_true", default=True,
+                        help="MYTHOS v7: enable neural meta-learner for trade quality modulation (default: enabled)")
+    parser.add_argument("--mythos-no-meta-learner", dest="mythos_meta_learner", action="store_false",
+                        help="MYTHOS v7: disable neural meta-learner and use base decision stack")
+    parser.add_argument("--mythos-use-deep-meta", dest="mythos_meta_learner", action="store_true",
+                        help="Alias for --mythos-meta-learner")
+    parser.add_argument("--mythos-no-use-deep-meta", dest="mythos_meta_learner", action="store_false",
+                        help="Alias for --mythos-no-meta-learner")
+    parser.add_argument("--mythos-meta-device", type=str, default="auto", choices=["auto", "cuda", "cpu"],
+                        help="MYTHOS v7: meta-learner runtime device preference (default: auto)")
+    parser.add_argument("--mythos-meta-hidden", type=int, default=64,
+                        help="MYTHOS v7: hidden width for meta-learner MLP (default: 64)")
+    parser.add_argument("--mythos-meta-epochs", type=int, default=6,
+                        help="MYTHOS v7: training epochs for meta-learner per fold (default: 6)")
+    parser.add_argument("--mythos-meta-lr", type=float, default=0.001,
+                        help="MYTHOS v7: learning rate for meta-learner optimizer (default: 0.001)")
+    parser.add_argument("--mythos-meta-batch-size", type=int, default=1024,
+                        help="MYTHOS v7: batch size for meta-learner training (default: 1024)")
+    parser.add_argument("--mythos-meta-edge-gain", type=float, default=0.45,
+                        help="MYTHOS v7: edge scaling gain from meta quality score (default: 0.45)")
+    parser.add_argument("--mythos-meta-confidence-gain", type=float, default=0.08,
+                        help="MYTHOS v7: confidence adjustment gain from meta quality score (default: 0.08)")
+    parser.add_argument("--mythos-meta-uncertainty-gain", type=float, default=0.25,
+                        help="MYTHOS v7: uncertainty damping gain from meta quality score (default: 0.25)")
+    parser.add_argument("--mythos-meta-min-train-samples", type=int, default=512,
+                        help="MYTHOS v7: minimum samples before meta-learner online updates activate (default: 512)")
+    parser.add_argument("--mythos-meta-warmup-trades", type=int, default=300,
+                        help="MYTHOS v7: trades before meta-learner gating starts affecting execution (default: 300)")
+    parser.add_argument("--mythos-meta-warmup-samples", type=int, default=1024,
+                        help="MYTHOS v7: warmup samples required before strict meta gating activates (default: 1024)")
+    parser.add_argument("--mythos-meta-ready-prob-floor", type=float, default=0.42,
+                        help="MYTHOS v7: lower probability bound considered neutral during meta warmup (default: 0.42)")
+    parser.add_argument("--mythos-meta-ready-prob-ceiling", type=float, default=0.58,
+                        help="MYTHOS v7: upper probability bound considered neutral during meta warmup (default: 0.58)")
+    parser.add_argument("--mythos-meta-fallback", dest="mythos_meta_fallback", action="store_true",
+                        help="MYTHOS v7: enable fallback online meta learner when torch/cuda meta model is unavailable (default: enabled)")
+    parser.add_argument("--mythos-no-meta-fallback", dest="mythos_meta_fallback", action="store_false",
+                        help="MYTHOS v7: disable fallback meta learner")
+    parser.set_defaults(mythos_meta_fallback=True)
+    parser.add_argument("--mythos-meta-fallback-lr", type=float, default=0.03,
+                        help="MYTHOS v7: learning rate for fallback online meta learner (default: 0.03)")
+    parser.add_argument("--mythos-precision-min-confidence", type=float, default=0.0,
+                        help="MYTHOS precision: minimum confidence required before conviction filter (default: 0.0)")
+    parser.add_argument("--mythos-precision-min-edge", type=float, default=0.0,
+                        help="MYTHOS precision: minimum edge required before conviction filter (default: 0.0)")
+    parser.add_argument("--mythos-precision-min-conviction", type=float, default=0.52,
+                        help="MYTHOS precision: minimum conviction score required to execute a trade (default: 0.52)")
+    parser.add_argument("--mythos-precision-high-conviction", type=float, default=0.72,
+                        help="MYTHOS precision: conviction threshold counted as high-certainty trade (default: 0.72)")
+    parser.add_argument("--mythos-precision-edge-weight", type=float, default=0.30,
+                        help="MYTHOS precision: conviction score weight for edge strength (default: 0.30)")
+    parser.add_argument("--mythos-precision-confidence-weight", type=float, default=0.30,
+                        help="MYTHOS precision: conviction score weight for confidence strength (default: 0.30)")
+    parser.add_argument("--mythos-precision-uncertainty-weight", type=float, default=0.25,
+                        help="MYTHOS precision: conviction score weight for low uncertainty (default: 0.25)")
+    parser.add_argument("--mythos-precision-meta-weight", type=float, default=0.15,
+                        help="MYTHOS precision: conviction score weight for meta decisiveness (default: 0.15)")
+    parser.add_argument("--mythos-conviction-score-threshold", type=float, default=0.62,
+                        help="MYTHOS precision: conviction score threshold to activate leverage boost (default: 0.62)")
+    parser.add_argument("--mythos-conviction-boost", type=float, default=0.35,
+                        help="MYTHOS precision: leverage boost intensity on high-conviction setups (default: 0.35)")
+    parser.add_argument("--mythos-conviction-max-size-mult", type=float, default=2.2,
+                        help="MYTHOS precision: cap for leverage multiplier after conviction boost (default: 2.2)")
+    parser.add_argument("--mythos-conviction-recent-window", type=int, default=64,
+                        help="MYTHOS precision: recent high-conviction trades used to confirm leverage boost (default: 64)")
+    parser.add_argument("--mythos-conviction-recent-min-trades", type=int, default=20,
+                        help="MYTHOS precision: minimum recent high-conviction trades before leverage boost can activate (default: 20)")
+    parser.add_argument("--mythos-conviction-recent-min-expectancy", type=float, default=0.05,
+                        help="MYTHOS precision: minimum recent high-conviction expectancy required for leverage boost (default: 0.05)")
+    parser.add_argument("--mythos-conviction-guard-window", type=int, default=64,
+                        help="MYTHOS precision: sizing guard window for conviction boost quality checks (default: 64)")
+    parser.add_argument("--mythos-conviction-guard-min-trades", type=int, default=20,
+                        help="MYTHOS precision: minimum trades in guard window before conviction sizing boost activates (default: 20)")
+    parser.add_argument("--mythos-conviction-guard-min-expectancy-r", type=float, default=0.05,
+                        help="MYTHOS precision: minimum expectancy in guard window before conviction sizing boost activates (default: 0.05)")
+    parser.add_argument("--mythos-sure-min-analog-hits", type=int, default=12,
+                        help="MYTHOS precision: minimum analog memory hits required for a signal to be considered sure (default: 12)")
+    parser.add_argument("--mythos-sure-min-analog-ratio", type=float, default=0.20,
+                        help="MYTHOS precision: minimum analog hit ratio vs analog-k for sure signals (default: 0.20)")
+    parser.add_argument("--mythos-sure-meta-strength-min", type=float, default=0.10,
+                        help="MYTHOS precision: minimum meta decisiveness for sure signals (default: 0.10)")
+    parser.add_argument("--mythos-sure-edge-buffer", type=float, default=0.001,
+                        help="MYTHOS precision: edge buffer above min edge threshold for sure signals (default: 0.001)")
+    parser.add_argument("--mythos-sure-confidence-buffer", type=float, default=0.03,
+                        help="MYTHOS precision: confidence buffer above min confidence for sure signals (default: 0.03)")
+    parser.add_argument("--mythos-sure-recent-window", type=int, default=96,
+                        help="MYTHOS precision: rolling window for sure-signal quality checks (default: 96)")
+    parser.add_argument("--mythos-sure-recent-min-trades", type=int, default=24,
+                        help="MYTHOS precision: min sure trades before sure quality gate becomes strict (default: 24)")
+    parser.add_argument("--mythos-sure-recent-min-hit-rate", type=float, default=0.52,
+                        help="MYTHOS precision: minimum recent sure hit-rate for continued sure qualification (default: 0.52)")
+    parser.add_argument("--mythos-sure-recent-min-expectancy", type=float, default=0.04,
+                        help="MYTHOS precision: minimum recent sure expectancy-R for sure qualification (default: 0.04)")
+    parser.add_argument("--mythos-sure-cold-start-conviction-extra", type=float, default=0.04,
+                        help="MYTHOS precision: extra conviction required during sure cold-start period (default: 0.04)")
+    parser.add_argument("--mythos-sure-cold-start-meta-extra", type=float, default=0.06,
+                        help="MYTHOS precision: extra meta decisiveness required during sure cold-start period (default: 0.06)")
+    parser.add_argument("--mythos-leverage-edge-buffer", type=float, default=0.003,
+                        help="MYTHOS leverage policy: edge buffer above min edge threshold for leverage activation (default: 0.003)")
+    parser.add_argument("--mythos-leverage-confidence-buffer", type=float, default=0.04,
+                        help="MYTHOS leverage policy: confidence buffer above min confidence for leverage activation (default: 0.04)")
+    parser.add_argument("--mythos-leverage-conviction-buffer", type=float, default=0.04,
+                        help="MYTHOS leverage policy: conviction buffer above score threshold for leverage activation (default: 0.04)")
+    parser.add_argument("--mythos-leverage-recent-window", type=int, default=120,
+                        help="MYTHOS leverage policy: rolling window for sure+leveraged quality checks (default: 120)")
+    parser.add_argument("--mythos-leverage-recent-min-trades", type=int, default=20,
+                        help="MYTHOS leverage policy: min sure+leveraged trades before strict leverage quality checks (default: 20)")
+    parser.add_argument("--mythos-leverage-recent-min-hit-rate", type=float, default=0.53,
+                        help="MYTHOS leverage policy: minimum recent sure+leveraged hit-rate (default: 0.53)")
+    parser.add_argument("--mythos-leverage-recent-min-expectancy", type=float, default=0.05,
+                        help="MYTHOS leverage policy: minimum recent sure+leveraged expectancy-R (default: 0.05)")
+    parser.add_argument("--mythos-leverage-policy-window", type=int, default=160,
+                        help="MYTHOS leverage policy: contextual policy window for leverage decisions (default: 160)")
+    parser.add_argument("--mythos-leverage-policy-min-trades", type=int, default=24,
+                        help="MYTHOS leverage policy: min trades for contextual policy reliability (default: 24)")
+    parser.add_argument("--mythos-leverage-policy-min-hit-rate", type=float, default=0.54,
+                        help="MYTHOS leverage policy: minimum blended hit-rate for leverage policy approval (default: 0.54)")
+    parser.add_argument("--mythos-leverage-policy-min-expectancy", type=float, default=0.06,
+                        help="MYTHOS leverage policy: minimum blended expectancy-R for leverage policy approval (default: 0.06)")
+    parser.add_argument("--mythos-leverage-policy-context-weight", type=float, default=0.60,
+                        help="MYTHOS leverage policy: weight on context score vs realized leverage history (default: 0.60)")
+    parser.add_argument("--mythos-leverage-policy-cold-start-conviction-extra", type=float, default=0.08,
+                        help="MYTHOS leverage policy: extra conviction needed before leverage during policy cold-start (default: 0.08)")
+    parser.add_argument("--mythos-leverage-net-edge-floor", type=float, default=0.002,
+                        help="MYTHOS leverage policy: minimum estimated net edge (after execution cost) to allow leverage boost (default: 0.002)")
+    parser.add_argument("--mythos-leverage-side-policy-enable", dest="mythos_leverage_side_policy_enable", action="store_true",
+                        help="MYTHOS leverage policy: require side-specific recent quality before leverage boost (default: enabled)")
+    parser.add_argument("--mythos-no-leverage-side-policy-enable", dest="mythos_leverage_side_policy_enable", action="store_false",
+                        help="MYTHOS leverage policy: disable side-specific leverage quality gating")
+    parser.set_defaults(mythos_leverage_side_policy_enable=True)
+    parser.add_argument("--mythos-leverage-side-min-trades", type=int, default=12,
+                        help="MYTHOS leverage policy: minimum recent side trades before strict side leverage gating (default: 12)")
+    parser.add_argument("--mythos-leverage-side-min-hit-rate", type=float, default=0.52,
+                        help="MYTHOS leverage policy: minimum side-specific recent hit-rate to allow leverage boost (default: 0.52)")
+    parser.add_argument("--mythos-leverage-side-min-expectancy", type=float, default=0.03,
+                        help="MYTHOS leverage policy: minimum side-specific recent expectancy-R to allow leverage boost (default: 0.03)")
+    parser.add_argument("--mythos-execution-fee-bps", type=float, default=4.0,
+                        help="MYTHOS net intelligence: execution fee in bps applied in per-trade net-R accounting (default: 4.0)")
+    parser.add_argument("--mythos-execution-slippage-bps", type=float, default=2.0,
+                        help="MYTHOS net intelligence: slippage in bps applied in per-trade net-R accounting (default: 2.0)")
+    parser.add_argument("--mythos-execution-cost-cap-r", type=float, default=0.35,
+                        help="MYTHOS net intelligence: cap on deducted execution cost per trade in R-units (default: 0.35)")
+    parser.add_argument("--mythos-bayes-quality-enable", dest="mythos_bayes_quality_enable", action="store_true",
+                        help="MYTHOS Bayesian gate: enable online side/regime quality gating (default: enabled)")
+    parser.add_argument("--mythos-no-bayes-quality-enable", dest="mythos_bayes_quality_enable", action="store_false",
+                        help="MYTHOS Bayesian gate: disable online side/regime quality gating")
+    parser.set_defaults(mythos_bayes_quality_enable=True)
+    parser.add_argument("--mythos-bayes-quality-warmup-trades", type=int, default=20,
+                        help="MYTHOS Bayesian gate: warmup trade count before strict quality rejects (default: 20)")
+    parser.add_argument("--mythos-bayes-quality-decay", type=float, default=0.995,
+                        help="MYTHOS Bayesian gate: EMA-style decay for online side/regime quality memory (default: 0.995)")
+    parser.add_argument("--mythos-bayes-quality-prior-alpha", type=float, default=2.0,
+                        help="MYTHOS Bayesian gate: beta prior alpha for hit-rate estimate (default: 2.0)")
+    parser.add_argument("--mythos-bayes-quality-prior-beta", type=float, default=2.0,
+                        help="MYTHOS Bayesian gate: beta prior beta for hit-rate estimate (default: 2.0)")
+    parser.add_argument("--mythos-bayes-quality-regime-weight", type=float, default=0.45,
+                        help="MYTHOS Bayesian gate: weight on regime-conditional quality vs side-global quality (default: 0.45)")
+    parser.add_argument("--mythos-bayes-quality-min-win-prob", type=float, default=0.50,
+                        help="MYTHOS Bayesian gate: minimum adjusted side win probability before reject pressure (default: 0.50)")
+    parser.add_argument("--mythos-bayes-quality-min-expectancy", type=float, default=-0.01,
+                        help="MYTHOS Bayesian gate: minimum adjusted side expectancy-R before reject pressure (default: -0.01)")
+    parser.add_argument("--mythos-bayes-quality-edge-scale", type=float, default=0.22,
+                        help="MYTHOS Bayesian gate: edge contribution scale to adjusted win-probability (default: 0.22)")
+    parser.add_argument("--mythos-bayes-quality-confidence-scale", type=float, default=0.10,
+                        help="MYTHOS Bayesian gate: confidence contribution scale to adjusted win-probability (default: 0.10)")
+    parser.add_argument("--mythos-bayes-quality-uncertainty-scale", type=float, default=0.18,
+                        help="MYTHOS Bayesian gate: uncertainty penalty scale on adjusted win-probability (default: 0.18)")
+    parser.add_argument("--mythos-bayes-quality-reject-margin", type=float, default=0.05,
+                        help="MYTHOS Bayesian gate: reject margin below min thresholds before skipping trade (default: 0.05)")
+    parser.add_argument("--mythos-nonconformity-enable", dest="mythos_nonconformity_enable", action="store_true",
+                        help="MYTHOS nonconformity gate: enable selective abstention on outlier decision contexts (default: enabled)")
+    parser.add_argument("--mythos-no-nonconformity-enable", dest="mythos_nonconformity_enable", action="store_false",
+                        help="MYTHOS nonconformity gate: disable selective abstention on outlier decision contexts")
+    parser.set_defaults(mythos_nonconformity_enable=True)
+    parser.add_argument("--mythos-nonconformity-warmup-trades", type=int, default=24,
+                        help="MYTHOS nonconformity gate: warmup trades before nonconformity rejects can activate (default: 24)")
+    parser.add_argument("--mythos-nonconformity-window", type=int, default=160,
+                        help="MYTHOS nonconformity gate: rolling winner reference window size (default: 160)")
+    parser.add_argument("--mythos-nonconformity-quantile", type=float, default=0.86,
+                        help="MYTHOS nonconformity gate: accepted winner-score quantile ceiling (default: 0.86)")
+    parser.add_argument("--mythos-nonconformity-margin", type=float, default=0.03,
+                        help="MYTHOS nonconformity gate: additive margin above winner quantile threshold (default: 0.03)")
+    parser.add_argument("--mythos-nonconformity-min-winners", type=int, default=16,
+                        help="MYTHOS nonconformity gate: minimum winning references before strict filtering (default: 16)")
+    parser.add_argument("--mythos-nonconformity-weight-uncertainty", type=float, default=0.36,
+                        help="MYTHOS nonconformity gate: uncertainty component weight in outlier score (default: 0.36)")
+    parser.add_argument("--mythos-nonconformity-weight-confidence", type=float, default=0.22,
+                        help="MYTHOS nonconformity gate: inverse-confidence component weight in outlier score (default: 0.22)")
+    parser.add_argument("--mythos-nonconformity-weight-edge", type=float, default=0.20,
+                        help="MYTHOS nonconformity gate: inverse-edge component weight in outlier score (default: 0.20)")
+    parser.add_argument("--mythos-nonconformity-weight-meta", type=float, default=0.14,
+                        help="MYTHOS nonconformity gate: inverse-meta-decisiveness component weight in outlier score (default: 0.14)")
+    parser.add_argument("--mythos-nonconformity-weight-analog", type=float, default=0.08,
+                        help="MYTHOS nonconformity gate: inverse-analog-support component weight in outlier score (default: 0.08)")
+    parser.add_argument("--mythos-nonconformity-override-conviction", type=float, default=0.88,
+                        help="MYTHOS nonconformity gate: override conviction threshold for exceptionally strong trades (default: 0.88)")
+    parser.add_argument("--mythos-nonconformity-override-edge-buffer", type=float, default=0.003,
+                        help="MYTHOS nonconformity gate: edge buffer above base floor for override (default: 0.003)")
+    parser.add_argument("--mythos-nonconformity-override-confidence-buffer", type=float, default=0.04,
+                        help="MYTHOS nonconformity gate: confidence buffer above base floor for override (default: 0.04)")
+    parser.add_argument("--mythos-nonconformity-target-reject-rate", type=float, default=0.48,
+                        help="MYTHOS nonconformity adaptive: target reject rate for dynamic threshold relaxation (default: 0.48)")
+    parser.add_argument("--mythos-nonconformity-reject-tolerance", type=float, default=0.12,
+                        help="MYTHOS nonconformity adaptive: tolerance above target reject-rate before relaxation (default: 0.12)")
+    parser.add_argument("--mythos-nonconformity-adaptive-relax", type=float, default=0.16,
+                        help="MYTHOS nonconformity adaptive: relaxation gain when reject-rate overshoots target (default: 0.16)")
+    parser.add_argument("--mythos-nonconformity-adaptive-max-relax", type=float, default=0.18,
+                        help="MYTHOS nonconformity adaptive: max additional threshold relaxation (default: 0.18)")
+    parser.add_argument("--mythos-nonconformity-soft-override-margin", type=float, default=0.04,
+                        help="MYTHOS nonconformity adaptive: soft override margin for very strong conviction/context (default: 0.04)")
+    parser.add_argument("--mythos-counterfactual-target-reject-rate", type=float, default=0.70,
+                        help="MYTHOS counterfactual adaptive: target reject rate for dynamic relaxation (default: 0.70)")
+    parser.add_argument("--mythos-counterfactual-reject-tolerance", type=float, default=0.10,
+                        help="MYTHOS counterfactual adaptive: tolerance above target reject-rate before relaxation (default: 0.10)")
+    parser.add_argument("--mythos-counterfactual-adaptive-relax", type=float, default=0.35,
+                        help="MYTHOS counterfactual adaptive: relaxation gain when reject-rate overshoots target (default: 0.35)")
+    parser.add_argument("--mythos-counterfactual-adaptive-min-adv-floor", type=float, default=0.25,
+                        help="MYTHOS counterfactual adaptive: minimum retained fraction of base min-advantage under relaxation (default: 0.25)")
+    parser.add_argument("--mythos-short-boost-enable", action="store_true", default=True,
+                        help="MYTHOS adaptive: enable short-side edge boost when short side outperforms (default: enabled)")
+    parser.add_argument("--mythos-no-short-boost-enable", dest="mythos_short_boost_enable", action="store_false",
+                        help="MYTHOS adaptive: disable short-side outperformance boost")
+    parser.add_argument("--mythos-short-boost-window", type=int, default=96,
+                        help="MYTHOS adaptive: side performance window used for short outperformance boost (default: 96)")
+    parser.add_argument("--mythos-short-boost-min-trades", type=int, default=20,
+                        help="MYTHOS adaptive: minimum side trades in window before short boost can activate (default: 20)")
+    parser.add_argument("--mythos-short-boost-threshold-r", type=float, default=0.08,
+                        help="MYTHOS adaptive: required short expectancy edge over long to activate boost (default: 0.08)")
+    parser.add_argument("--mythos-short-boost-edge", type=float, default=0.004,
+                        help="MYTHOS adaptive: additive edge boost when short side outperforms (default: 0.004)")
+    parser.add_argument("--mythos-short-boost-confidence", type=float, default=0.03,
+                        help="MYTHOS adaptive: confidence boost when short side outperforms (default: 0.03)")
+    parser.add_argument("--mythos-meta-bootstrap-samples", type=int, default=1024,
+                        help="MYTHOS v7: bootstrap samples from training analog memory to pre-warm meta learner (default: 1024)")
+    parser.add_argument("--mythos-meta-bootstrap-epochs", type=int, default=2,
+                        help="MYTHOS v7: bootstrap passes over synthetic meta warmup samples (default: 2)")
     parser.add_argument("--v5-w-ret", type=float, default=6.0,
                         help="v5 weight for ret_h NLL loss (default: 6.0 — doubled from 3.0 to push return "
                              "signal from 2.4%% to ~67%% of gradient budget; Task #58)")
@@ -5722,6 +6295,8 @@ Examples:
 
     parser.add_argument("--live", action="store_true",
                         help="Run continuous live multi-asset inference loop")
+    parser.add_argument("--live-model", type=str, default="v5", choices=["v5", "mythos"],
+                        help="Model backend for live/paper loop: v5 checkpoints or mythos artifact runtime (default: v5)")
     parser.add_argument("--symbols", type=str, default="BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,AVAXUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,LINKUSDT,LTCUSDT,NEARUSDT,PEPEUSDT,SUIUSDT,AAVEUSDT,ARBUSDT,DOTUSDT,MATICUSDT,FILUSDT,APTUSDT,OPUSDT",
                         help="Comma-separated symbols to monitor (default: all 20 symbols)")
     parser.add_argument("--interval", type=str, default="15m",
@@ -5730,6 +6305,8 @@ Examples:
                         help="Paper mode — simulate positions + record trades (default: off)")
     parser.add_argument("--record-trades", action="store_true", default=False,
                         help="Enable trade recording (POST to /api/live/trade). Default: off unless --paper or --live")
+    parser.add_argument("--paper-session-id", type=str, default=None,
+                        help="Optional paper trading session id for multi-terminal isolation (e.g. SOL-paper-1)")
     parser.add_argument("--execution-mode", type=str, default=None,
                         choices=["signal_only", "paper", "live"],
                         help="Explicit execution mode override (default: derived from --paper/--live flags)")
@@ -5791,6 +6368,11 @@ Examples:
                         help="Number of cycles for --verify-system/--verify-separation mode (default: 30)")
 
     args = parser.parse_args()
+    profile_changes = _apply_mythos_profile_overrides(args)
+    if getattr(args, "train_mythos", False) and profile_changes:
+        log.info("[MYTHOS PROFILE] %s applied with %s overrides", args.mythos_profile, len(profile_changes))
+        for name, old, new in profile_changes:
+            log.info("[MYTHOS PROFILE]   %s: %s -> %s", name, old, new)
 
     print()
     print("=" * 60)
@@ -5933,6 +6515,8 @@ Examples:
             v5_live_threshold=getattr(args, 'v5_live_threshold', None),
             v5_mae_floor=getattr(args, 'v5_live_mae_floor', None),
             predictive_sltp=getattr(args, 'v5_predictive_sltp', False),
+            live_model=args.live_model,
+            paper_session_id=args.paper_session_id,
         )
         runner.learning_manager = learning_mgr
 
@@ -6196,6 +6780,320 @@ Examples:
         )
 
         data_path = data_dir / f"{symbols_list[0]}_15m.parquet"
+
+        if args.train_mythos:
+            log.info("[MODE] MYTHOS Walk-Forward Intelligence Stack")
+            from mythos.config import MythosConfig
+            from mythos.walkforward import run_mythos_walk_forward
+
+            mythos_cfg = MythosConfig(
+                train_months=args.mythos_train_months,
+                test_months=args.mythos_test_months,
+                tp_mult=args.tp_mult,
+                sl_mult=args.sl_mult,
+                n_regimes=args.mythos_n_regimes,
+                min_regime_confidence=args.mythos_min_regime_confidence,
+                min_router_confidence=args.mythos_min_confidence,
+                min_expected_r=args.mythos_min_expected_r,
+                min_edge_threshold=args.mythos_edge_threshold,
+                daily_loss_cap_r=args.mythos_daily_loss_cap,
+                weekly_loss_cap_r=args.mythos_weekly_loss_cap,
+                emergency_stop_r=args.mythos_emergency_stop_r,
+                emergency_max_drawdown_r=args.mythos_emergency_max_drawdown_r,
+                drawdown_size_start_r=args.mythos_drawdown_size_start_r,
+                drawdown_size_full_r=args.mythos_drawdown_size_full_r,
+                drawdown_size_min_scale=args.mythos_drawdown_size_min_scale,
+                disable_conviction_boost_drawdown_r=args.mythos_disable_conviction_boost_dd_r,
+                disable_leverage_drawdown_r=args.mythos_disable_leverage_dd_r,
+                dd_size_throttle_start_r=args.mythos_drawdown_size_start_r,
+                dd_size_throttle_end_r=args.mythos_drawdown_size_full_r,
+                dd_size_throttle_min=args.mythos_drawdown_size_min_scale,
+                dd_disable_leverage_r=args.mythos_disable_leverage_dd_r,
+                dd_risk_recovery_r=args.mythos_dd_risk_recovery_r,
+                cooldown_bars=args.mythos_cooldown_bars,
+                max_trades_per_day=args.mythos_max_trades_per_day,
+                max_leverage=args.mythos_max_leverage,
+                vol_target=args.mythos_vol_target,
+                min_trades_for_confidence=args.mythos_min_trades,
+                max_folds=args.mythos_max_folds,
+                save_best_model=args.mythos_save_best_model,
+                best_model_metric=args.mythos_best_model_metric,
+                model_output_dir=args.mythos_model_output_dir,
+                analog_k=args.mythos_analog_k,
+                analog_blend=args.mythos_analog_blend,
+                online_reliability_alpha=args.mythos_online_reliability_alpha,
+                reliability_regime_window=args.mythos_reliability_regime_window,
+                robust_score_dd_penalty=args.mythos_robust_score_dd_penalty,
+                side_balance_window=args.mythos_side_balance_window,
+                side_imbalance_soft_cap=args.mythos_side_imbalance_soft_cap,
+                side_imbalance_edge_penalty=args.mythos_side_imbalance_edge_penalty,
+                side_rebalance_enable=args.mythos_side_rebalance_enable,
+                side_rebalance_warmup_trades=args.mythos_side_rebalance_warmup_trades,
+                side_rebalance_window=args.mythos_side_rebalance_window,
+                side_rebalance_short_target=args.mythos_side_rebalance_short_target,
+                side_rebalance_short_boost=args.mythos_side_rebalance_short_boost,
+                side_rebalance_long_penalty=args.mythos_side_rebalance_long_penalty,
+                side_rebalance_conf_boost=args.mythos_side_rebalance_conf_boost,
+                side_rebalance_quality_guard=args.mythos_side_rebalance_quality_guard,
+                side_rebalance_max_adjust=args.mythos_side_rebalance_max_adjust,
+                intelligence_enable=args.mythos_intelligence_enable,
+                intelligence_min_samples=args.mythos_intelligence_min_samples,
+                intelligence_ema_alpha=args.mythos_intelligence_ema_alpha,
+                intelligence_hit_weight=args.mythos_intelligence_hit_weight,
+                intelligence_expectancy_weight=args.mythos_intelligence_expectancy_weight,
+                intelligence_variance_penalty=args.mythos_intelligence_variance_penalty,
+                intelligence_edge_scale=args.mythos_intelligence_edge_scale,
+                intelligence_negative_edge_scale=args.mythos_intelligence_negative_edge_scale,
+                intelligence_conf_scale=args.mythos_intelligence_conf_scale,
+                intelligence_uncertainty_scale=args.mythos_intelligence_uncertainty_scale,
+                intelligence_max_edge_adjust=args.mythos_intelligence_max_edge_adjust,
+                intelligence_side_switch_enable=args.mythos_intelligence_side_switch_enable,
+                intelligence_side_switch_min_gap=args.mythos_intelligence_side_switch_min_gap,
+                intelligence_side_switch_min_analog_adv=args.mythos_intelligence_side_switch_min_analog_adv,
+                intelligence_side_switch_conviction_guard=args.mythos_intelligence_side_switch_conviction_guard,
+                intelligence_side_switch_cooldown_bars=args.mythos_intelligence_side_switch_cooldown_bars,
+                intelligence_side_switch_max_rate=args.mythos_intelligence_side_switch_max_rate,
+                intelligence_side_switch_min_samples=args.mythos_intelligence_side_switch_min_samples,
+                adaptive_side_target_strength=args.mythos_adaptive_side_target_strength,
+                adaptive_side_target_min=args.mythos_adaptive_side_target_min,
+                adaptive_side_target_max=args.mythos_adaptive_side_target_max,
+                side_health_penalty=args.mythos_side_health_penalty,
+                side_health_boost=args.mythos_side_health_boost,
+                side_health_decay=args.mythos_side_health_decay,
+                precision_min_edge=args.mythos_precision_min_edge,
+                precision_min_confidence=args.mythos_precision_min_confidence,
+                precision_min_conviction=args.mythos_precision_min_conviction,
+                precision_high_conviction=args.mythos_precision_high_conviction,
+                conviction_weight_edge=args.mythos_precision_edge_weight,
+                conviction_weight_confidence=args.mythos_precision_confidence_weight,
+                conviction_weight_uncertainty=args.mythos_precision_uncertainty_weight,
+                conviction_weight_meta=args.mythos_precision_meta_weight,
+                conviction_score_threshold=args.mythos_conviction_score_threshold,
+                conviction_boost=args.mythos_conviction_boost,
+                conviction_max_size_mult=args.mythos_conviction_max_size_mult,
+                conviction_recent_window=args.mythos_conviction_recent_window,
+                conviction_recent_min_trades=args.mythos_conviction_recent_min_trades,
+                conviction_recent_min_expectancy=args.mythos_conviction_recent_min_expectancy,
+                conviction_guard_window=args.mythos_conviction_guard_window,
+                conviction_guard_min_trades=args.mythos_conviction_guard_min_trades,
+                conviction_guard_min_expectancy_r=args.mythos_conviction_guard_min_expectancy_r,
+                sure_min_analog_hits=args.mythos_sure_min_analog_hits,
+                sure_min_analog_ratio=args.mythos_sure_min_analog_ratio,
+                sure_meta_strength_min=args.mythos_sure_meta_strength_min,
+                sure_edge_buffer=args.mythos_sure_edge_buffer,
+                sure_confidence_buffer=args.mythos_sure_confidence_buffer,
+                sure_recent_window=args.mythos_sure_recent_window,
+                sure_recent_min_trades=args.mythos_sure_recent_min_trades,
+                sure_recent_min_hit_rate=args.mythos_sure_recent_min_hit_rate,
+                sure_recent_min_expectancy=args.mythos_sure_recent_min_expectancy,
+                sure_cold_start_conviction_extra=args.mythos_sure_cold_start_conviction_extra,
+                sure_cold_start_meta_extra=args.mythos_sure_cold_start_meta_extra,
+                leverage_edge_buffer=args.mythos_leverage_edge_buffer,
+                leverage_confidence_buffer=args.mythos_leverage_confidence_buffer,
+                leverage_conviction_buffer=args.mythos_leverage_conviction_buffer,
+                leverage_recent_window=args.mythos_leverage_recent_window,
+                leverage_recent_min_trades=args.mythos_leverage_recent_min_trades,
+                leverage_recent_min_hit_rate=args.mythos_leverage_recent_min_hit_rate,
+                leverage_recent_min_expectancy=args.mythos_leverage_recent_min_expectancy,
+                leverage_policy_window=args.mythos_leverage_policy_window,
+                leverage_policy_min_trades=args.mythos_leverage_policy_min_trades,
+                leverage_policy_min_hit_rate=args.mythos_leverage_policy_min_hit_rate,
+                leverage_policy_min_expectancy=args.mythos_leverage_policy_min_expectancy,
+                leverage_policy_context_weight=args.mythos_leverage_policy_context_weight,
+                leverage_policy_cold_start_conviction_extra=args.mythos_leverage_policy_cold_start_conviction_extra,
+                leverage_net_edge_floor=args.mythos_leverage_net_edge_floor,
+                leverage_side_policy_enable=args.mythos_leverage_side_policy_enable,
+                leverage_side_min_trades=args.mythos_leverage_side_min_trades,
+                leverage_side_min_hit_rate=args.mythos_leverage_side_min_hit_rate,
+                leverage_side_min_expectancy=args.mythos_leverage_side_min_expectancy,
+                execution_fee_bps=args.mythos_execution_fee_bps,
+                execution_slippage_bps=args.mythos_execution_slippage_bps,
+                execution_cost_cap_r=args.mythos_execution_cost_cap_r,
+                bayes_quality_enable=args.mythos_bayes_quality_enable,
+                bayes_quality_warmup_trades=args.mythos_bayes_quality_warmup_trades,
+                bayes_quality_decay=args.mythos_bayes_quality_decay,
+                bayes_quality_prior_alpha=args.mythos_bayes_quality_prior_alpha,
+                bayes_quality_prior_beta=args.mythos_bayes_quality_prior_beta,
+                bayes_quality_regime_weight=args.mythos_bayes_quality_regime_weight,
+                bayes_quality_min_win_prob=args.mythos_bayes_quality_min_win_prob,
+                bayes_quality_min_expectancy=args.mythos_bayes_quality_min_expectancy,
+                bayes_quality_edge_scale=args.mythos_bayes_quality_edge_scale,
+                bayes_quality_confidence_scale=args.mythos_bayes_quality_confidence_scale,
+                bayes_quality_uncertainty_scale=args.mythos_bayes_quality_uncertainty_scale,
+                bayes_quality_reject_margin=args.mythos_bayes_quality_reject_margin,
+                nonconformity_enable=args.mythos_nonconformity_enable,
+                nonconformity_warmup_trades=args.mythos_nonconformity_warmup_trades,
+                nonconformity_window=args.mythos_nonconformity_window,
+                nonconformity_quantile=args.mythos_nonconformity_quantile,
+                nonconformity_margin=args.mythos_nonconformity_margin,
+                nonconformity_min_winners=args.mythos_nonconformity_min_winners,
+                nonconformity_weight_uncertainty=args.mythos_nonconformity_weight_uncertainty,
+                nonconformity_weight_confidence=args.mythos_nonconformity_weight_confidence,
+                nonconformity_weight_edge=args.mythos_nonconformity_weight_edge,
+                nonconformity_weight_meta=args.mythos_nonconformity_weight_meta,
+                nonconformity_weight_analog=args.mythos_nonconformity_weight_analog,
+                nonconformity_override_conviction=args.mythos_nonconformity_override_conviction,
+                nonconformity_override_edge_buffer=args.mythos_nonconformity_override_edge_buffer,
+                nonconformity_override_confidence_buffer=args.mythos_nonconformity_override_confidence_buffer,
+                nonconformity_target_reject_rate=args.mythos_nonconformity_target_reject_rate,
+                nonconformity_reject_tolerance=args.mythos_nonconformity_reject_tolerance,
+                nonconformity_adaptive_relax=args.mythos_nonconformity_adaptive_relax,
+                nonconformity_adaptive_max_relax=args.mythos_nonconformity_adaptive_max_relax,
+                nonconformity_soft_override_margin=args.mythos_nonconformity_soft_override_margin,
+                counterfactual_target_reject_rate=args.mythos_counterfactual_target_reject_rate,
+                counterfactual_reject_tolerance=args.mythos_counterfactual_reject_tolerance,
+                counterfactual_adaptive_relax=args.mythos_counterfactual_adaptive_relax,
+                counterfactual_adaptive_min_adv_floor=args.mythos_counterfactual_adaptive_min_adv_floor,
+                short_boost_enable=args.mythos_short_boost_enable,
+                short_boost_window=args.mythos_short_boost_window,
+                short_boost_min_trades=args.mythos_short_boost_min_trades,
+                short_boost_threshold_r=args.mythos_short_boost_threshold_r,
+                short_boost_edge=args.mythos_short_boost_edge,
+                short_boost_confidence=args.mythos_short_boost_confidence,
+                drawdown_edge_start_r=args.mythos_drawdown_edge_start_r,
+                drawdown_edge_step_r=args.mythos_drawdown_edge_step_r,
+                drawdown_edge_boost=args.mythos_drawdown_edge_boost,
+                loss_streak_trigger=args.mythos_loss_streak_trigger,
+                loss_streak_cooldown_bars=args.mythos_loss_streak_cooldown_bars,
+                side_fail_window=args.mythos_side_fail_window,
+                side_fail_min_trades=args.mythos_side_fail_min_trades,
+                side_fail_expectancy_r=args.mythos_side_fail_expectancy_r,
+                side_fail_cooldown_bars=args.mythos_side_fail_cooldown_bars,
+                side_fail_hard_pause=args.mythos_side_fail_hard_pause,
+                online_allocator_lr=args.mythos_online_allocator_lr,
+                online_allocator_min_mult=args.mythos_online_allocator_min_mult,
+                online_allocator_max_mult=args.mythos_online_allocator_max_mult,
+                change_detect_z_thresh=args.mythos_change_detect_z_thresh,
+                change_detect_confirm_bars=args.mythos_change_detect_confirm_bars,
+                change_detect_cooldown_bars=args.mythos_change_detect_cooldown_bars,
+                change_edge_floor_boost=args.mythos_change_edge_floor_boost,
+                change_confidence_boost=args.mythos_change_confidence_boost,
+                change_uncertainty_mult=args.mythos_change_uncertainty_mult,
+                flip_intensity_trigger=args.mythos_regime_flip_trigger,
+                flip_harden_hold_bars=args.mythos_flip_harden_hold_bars,
+                instability_edge_mult=args.mythos_instability_edge_mult,
+                instability_confidence_drop=args.mythos_instability_confidence_drop,
+                instability_uncertainty_mult=args.mythos_instability_uncertainty_mult,
+                transition_learn_rate=args.mythos_transition_learn_rate,
+                transition_min_samples=args.mythos_transition_min_samples,
+                transition_edge_gain=args.mythos_transition_edge_gain,
+                transition_confidence_gain=args.mythos_transition_confidence_gain,
+                transition_uncertainty_gain=args.mythos_transition_uncertainty_gain,
+                counterfactual_min_advantage_r=args.mythos_counterfactual_min_advantage_r,
+                counterfactual_risk_penalty=args.mythos_counterfactual_risk_penalty,
+                counterfactual_margin=args.mythos_counterfactual_margin,
+                counterfactual_uncertainty_weight=args.mythos_counterfactual_uncertainty_weight,
+                counterfactual_min_alt_hits=args.mythos_counterfactual_min_alt_hits,
+                enable_gpu_neural_experts=args.mythos_use_neural_expert,
+                neural_expert_device=args.mythos_neural_device,
+                neural_expert_hidden=args.mythos_neural_hidden,
+                neural_expert_epochs=args.mythos_neural_epochs,
+                neural_expert_lr=args.mythos_neural_lr,
+                neural_expert_batch_size=args.mythos_neural_batch_size,
+                use_meta_learner=args.mythos_meta_learner,
+                meta_learner_device=args.mythos_meta_device,
+                meta_learner_hidden=args.mythos_meta_hidden,
+                meta_learner_epochs=args.mythos_meta_epochs,
+                meta_learner_lr=args.mythos_meta_lr,
+                meta_learner_batch_size=args.mythos_meta_batch_size,
+                meta_learner_edge_blend=args.mythos_meta_edge_gain,
+                meta_learner_conf_blend=args.mythos_meta_confidence_gain,
+                meta_learner_uncertainty_penalty=args.mythos_meta_uncertainty_gain,
+                meta_learner_fallback=args.mythos_meta_fallback,
+                meta_learner_fallback_lr=args.mythos_meta_fallback_lr,
+                meta_bootstrap_samples=args.mythos_meta_bootstrap_samples,
+                meta_bootstrap_epochs=args.mythos_meta_bootstrap_epochs,
+                meta_learner_min_train_samples=args.mythos_meta_min_train_samples,
+                meta_learner_warmup_samples=args.mythos_meta_warmup_samples,
+                meta_learner_ready_prob_floor=args.mythos_meta_ready_prob_floor,
+                meta_learner_ready_prob_ceiling=args.mythos_meta_ready_prob_ceiling,
+            )
+            mythos_report = run_mythos_walk_forward(
+                data_dir=data_dir,
+                symbols=symbols_list,
+                train_months=args.mythos_train_months,
+                test_months=args.mythos_test_months,
+                config=mythos_cfg,
+                output_path=Path(args.mythos_report_path),
+            )
+            agg = mythos_report.get("aggregate", {})
+            log.info(
+                "[MYTHOS] Complete: trades=%s totalR=%s expectancy=%s win_rate=%s pf=%s avgDD=%s robust=%s change_rate=%s cf_reject_rate=%s active_folds=%s/%s",
+                agg.get("total_trades"), agg.get("total_r"), agg.get("expectancy_r"),
+                agg.get("win_rate"), agg.get("profit_factor"),
+                agg.get("avg_max_drawdown_r"), agg.get("avg_robust_score"), agg.get("change_mode_rate"),
+                agg.get("counterfactual_reject_rate"),
+                agg.get("active_folds"), agg.get("folds"),
+            )
+            log.info(
+                "[MYTHOS] Side stats: long trades=%s win=%s totalR=%s | short trades=%s win=%s totalR=%s",
+                agg.get("long_trades"), agg.get("long_win_rate"), agg.get("long_total_r"),
+                agg.get("short_trades"), agg.get("short_win_rate"), agg.get("short_total_r"),
+            )
+            log.info(
+                "[MYTHOS] High-conviction stats: trades=%s win=%s totalR=%s",
+                agg.get("high_conviction_trades"), agg.get("high_conviction_win_rate"), agg.get("high_conviction_total_r"),
+            )
+            log.info(
+                "[MYTHOS] Intelligence certainty: sure trades=%s hits=%s win=%s totalR=%s",
+                agg.get("sure_trades"),
+                agg.get("sure_hits"),
+                agg.get("sure_win_rate"),
+                agg.get("sure_total_r"),
+            )
+            log.info(
+                "[MYTHOS] Leverage execution: leveraged trades=%s hits=%s hit_rate=%s totalR=%s | sure+leveraged=%s hits=%s hit_rate=%s totalR=%s",
+                agg.get("leveraged_trades"),
+                agg.get("leveraged_hits"),
+                agg.get("leveraged_hit_rate"),
+                agg.get("leveraged_total_r"),
+                agg.get("sure_leveraged_trades"),
+                agg.get("sure_leveraged_hits"),
+                agg.get("sure_leveraged_hit_rate"),
+                agg.get("sure_leveraged_total_r"),
+            )
+            log.info(
+                "[MYTHOS] Leverage gate: approved=%s blocked_candidates=%s",
+                agg.get("leverage_boost_approved"),
+                agg.get("leverage_blocked_candidates"),
+            )
+            log.info(
+                "[MYTHOS] Net execution: cost_totalR=%s net_totalR=%s net_expectancy=%s net_win_rate=%s net_sure_lev_hit=%s",
+                agg.get("execution_cost_total_r"),
+                agg.get("net_total_r"),
+                agg.get("net_expectancy_r"),
+                agg.get("net_win_rate"),
+                agg.get("net_sure_leveraged_hit_rate"),
+            )
+            log.info(
+                "[MYTHOS] Bayesian quality gate: rejects=%s reject_rate=%s ready_checks=%s",
+                agg.get("bayes_quality_rejects"),
+                agg.get("bayes_quality_reject_rate"),
+                agg.get("bayes_quality_ready_checks"),
+            )
+            log.info(
+                "[MYTHOS] Nonconformity gate: rejects=%s reject_rate=%s overrides=%s ready_checks=%s winners_ref=%s",
+                agg.get("nonconformity_rejects"),
+                agg.get("nonconformity_reject_rate"),
+                agg.get("nonconformity_overrides"),
+                agg.get("nonconformity_ready_checks"),
+                agg.get("nonconformity_winner_ref_count"),
+            )
+            log.info(
+                "[MYTHOS] Intelligence engine: mode_bars=%s mode_rate=%s side_switches=%s avg_score=%s",
+                agg.get("intelligence_mode_bars"),
+                agg.get("intelligence_mode_rate"),
+                agg.get("intelligence_side_switches"),
+                agg.get("intelligence_avg_score"),
+            )
+            if agg.get("best_model_path"):
+                log.info(
+                    "[MYTHOS] Best model: metric=%s value=%s path=%s",
+                    agg.get("best_model_metric"),
+                    agg.get("best_model_metric_value"),
+                    agg.get("best_model_path"),
+                )
+            return
 
         if args.train_v5:
             log.info("[MODE] v5.0 Forecaster training (continuous predictions + decision layer)")

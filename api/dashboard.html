@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mythos Multi-Session Paper Dashboard</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #121a33;
+      --panel-2: #182244;
+      --text: #dbe6ff;
+      --muted: #95a5d6;
+      --ok: #24d17e;
+      --bad: #ff5d7a;
+      --warn: #f9c74f;
+      --accent: #68a5ff;
+      --border: #25315d;
+      --chip: #1d2a57;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      color: var(--text);
+      background: radial-gradient(1200px 800px at 20% -10%, #1a2554 0%, var(--bg) 45%),
+                  radial-gradient(900px 700px at 100% 0%, #14213e 0%, var(--bg) 55%);
+      min-height: 100vh;
+    }
+    .wrap { max-width: 1400px; margin: 0 auto; padding: 20px; }
+    .topbar {
+      display: flex; gap: 12px; align-items: center; justify-content: space-between;
+      margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .title {
+      font-size: 22px; font-weight: 700; letter-spacing: 0.2px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--ok); box-shadow: 0 0 20px var(--ok);
+      animation: pulse 1.8s infinite;
+    }
+    @keyframes pulse {
+      0% { opacity: 0.35; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1.1); }
+      100% { opacity: 0.35; transform: scale(0.9); }
+    }
+    .controls {
+      display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    }
+    select, input, button {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 9px 12px;
+      font-size: 14px;
+      outline: none;
+    }
+    button {
+      background: linear-gradient(180deg, #2b3f88, #243673);
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.08); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 12px;
+    }
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.00));
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      backdrop-filter: blur(4px);
+    }
+    .summary-card { grid-column: span 3; }
+    .sessions-card { grid-column: span 12; }
+    .trades-card { grid-column: span 7; }
+    .signals-card { grid-column: span 5; }
+    .cycles-card { grid-column: span 12; }
+    @media (max-width: 1100px) {
+      .summary-card, .trades-card, .signals-card, .cycles-card, .sessions-card { grid-column: span 12; }
+    }
+    .k {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+      margin-bottom: 5px;
+    }
+    .v { font-size: 27px; font-weight: 700; }
+    .v.small { font-size: 20px; }
+    .good { color: var(--ok); }
+    .bad { color: var(--bad); }
+    .warn { color: var(--warn); }
+    .session-list {
+      display: flex; gap: 10px; overflow-x: auto; padding-bottom: 3px;
+    }
+    .session-chip {
+      min-width: 220px;
+      background: var(--chip);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      transition: transform 120ms ease, border-color 120ms ease;
+      cursor: pointer;
+    }
+    .session-chip:hover { transform: translateY(-1px); border-color: #4f69bf; }
+    .session-chip.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px rgba(104,165,255,.25); }
+    .chip-title { font-size: 13px; font-weight: 700; margin-bottom: 5px; }
+    .chip-meta { font-size: 12px; color: var(--muted); }
+    .table-wrap { overflow: auto; max-height: 360px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td {
+      border-bottom: 1px solid #202b56;
+      padding: 8px 7px;
+      text-align: left;
+      white-space: nowrap;
+    }
+    th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel-2); z-index: 1; }
+    .badge {
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      border: 1px solid transparent;
+    }
+    .b-long { background: rgba(36,209,126,.12); color: var(--ok); border-color: rgba(36,209,126,.30); }
+    .b-short { background: rgba(255,93,122,.12); color: var(--bad); border-color: rgba(255,93,122,.30); }
+    .b-open { background: rgba(104,165,255,.12); color: var(--accent); border-color: rgba(104,165,255,.30); }
+    .b-closed { background: rgba(249,199,79,.12); color: var(--warn); border-color: rgba(249,199,79,.30); }
+    .footer-note {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="title"><span class="dot"></span> Mythos Multi-Session Paper Dashboard</div>
+      <div class="controls">
+        <label for="sessionSelect">Session</label>
+        <select id="sessionSelect"></select>
+        <label for="refreshMs">Refresh</label>
+        <input id="refreshMs" type="number" min="500" max="15000" step="100" value="2000" />
+        <button id="applyRefresh">Apply</button>
+        <button id="reloadBtn">Reload</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card summary-card">
+        <div class="k">Open Positions</div>
+        <div id="openPositions" class="v">0</div>
+      </div>
+      <div class="card summary-card">
+        <div class="k">Closed Trades</div>
+        <div id="closedTrades" class="v">0</div>
+      </div>
+      <div class="card summary-card">
+        <div class="k">Win Rate</div>
+        <div id="winRate" class="v small">0.00%</div>
+      </div>
+      <div class="card summary-card">
+        <div class="k">Total Net R</div>
+        <div id="netR" class="v">0.0000</div>
+      </div>
+
+      <div class="card sessions-card">
+        <div class="k">Active Sessions (one per terminal/process)</div>
+        <div id="sessionList" class="session-list"></div>
+      </div>
+
+      <div class="card trades-card">
+        <div class="k">Trades</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Symbol</th>
+                <th>Side</th>
+                <th>Status</th>
+                <th>Entry</th>
+                <th>SL</th>
+                <th>TP</th>
+                <th>Net R</th>
+                <th>Lane</th>
+              </tr>
+            </thead>
+            <tbody id="tradesBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card signals-card">
+        <div class="k">Latest Signals</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Symbol</th>
+                <th>Action</th>
+                <th>Conf</th>
+                <th>Edge</th>
+                <th>Model</th>
+              </tr>
+            </thead>
+            <tbody id="signalsBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card cycles-card">
+        <div class="k">Cycle Logs</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Symbol</th>
+                <th>Decision</th>
+                <th>Dir</th>
+                <th>P Enter</th>
+                <th>Score</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody id="cyclesBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="footer-note">
+      Tip: run each asset in a separate terminal with a unique <code>--paper-session-id</code>
+      (e.g. <code>SOL-paper</code>, <code>ETH-paper</code>) to isolate streams.
+    </div>
+  </div>
+
+  <script>
+    const api = {
+      sessions: () => fetch("/api/dashboard/sessions").then(r => r.json()),
+      state: (sid) => fetch(`/api/dashboard/state?session_id=${encodeURIComponent(sid)}&predictions_limit=80&cycles_limit=160&trades_limit=300`).then(r => r.json()),
+    };
+
+    const els = {
+      sessionSelect: document.getElementById("sessionSelect"),
+      sessionList: document.getElementById("sessionList"),
+      openPositions: document.getElementById("openPositions"),
+      closedTrades: document.getElementById("closedTrades"),
+      winRate: document.getElementById("winRate"),
+      netR: document.getElementById("netR"),
+      tradesBody: document.getElementById("tradesBody"),
+      signalsBody: document.getElementById("signalsBody"),
+      cyclesBody: document.getElementById("cyclesBody"),
+      refreshMs: document.getElementById("refreshMs"),
+      applyRefresh: document.getElementById("applyRefresh"),
+      reloadBtn: document.getElementById("reloadBtn"),
+    };
+
+    let activeSession = "default";
+    let timer = null;
+    let intervalMs = 2000;
+
+    function fmtNum(v, n=4) {
+      const num = Number(v ?? 0);
+      return Number.isFinite(num) ? num.toFixed(n) : "0.0000";
+    }
+    function pct(v) {
+      return `${(Number(v || 0) * 100).toFixed(2)}%`;
+    }
+    function badge(side) {
+      const s = String(side || "").toUpperCase();
+      if (s === "LONG") return `<span class="badge b-long">LONG</span>`;
+      if (s === "SHORT") return `<span class="badge b-short">SHORT</span>`;
+      if (s === "OPEN") return `<span class="badge b-open">OPEN</span>`;
+      if (s === "CLOSED") return `<span class="badge b-closed">CLOSED</span>`;
+      return `<span class="badge">${s || "-"}</span>`;
+    }
+
+    async function refreshSessions() {
+      const data = await api.sessions();
+      const sessions = data.sessions || [];
+      const ids = sessions.map(s => s.session_id);
+      if (!ids.includes(activeSession)) activeSession = ids[0] || "default";
+
+      els.sessionSelect.innerHTML = "";
+      ids.forEach(id => {
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = id;
+        if (id === activeSession) opt.selected = true;
+        els.sessionSelect.appendChild(opt);
+      });
+      if (!ids.length) {
+        const opt = document.createElement("option");
+        opt.value = "default";
+        opt.textContent = "default";
+        opt.selected = true;
+        els.sessionSelect.appendChild(opt);
+      }
+
+      els.sessionList.innerHTML = sessions.map(s => {
+        const cls = s.session_id === activeSession ? "session-chip active" : "session-chip";
+        return `
+          <div class="${cls}" data-session="${s.session_id}">
+            <div class="chip-title">${s.session_id}</div>
+            <div class="chip-meta">Open ${s.open_positions} | Closed ${s.closed_trades}</div>
+            <div class="chip-meta">WR ${pct(s.win_rate)} | NetR ${fmtNum(s.total_net_r, 3)}</div>
+          </div>
+        `;
+      }).join("");
+
+      [...els.sessionList.querySelectorAll(".session-chip")].forEach(node => {
+        node.addEventListener("click", () => {
+          activeSession = node.dataset.session || "default";
+          els.sessionSelect.value = activeSession;
+          void render();
+        });
+      });
+    }
+
+    async function render() {
+      await refreshSessions();
+      const data = await api.state(activeSession);
+      const summary = data.summary || {};
+      const trades = data.trades || [];
+      const preds = data.predictions || [];
+      const cycles = data.cycle_logs || [];
+
+      els.openPositions.textContent = summary.open_positions ?? 0;
+      els.closedTrades.textContent = summary.closed_trades ?? 0;
+      els.winRate.textContent = pct(summary.win_rate);
+      const net = Number(summary.total_net_r || 0);
+      els.netR.textContent = fmtNum(net, 4);
+      els.netR.classList.toggle("good", net > 0);
+      els.netR.classList.toggle("bad", net < 0);
+
+      const tradeRows = [...trades].reverse().map(t => `
+        <tr>
+          <td>${t.id ?? ""}</td>
+          <td>${t.symbol ?? ""}</td>
+          <td>${badge(t.side)}</td>
+          <td>${badge((t.status || "").toUpperCase())}</td>
+          <td>${fmtNum(t.entry_price ?? t.entryPrice, 2)}</td>
+          <td>${fmtNum(t.stop_loss ?? t.stopLoss, 2)}</td>
+          <td>${fmtNum(t.take_profit ?? t.tp2 ?? t.take_profit_price, 2)}</td>
+          <td class="${Number(t.net_r || 0) >= 0 ? "good" : "bad"}">${fmtNum(t.net_r || 0, 4)}</td>
+          <td>${t.lane ?? "V5"}</td>
+        </tr>
+      `).join("");
+      els.tradesBody.innerHTML = tradeRows || `<tr><td colspan="9">No trades yet</td></tr>`;
+
+      const predRows = [...preds].reverse().slice(0, 80).map(p => `
+        <tr>
+          <td>${p.id ?? ""}</td>
+          <td>${p.symbol ?? ""}</td>
+          <td>${badge(p.action || p.direction || "-")}</td>
+          <td>${pct(p.confidence || 0)}</td>
+          <td>${fmtNum(p.edge || 0, 4)}</td>
+          <td>${p.model_name || "-"}</td>
+        </tr>
+      `).join("");
+      els.signalsBody.innerHTML = predRows || `<tr><td colspan="6">No signals yet</td></tr>`;
+
+      const cycleRows = [...cycles].reverse().slice(0, 160).map(c => {
+        const rs = Array.isArray(c.reasons) && c.reasons.length ? c.reasons[0] : (c.hold_reason || "-");
+        return `
+          <tr>
+            <td>${c.id ?? ""}</td>
+            <td>${c.symbol ?? ""}</td>
+            <td>${c.decision ?? ""}</td>
+            <td>${c.direction ?? ""}</td>
+            <td>${pct(c.p_enter || 0)}</td>
+            <td>${fmtNum(c.v5_score || 0, 4)}</td>
+            <td title="${String(rs).replace(/"/g, "&quot;")}">${String(rs).slice(0, 80)}</td>
+          </tr>
+        `;
+      }).join("");
+      els.cyclesBody.innerHTML = cycleRows || `<tr><td colspan="7">No cycle logs yet</td></tr>`;
+    }
+
+    function restartTimer() {
+      if (timer) clearInterval(timer);
+      timer = setInterval(() => { void render(); }, intervalMs);
+    }
+
+    els.sessionSelect.addEventListener("change", () => {
+      activeSession = els.sessionSelect.value || "default";
+      void render();
+    });
+    els.applyRefresh.addEventListener("click", () => {
+      const val = Number(els.refreshMs.value);
+      if (Number.isFinite(val) && val >= 500 && val <= 15000) {
+        intervalMs = val;
+        restartTimer();
+      }
+    });
+    els.reloadBtn.addEventListener("click", () => void render());
+
+    void render();
+    restartTimer();
+  </script>
+</body>
+</html>

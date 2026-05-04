@@ -5852,7 +5852,8 @@ def run_v5_walk_forward(
                 min_trades=min_trades,
                 mu_debias=mu_debias,
                 mu_debias_alpha=mu_debias_alpha,
-                wf_threshold_override=blended_threshold if threshold_ema is not None and wf_threshold_ema else None,
+                # Always pass the latest EMA state, including dead/low-conf updates.
+                wf_threshold_override=threshold_ema if threshold_ema is not None and wf_threshold_ema else None,
                 fold_id=fold['fold'],
                 per_symbol_r_kill=per_symbol_r_kill,
                 kill_recovery_bars=kill_recovery_bars,
@@ -6052,7 +6053,8 @@ def run_v5_walk_forward(
                     min_trades=min_trades,
                     mu_debias=mu_debias,
                     mu_debias_alpha=mu_debias_alpha,
-                    wf_threshold_override=blended_threshold if threshold_ema is not None and wf_threshold_ema else None,
+                    # Keep dual-specialist path in sync with the main fold override logic.
+                    wf_threshold_override=threshold_ema if threshold_ema is not None and wf_threshold_ema else None,
                     fold_id=fold['fold'],
                     per_symbol_r_kill=per_symbol_r_kill,
                     kill_recovery_bars=kill_recovery_bars,

@@ -1,8 +1,9 @@
 import torch
 import numpy as np
 import time
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any, Callable
 import asyncio
@@ -10,11 +11,35 @@ from datetime import datetime
 import logging
 import json
 from pathlib import Path
+import sys
+import importlib.util
 import joblib
 import glob as glob_module
+from dataclasses import dataclass, field
+from collections import defaultdict
+
+# Allow `python api/server.py` execution from repo root (Windows/Linux)
+# by ensuring top-level package imports (e.g. `training.*`) resolve.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 # Walk-forward evaluation for ensemble weights
-from training.walk_forward import save_walk_forward_weights, save_labeling_metadata
+try:
+    from training.walk_forward import save_walk_forward_weights, save_labeling_metadata
+except Exception:
+    # Fallback for environments where package-style imports break (common on
+    # some Windows setups when running `python api/server.py` directly).
+    wf_path = REPO_ROOT / "training" / "walk_forward.py"
+    if not wf_path.exists():
+        raise
+    spec = importlib.util.spec_from_file_location("training_walk_forward_fallback", str(wf_path))
+    if spec is None or spec.loader is None:
+        raise
+    _wf_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(_wf_mod)
+    save_walk_forward_weights = _wf_mod.save_walk_forward_weights
+    save_labeling_metadata = _wf_mod.save_labeling_metadata
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -5022,6 +5047,222 @@ async def bybit_proxy(request: Dict[str, Any]):
     except Exception as e:
         logger.error(f"[BYBIT PROXY] Error forwarding to {url}: {e}")
         return {"error": str(e)}
+
+
+@dataclass
+class _DashboardSessionState:
+    session_id: str
+    next_prediction_id: int = 1
+    next_cycle_id: int = 1
+    next_trade_id: int = 1
+    predictions: List[Dict[str, Any]] = field(default_factory=list)
+    cycle_logs: List[Dict[str, Any]] = field(default_factory=list)
+    trades: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    trade_order: List[int] = field(default_factory=list)
+    updated_at_ms: int = 0
+
+
+_dashboard_sessions: Dict[str, _DashboardSessionState] = {}
+_dashboard_trade_index: Dict[int, str] = {}
+_dashboard_max_items = 5000
+
+
+def _resolve_session_id(payload: Dict[str, Any], session_id: Optional[str] = None) -> str:
+    if session_id:
+        sid = str(session_id).strip()
+        if sid:
+            return sid
+    for key in ("session_id", "paper_session_id", "runner_session_id"):
+        val = payload.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return "default"
+
+
+def _get_dashboard_session(session_id: str) -> _DashboardSessionState:
+    sid = str(session_id or "default").strip() or "default"
+    state = _dashboard_sessions.get(sid)
+    if state is None:
+        state = _DashboardSessionState(session_id=sid)
+        _dashboard_sessions[sid] = state
+    return state
+
+
+def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
+    open_trades = [state.trades[tid] for tid in state.trade_order if state.trades.get(tid, {}).get("status") == "open"]
+    closed_trades = [state.trades[tid] for tid in state.trade_order if state.trades.get(tid, {}).get("status") == "closed"]
+    wins = 0
+    losses = 0
+    total_net_r = 0.0
+    for tr in closed_trades:
+        net_r = float(tr.get("net_r", tr.get("gross_r", 0.0)) or 0.0)
+        total_net_r += net_r
+        if net_r > 0:
+            wins += 1
+        elif net_r < 0:
+            losses += 1
+    closed_n = len(closed_trades)
+    win_rate = float(wins / closed_n) if closed_n > 0 else 0.0
+    return {
+        "session_id": state.session_id,
+        "open_positions": len(open_trades),
+        "closed_trades": closed_n,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round(win_rate, 4),
+        "total_net_r": round(total_net_r, 6),
+        "predictions": len(state.predictions),
+        "cycle_logs": len(state.cycle_logs),
+        "updated_at_ms": state.updated_at_ms,
+    }
+
+
+def _trim_dashboard_state(state: _DashboardSessionState) -> None:
+    if len(state.predictions) > _dashboard_max_items:
+        state.predictions = state.predictions[-_dashboard_max_items:]
+    if len(state.cycle_logs) > _dashboard_max_items:
+        state.cycle_logs = state.cycle_logs[-_dashboard_max_items:]
+    if len(state.trade_order) > _dashboard_max_items:
+        drop = state.trade_order[:-_dashboard_max_items]
+        for tid in drop:
+            if tid in state.trades:
+                del state.trades[tid]
+            _dashboard_trade_index.pop(tid, None)
+        state.trade_order = state.trade_order[-_dashboard_max_items:]
+
+
+@app.post("/api/gpu/push-prediction")
+async def push_prediction_local(payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
+    sid = _resolve_session_id(payload, session_id=session_id)
+    state = _get_dashboard_session(sid)
+    pred = dict(payload)
+    pred_id = state.next_prediction_id
+    state.next_prediction_id += 1
+    pred["id"] = pred_id
+    pred["session_id"] = sid
+    pred["ts"] = int(time.time() * 1000)
+    state.predictions.append(pred)
+    state.updated_at_ms = pred["ts"]
+    _trim_dashboard_state(state)
+    return {"ok": True, "id": pred_id, "session_id": sid}
+
+
+@app.post("/api/live/cycle-log")
+async def push_cycle_log_local(payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
+    sid = _resolve_session_id(payload, session_id=session_id)
+    state = _get_dashboard_session(sid)
+    row = dict(payload)
+    row_id = state.next_cycle_id
+    state.next_cycle_id += 1
+    row["id"] = row_id
+    row["session_id"] = sid
+    row["server_ts"] = int(time.time() * 1000)
+    state.cycle_logs.append(row)
+    state.updated_at_ms = row["server_ts"]
+    _trim_dashboard_state(state)
+    return {"ok": True, "id": row_id, "session_id": sid}
+
+
+@app.post("/api/live/trade")
+async def create_live_trade(payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
+    sid = _resolve_session_id(payload, session_id=session_id)
+    state = _get_dashboard_session(sid)
+    trade = dict(payload)
+    trade_id = state.next_trade_id
+    state.next_trade_id += 1
+    trade["id"] = trade_id
+    trade["session_id"] = sid
+    trade.setdefault("status", "open")
+    trade.setdefault("entry_time", int(time.time() * 1000))
+    trade.setdefault("entry_price", trade.get("current_price"))
+    state.trades[trade_id] = trade
+    state.trade_order.append(trade_id)
+    state.updated_at_ms = int(time.time() * 1000)
+    _dashboard_trade_index[trade_id] = sid
+    _trim_dashboard_state(state)
+    return {"id": trade_id, "session_id": sid}
+
+
+@app.patch("/api/live/trade/{trade_id}")
+async def update_live_trade(trade_id: int, payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
+    sid = _resolve_session_id(payload, session_id=session_id) if session_id or payload.get("session_id") else _dashboard_trade_index.get(int(trade_id))
+    if not sid:
+        sid = "default"
+    state = _get_dashboard_session(sid)
+    trade = state.trades.get(int(trade_id))
+    if trade is None and sid != "default":
+        # fallback for backward compatibility if client omitted session_id
+        fallback_state = _get_dashboard_session("default")
+        trade = fallback_state.trades.get(int(trade_id))
+        if trade is not None:
+            state = fallback_state
+    if trade is None:
+        raise HTTPException(status_code=404, detail=f"Trade {trade_id} not found")
+    trade.update(payload or {})
+    trade["id"] = int(trade_id)
+    trade["session_id"] = state.session_id
+    state.updated_at_ms = int(time.time() * 1000)
+    return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade}
+
+
+@app.get("/api/paper/open-positions-summary")
+async def open_positions_summary(session_id: str = Query(default="default")):
+    state = _get_dashboard_session(session_id)
+    positions: List[Dict[str, Any]] = []
+    for tid in state.trade_order:
+        tr = state.trades.get(tid)
+        if not tr or tr.get("status") != "open":
+            continue
+        positions.append(
+            {
+                "id": int(tid),
+                "symbol": tr.get("symbol"),
+                "side": tr.get("side", "LONG"),
+                "entryPrice": float(tr.get("entry_price") or tr.get("entryPrice") or 0.0),
+                "stopLoss": float(tr.get("stop_loss") or tr.get("stopLoss") or 0.0),
+                "tp2": float(tr.get("take_profit") or tr.get("tp2") or tr.get("take_profit_price") or 0.0),
+                "entryTs": int(tr.get("entry_time") or tr.get("entryTs") or 0),
+                "signalConfidence": float(tr.get("p_enter") or tr.get("signalConfidence") or 0.0),
+                "lane": tr.get("lane", "V5"),
+            }
+        )
+    return {"session_id": session_id, "count": len(positions), "positions": positions}
+
+
+@app.get("/api/dashboard/sessions")
+async def dashboard_sessions():
+    sessions = []
+    for sid in sorted(_dashboard_sessions.keys()):
+        sessions.append(_session_summary(_dashboard_sessions[sid]))
+    return {"sessions": sessions, "count": len(sessions)}
+
+
+@app.get("/api/dashboard/state")
+async def dashboard_state(
+    session_id: str = Query(default="default"),
+    predictions_limit: int = Query(default=100, ge=1, le=2000),
+    cycles_limit: int = Query(default=200, ge=1, le=3000),
+    trades_limit: int = Query(default=200, ge=1, le=3000),
+):
+    state = _get_dashboard_session(session_id)
+    trades = [state.trades[tid] for tid in state.trade_order if tid in state.trades]
+    return {
+        "summary": _session_summary(state),
+        "predictions": state.predictions[-predictions_limit:],
+        "cycle_logs": state.cycle_logs[-cycles_limit:],
+        "trades": trades[-trades_limit:],
+    }
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_html():
+    html_path = Path(__file__).parent / "dashboard.html"
+    if not html_path.exists():
+        return HTMLResponse(
+            content="<html><body><h1>Dashboard not found</h1><p>Create api/dashboard.html</p></body></html>",
+            status_code=404,
+        )
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
 
 
 def start_server(host: str = "0.0.0.0", port: int = 8000):
