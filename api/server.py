@@ -11,13 +11,35 @@ from datetime import datetime
 import logging
 import json
 from pathlib import Path
+import sys
+import importlib.util
 import joblib
 import glob as glob_module
 from dataclasses import dataclass, field
 from collections import defaultdict
 
+# Allow `python api/server.py` execution from repo root (Windows/Linux)
+# by ensuring top-level package imports (e.g. `training.*`) resolve.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 # Walk-forward evaluation for ensemble weights
-from training.walk_forward import save_walk_forward_weights, save_labeling_metadata
+try:
+    from training.walk_forward import save_walk_forward_weights, save_labeling_metadata
+except Exception:
+    # Fallback for environments where package-style imports break (common on
+    # some Windows setups when running `python api/server.py` directly).
+    wf_path = REPO_ROOT / "training" / "walk_forward.py"
+    if not wf_path.exists():
+        raise
+    spec = importlib.util.spec_from_file_location("training_walk_forward_fallback", str(wf_path))
+    if spec is None or spec.loader is None:
+        raise
+    _wf_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(_wf_mod)
+    save_walk_forward_weights = _wf_mod.save_walk_forward_weights
+    save_labeling_metadata = _wf_mod.save_labeling_metadata
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
