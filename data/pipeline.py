@@ -39,8 +39,66 @@ class BinanceDataFetcher:
         self.timeframes = timeframes
         self.session = None
         self.working_source = None
-        self.replit_proxy_url = replit_proxy_url
+        self.replit_proxy_url = replit_proxy_url.rstrip("/") if replit_proxy_url else None
         self.use_sync = use_sync
+        self._proxy_endpoint_hint: Optional[str] = None
+        self._proxy_disabled_reason: Optional[str] = None
+    
+    def _proxy_endpoints(self) -> List[str]:
+        endpoints = ["/api/data/klines", "/api/data/candles-history", "/api/klines"]
+        if self._proxy_endpoint_hint and self._proxy_endpoint_hint in endpoints:
+            endpoints = [self._proxy_endpoint_hint] + [e for e in endpoints if e != self._proxy_endpoint_hint]
+        return endpoints
+    
+    def _disable_proxy(self, reason: str) -> None:
+        if self.replit_proxy_url:
+            print(f"[Replit Proxy] DISABLED: {reason}")
+        self._proxy_disabled_reason = reason
+        self.replit_proxy_url = None
+    
+    def _parse_proxy_candle_dict(self, c: Dict[str, Any], symbol: str, timeframe: str) -> Dict[str, Any]:
+        ts = c.get("timestamp", c.get("openTime", c.get("time", 0)))
+        close_time = c.get("closeTime", c.get("close_time", c.get("closeTimeMs", 0)))
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "timestamp": int(ts),
+            "open": float(c.get("open", 0.0)),
+            "high": float(c.get("high", 0.0)),
+            "low": float(c.get("low", 0.0)),
+            "close": float(c.get("close", 0.0)),
+            "volume": float(c.get("volume", 0.0)),
+            "close_time": int(close_time),
+            "quote_volume": float(c.get("quoteVolume", c.get("quote_volume", 0.0))),
+            "trades": int(c.get("trades", 0)),
+            "taker_buy_base": float(c.get("takerBuyBase", c.get("taker_buy_base", 0.0))),
+            "taker_buy_quote": float(c.get("takerBuyQuote", c.get("taker_buy_quote", 0.0))),
+        }
+    
+    def _parse_proxy_payload(self, data: Any, symbol: str, timeframe: str) -> List[Dict[str, Any]]:
+        # Common dashboard shape: {"candles": [...]}
+        if isinstance(data, dict) and isinstance(data.get("candles"), list):
+            rows = data.get("candles") or []
+            if rows and isinstance(rows[0], dict):
+                return [self._parse_proxy_candle_dict(c, symbol, timeframe) for c in rows]
+            if rows and isinstance(rows[0], (list, tuple)):
+                return [self._parse_kline(k, symbol, timeframe) for k in rows]
+            return []
+        # Alternative shape: {"data": [...]} used by some APIs
+        if isinstance(data, dict) and isinstance(data.get("data"), list):
+            rows = data.get("data") or []
+            if rows and isinstance(rows[0], dict):
+                return [self._parse_proxy_candle_dict(c, symbol, timeframe) for c in rows]
+            if rows and isinstance(rows[0], (list, tuple)):
+                return [self._parse_kline(k, symbol, timeframe) for k in rows]
+            return []
+        # Raw kline arrays
+        if isinstance(data, list) and data and isinstance(data[0], (list, tuple)):
+            return [self._parse_kline(k, symbol, timeframe) for k in data]
+        # Raw candle dicts
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return [self._parse_proxy_candle_dict(c, symbol, timeframe) for c in data]
+        return []
     
     def _fetch_replit_proxy_sync(self, symbol: str, timeframe: str, limit: int,
                                   end_time: Optional[int] = None) -> List[Dict]:
@@ -58,91 +116,76 @@ class BinanceDataFetcher:
         if end_time:
             params["endTime"] = end_time
         
-        url = f"{self.replit_proxy_url}/api/data/klines"
         max_retries = 3
-        
-        for attempt in range(1, max_retries + 1):
-            try:
-                print(f"[Replit Proxy] Fetching {symbol} {timeframe} (limit={params['limit']}, attempt {attempt}/{max_retries})...")
-                
-                response = requests.get(url, params=params, timeout=45)
-                
-                if response.status_code != 200:
-                    print(f"[Replit Proxy] HTTP {response.status_code} (len={len(response.text)}): {response.text[:200]}")
-                    if attempt < max_retries:
-                        _time.sleep(3)
-                    continue
-                
-                body = response.text
-                if not body or len(body) < 5:
-                    print(f"[Replit Proxy] Empty response body (len={len(body) if body else 0}), retrying...")
-                    if attempt < max_retries:
-                        _time.sleep(3)
-                    continue
-                
-                content_type = response.headers.get('content-type', '')
-                if 'json' not in content_type and body.strip().startswith('<'):
-                    print(f"[Replit Proxy] Got HTML instead of JSON (content-type={content_type}, len={len(body)})")
-                    print(f"[Replit Proxy] Body preview: {body[:200]}")
-                    if attempt < max_retries:
-                        _time.sleep(5)
-                    continue
-                
-                import json
+        all_404 = True
+        for endpoint in self._proxy_endpoints():
+            url = f"{self.replit_proxy_url}{endpoint}"
+            for attempt in range(1, max_retries + 1):
                 try:
-                    data = json.loads(body)
-                except json.JSONDecodeError as je:
-                    print(f"[Replit Proxy] JSON parse failed: {je}")
-                    print(f"[Replit Proxy] Body preview ({len(body)} bytes): {body[:300]}")
+                    print(f"[Replit Proxy] Fetching {symbol} {timeframe} from {endpoint} (limit={params['limit']}, attempt {attempt}/{max_retries})...")
+                    response = requests.get(url, params=params, timeout=45)
+                    body = response.text or ""
+                    if response.status_code == 404:
+                        print(f"[Replit Proxy] HTTP 404 ({endpoint}) (len={len(body)}): {body[:200]}")
+                        # Common Replit app HTML page means this URL is not the API app.
+                        if "Run this app to see the results here" in body:
+                            self._disable_proxy("Proxy URL points to web app shell (HTML 404), not API endpoints")
+                            return []
+                        if attempt < max_retries:
+                            _time.sleep(2)
+                        continue
+                    all_404 = False
+                    if response.status_code != 200:
+                        print(f"[Replit Proxy] HTTP {response.status_code} ({endpoint}) (len={len(body)}): {body[:200]}")
+                        if attempt < max_retries:
+                            _time.sleep(3)
+                        continue
+                    if not body or len(body) < 5:
+                        print(f"[Replit Proxy] Empty response body ({endpoint}), retrying...")
+                        if attempt < max_retries:
+                            _time.sleep(2)
+                        continue
+                    content_type = response.headers.get('content-type', '')
+                    if 'json' not in content_type and body.strip().startswith('<'):
+                        print(f"[Replit Proxy] Got HTML instead of JSON ({endpoint}) content-type={content_type}")
+                        print(f"[Replit Proxy] Body preview: {body[:200]}")
+                        if "Run this app to see the results here" in body:
+                            self._disable_proxy("Proxy returned HTML shell instead of JSON API")
+                            return []
+                        if attempt < max_retries:
+                            _time.sleep(3)
+                        continue
+                    try:
+                        data = response.json()
+                    except Exception as je:
+                        print(f"[Replit Proxy] JSON parse failed ({endpoint}): {je}")
+                        print(f"[Replit Proxy] Body preview ({len(body)} bytes): {body[:300]}")
+                        if attempt < max_retries:
+                            _time.sleep(2)
+                        continue
+                    candles = self._parse_proxy_payload(data, symbol, timeframe)
+                    if candles:
+                        self._proxy_endpoint_hint = endpoint
+                        print(f"[Replit Proxy] OK: {len(candles)} candles for {symbol} {timeframe} via {endpoint}")
+                        return candles
+                    print(f"[Replit Proxy] Empty/unsupported payload from {endpoint}")
                     if attempt < max_retries:
-                        _time.sleep(3)
-                    continue
-                if "candles" not in data or not isinstance(data["candles"], list):
-                    print(f"[Replit Proxy] No 'candles' key in response, got keys: {list(data.keys())}")
+                        _time.sleep(2)
+                except requests.exceptions.Timeout:
+                    print(f"[Replit Proxy] Timeout after 45s ({endpoint}, attempt {attempt}/{max_retries})")
                     if attempt < max_retries:
-                        _time.sleep(3)
-                    continue
-                
-                candles = []
-                for c in data["candles"]:
-                    candles.append({
-                        "symbol": symbol,
-                        "timeframe": timeframe,
-                        "timestamp": c["timestamp"],
-                        "open": float(c["open"]),
-                        "high": float(c["high"]),
-                        "low": float(c["low"]),
-                        "close": float(c["close"]),
-                        "volume": float(c["volume"]),
-                        "close_time": c["closeTime"],
-                        "quote_volume": float(c["quoteVolume"]),
-                        "trades": c["trades"],
-                        "taker_buy_base": float(c["takerBuyBase"]),
-                        "taker_buy_quote": float(c["takerBuyQuote"])
-                    })
-                if candles:
-                    print(f"[Replit Proxy] OK: {len(candles)} candles for {symbol} {timeframe}")
-                    return candles
-                else:
-                    print(f"[Replit Proxy] Response had empty candles array")
+                        _time.sleep(4)
+                except requests.exceptions.ConnectionError as e:
+                    print(f"[Replit Proxy] Connection error ({endpoint}): {e} (attempt {attempt}/{max_retries})")
                     if attempt < max_retries:
-                        _time.sleep(3)
-                    continue
-                    
-            except requests.exceptions.Timeout:
-                print(f"[Replit Proxy] Timeout after 45s (attempt {attempt}/{max_retries})")
-                if attempt < max_retries:
-                    _time.sleep(5)
-            except requests.exceptions.ConnectionError as e:
-                print(f"[Replit Proxy] Connection error: {e} (attempt {attempt}/{max_retries})")
-                if attempt < max_retries:
-                    _time.sleep(5)
-            except Exception as e:
-                print(f"[Replit Proxy] Error: {type(e).__name__}: {e} (attempt {attempt}/{max_retries})")
-                if attempt < max_retries:
-                    _time.sleep(3)
-        
-        print(f"[Replit Proxy] FAILED: Could not fetch {symbol} {timeframe} after {max_retries} attempts")
+                        _time.sleep(4)
+                except Exception as e:
+                    print(f"[Replit Proxy] Error ({endpoint}): {type(e).__name__}: {e} (attempt {attempt}/{max_retries})")
+                    if attempt < max_retries:
+                        _time.sleep(2)
+        if all_404:
+            self._disable_proxy("All proxy endpoints returned 404")
+        print(f"[Replit Proxy] FAILED: Could not fetch {symbol} {timeframe} from any proxy endpoint")
         return []
     
     def _fetch_binance_direct_sync(self, symbol: str, timeframe: str, limit: int,
@@ -520,45 +563,26 @@ class BinanceDataFetcher:
         if end_time:
             params["endTime"] = end_time
         
-        url = f"{self.replit_proxy_url}/api/data/klines"
-        data = await self._try_fetch(url, params, "Replit Proxy")
-        
-        if data and "candles" in data:
-            candles = []
-            for c in data["candles"]:
-                candles.append({
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "timestamp": c["timestamp"],
-                    "open": float(c["open"]),
-                    "high": float(c["high"]),
-                    "low": float(c["low"]),
-                    "close": float(c["close"]),
-                    "volume": float(c["volume"]),
-                    "close_time": c["closeTime"],
-                    "quote_volume": float(c["quoteVolume"]),
-                    "trades": c["trades"],
-                    "taker_buy_base": float(c["takerBuyBase"]),
-                    "taker_buy_quote": float(c["takerBuyQuote"])
-                })
+        for endpoint in self._proxy_endpoints():
+            url = f"{self.replit_proxy_url}{endpoint}"
+            data = await self._try_fetch(url, params, f"Replit Proxy {endpoint}")
+            candles = self._parse_proxy_payload(data, symbol, timeframe) if data is not None else []
             if candles:
-                print(f"[Replit Proxy] Successfully fetched {len(candles)} candles")
-            return candles
+                self._proxy_endpoint_hint = endpoint
+                print(f"[Replit Proxy] Successfully fetched {len(candles)} candles via {endpoint}")
+                return candles
         return []
     
     async def fetch_klines(self, symbol: str, timeframe: str, limit: int = 1000, 
                           start_time: Optional[int] = None, 
                           end_time: Optional[int] = None) -> List[Dict]:
-        # If Replit Proxy is configured, use ONLY that source
-        # This avoids DNS/connection errors from trying blocked Binance APIs
+        # If Replit proxy is configured, try it first.
         if self.replit_proxy_url:
             proxy_data = await self._fetch_replit_proxy(symbol, timeframe, limit, end_time)
             if proxy_data:
                 self.working_source = "Replit Proxy"
                 return proxy_data
-            # If proxy fails, don't fall back to Binance (it's likely blocked)
-            print(f"[Replit Proxy] Failed to fetch {symbol} {timeframe} - no fallback when proxy is configured")
-            return []
+            print(f"[Replit Proxy] Failed to fetch {symbol} {timeframe} - falling back to direct sources")
         
         # No proxy configured - try direct Binance access (for non-geoblocked regions)
         if self.working_source == "CryptoCompare":

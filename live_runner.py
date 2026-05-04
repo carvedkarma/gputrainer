@@ -1785,8 +1785,11 @@ class LiveRunner:
                 if 'timestamp' in df.columns:
                     try:
                         last_ts = float(df.iloc[-1]['timestamp'])
-                        self._last_candle_time = (last_ts / 1000.0
-                                                   if last_ts > 1e10 else last_ts)
+                        # Track close-time (not open-time) to avoid false stale-data
+                        # halts on 15m bars where candle open can be ~15m old by design.
+                        interval_s = float(self._interval_seconds())
+                        open_ts = (last_ts / 1000.0 if last_ts > 1e10 else last_ts)
+                        self._last_candle_time = float(open_ts + interval_s)
                     except Exception:
                         self._last_candle_time = time.time()
                 else:
