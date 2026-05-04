@@ -6305,6 +6305,8 @@ Examples:
                         help="Paper mode — simulate positions + record trades (default: off)")
     parser.add_argument("--record-trades", action="store_true", default=False,
                         help="Enable trade recording (POST to /api/live/trade). Default: off unless --paper or --live")
+    parser.add_argument("--paper-session-id", type=str, default=None,
+                        help="Optional paper trading session id for multi-terminal isolation (e.g. SOL-paper-1)")
     parser.add_argument("--execution-mode", type=str, default=None,
                         choices=["signal_only", "paper", "live"],
                         help="Explicit execution mode override (default: derived from --paper/--live flags)")
@@ -6514,6 +6516,7 @@ Examples:
             v5_mae_floor=getattr(args, 'v5_live_mae_floor', None),
             predictive_sltp=getattr(args, 'v5_predictive_sltp', False),
             live_model=args.live_model,
+            paper_session_id=args.paper_session_id,
         )
         runner.learning_manager = learning_mgr
 

@@ -1041,6 +1041,7 @@ class LiveRunner:
         v5_mae_floor: float = None,
         predictive_sltp: bool = False,
         live_model: str = "v5",
+        paper_session_id: Optional[str] = None,
     ):
         self.replit_url = replit_url
         self.symbols = symbols
@@ -1095,6 +1096,7 @@ class LiveRunner:
         )
         self.predictive_sltp = predictive_sltp
         self.live_model = str(live_model or "v5").strip().lower()
+        self.paper_session_id = str(paper_session_id or "default").strip() or "default"
         if self.live_model not in ("v5", "mythos"):
             log.warning("Unsupported live_model=%s, falling back to v5", self.live_model)
             self.live_model = "v5"
@@ -1106,7 +1108,7 @@ class LiveRunner:
         self.max_daily_loss_r: Optional[float] = _shared.max_daily_loss_r if _shared else None
 
         log.info(f"[INIT] LiveRunner {SYSTEM_VERSION} execution_mode={execution_mode} "
-                 f"record_trades={record_trades} symbols={symbols} model={self.live_model}")
+                 f"record_trades={record_trades} symbols={symbols} model={self.live_model} session={self.paper_session_id}")
         log.info(
             "[CONFIG] V5 scoring (shared defaults applied): "
             "lambda=%.3f threshold=%.3f min_mu_r=%.3f mae_floor=%.3f "
@@ -1336,6 +1338,9 @@ class LiveRunner:
 
     def _push_prediction(self, prediction: dict):
         from quick_start import push_prediction
+        if not isinstance(prediction, dict):
+            prediction = {}
+        prediction.setdefault("session_id", str(getattr(self, "paper_session_id", "default") or "default"))
         push_prediction(self.replit_url, prediction)
 
     def _push_cycle_log(self, symbol: str, price: float, p_enter: float,
@@ -1348,6 +1353,7 @@ class LiveRunner:
         payload = {
             "symbol": symbol,
             "cycle_ts": int(time.time() * 1000),
+            "session_id": str(getattr(self, "paper_session_id", "default") or "default"),
             "price": float(price),
             "p_enter": float(p_enter),
             "htf_h1_trend": str(htf.get('h1_trend', '')),
@@ -1388,6 +1394,7 @@ class LiveRunner:
         payload = {
             "symbol": symbol,
             "side": side,
+            "session_id": str(getattr(self, "paper_session_id", "default") or "default"),
             "entry_time": int(time.time() * 1000),
             "entry_price": entry_price,
             "stop_loss": sl_price,
@@ -1425,6 +1432,7 @@ class LiveRunner:
                              net_usd: float = 0.0):
         url = f"{self.replit_url.rstrip('/')}/api/live/trade/{trade_id}"
         payload = {
+            "session_id": str(getattr(self, "paper_session_id", "default") or "default"),
             "exit_time": int(time.time() * 1000),
             "exit_price": exit_price,
             "outcome": outcome,
@@ -1455,7 +1463,10 @@ class LiveRunner:
     def _update_trade_sl(self, trade_id: int, new_sl: float):
         """Update stop loss on an open trade record in the dashboard."""
         url = f"{self.replit_url.rstrip('/')}/api/live/trade/{trade_id}"
-        payload = {"stop_loss": new_sl}
+        payload = {
+            "stop_loss": new_sl,
+            "session_id": str(getattr(self, "paper_session_id", "default") or "default"),
+        }
         _retry_request("PATCH", url, json=payload)
 
     def _get_model_for_symbol(self, symbol: str):
@@ -1511,8 +1522,10 @@ class LiveRunner:
             return
         try:
             import requests as _req
+            session_id = str(getattr(self, "paper_session_id", "default") or "default")
             resp = _req.get(
                 f"{self.replit_url.rstrip('/')}/api/paper/open-positions-summary",
+                params={"session_id": session_id},
                 timeout=8,
             )
             if resp.status_code != 200:
