@@ -6326,6 +6326,8 @@ Examples:
                         help="Confirmation indicator for exec (default: vwap)")
     parser.add_argument("--allow-market-fallback", action="store_true", default=False,
                         help="Allow market entry if exec window expires (default: off)")
+    parser.add_argument("--blocking-exec-window", action="store_true", default=False,
+                        help="Block candidate handling for full exec window (legacy behavior, default: off)")
     parser.add_argument("--no-exec", action="store_true", default=False,
                         help="Disable lower-TF execution (enter at market on signal)")
     parser.add_argument("--dry-run", action="store_true",
@@ -6442,6 +6444,7 @@ Examples:
                 pullback_atr_frac=args.pullback_atr,
                 confirm_indicator=args.confirm_indicator,
                 allow_market_fallback=args.allow_market_fallback,
+                blocking_window=args.blocking_exec_window,
             )
 
         learning_mgr = None
