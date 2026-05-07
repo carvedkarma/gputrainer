@@ -1,7 +1,8 @@
 import torch
 import numpy as np
 import time
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any, Callable
@@ -12,6 +13,7 @@ import json
 from pathlib import Path
 import joblib
 import glob as glob_module
+from dataclasses import dataclass, field
 
 # Walk-forward evaluation for ensemble weights
 from training.walk_forward import save_walk_forward_weights, save_labeling_metadata
@@ -5022,6 +5024,296 @@ async def bybit_proxy(request: Dict[str, Any]):
     except Exception as e:
         logger.error(f"[BYBIT PROXY] Error forwarding to {url}: {e}")
         return {"error": str(e)}
+
+
+@dataclass
+class _DashboardSessionState:
+    session_id: str
+    next_prediction_id: int = 1
+    next_cycle_id: int = 1
+    next_trade_id: int = 1
+    predictions: List[Dict[str, Any]] = field(default_factory=list)
+    cycle_logs: List[Dict[str, Any]] = field(default_factory=list)
+    trades: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    trade_order: List[int] = field(default_factory=list)
+    updated_at_ms: int = 0
+
+
+_dashboard_sessions: Dict[str, _DashboardSessionState] = {}
+_dashboard_max_items = 5000
+
+
+def _resolve_session_id(payload: Optional[Dict[str, Any]] = None, session_id: Optional[str] = None) -> str:
+    if session_id and str(session_id).strip():
+        return str(session_id).strip()
+    payload = payload or {}
+    for key in ("session_id", "paper_session_id", "runner_session_id"):
+        val = payload.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return "default"
+
+
+def _get_dashboard_session(session_id: str) -> _DashboardSessionState:
+    sid = str(session_id or "default").strip() or "default"
+    state = _dashboard_sessions.get(sid)
+    if state is None:
+        state = _DashboardSessionState(session_id=sid)
+        _dashboard_sessions[sid] = state
+    return state
+
+
+def _trim_dashboard_state(state: _DashboardSessionState) -> None:
+    if len(state.predictions) > _dashboard_max_items:
+        state.predictions = state.predictions[-_dashboard_max_items:]
+    if len(state.cycle_logs) > _dashboard_max_items:
+        state.cycle_logs = state.cycle_logs[-_dashboard_max_items:]
+    if len(state.trade_order) > _dashboard_max_items:
+        keep = state.trade_order[-_dashboard_max_items:]
+        keep_set = set(keep)
+        state.trades = {tid: tr for tid, tr in state.trades.items() if tid in keep_set}
+        state.trade_order = keep
+
+
+def _latest_price_by_symbol(state: _DashboardSessionState) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for row in state.cycle_logs[-2000:]:
+        sym = str(row.get("symbol", "")).upper()
+        if not sym:
+            continue
+        try:
+            out[sym] = float(row.get("price", 0.0) or 0.0)
+        except Exception:
+            continue
+    return out
+
+
+def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
+    trades = [state.trades[tid] for tid in state.trade_order if tid in state.trades]
+    open_trades = [t for t in trades if str(t.get("status", "open")).lower() == "open"]
+    closed_trades = [t for t in trades if str(t.get("status", "")).lower() == "closed"]
+    wins = 0
+    losses = 0
+    total_net_r = 0.0
+    for tr in closed_trades:
+        net_r = float(tr.get("net_r", tr.get("gross_r", 0.0)) or 0.0)
+        total_net_r += net_r
+        if net_r > 0:
+            wins += 1
+        elif net_r < 0:
+            losses += 1
+    closed_n = len(closed_trades)
+    win_rate = float(wins / closed_n) if closed_n > 0 else 0.0
+    expectancy = float(total_net_r / closed_n) if closed_n > 0 else 0.0
+
+    gross_profit = sum(max(float(t.get("net_r", t.get("gross_r", 0.0)) or 0.0), 0.0) for t in closed_trades)
+    gross_loss = sum(max(-float(t.get("net_r", t.get("gross_r", 0.0)) or 0.0), 0.0) for t in closed_trades)
+    profit_factor = float(gross_profit / max(gross_loss, 1e-9)) if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
+    if profit_factor == float("inf"):
+        profit_factor = 9999.0
+
+    prices = _latest_price_by_symbol(state)
+    unrealized_r = 0.0
+    for tr in open_trades:
+        sym = str(tr.get("symbol", "")).upper()
+        px = prices.get(sym)
+        if px is None:
+            continue
+        try:
+            entry = float(tr.get("entry_price") or tr.get("entryPrice") or 0.0)
+            side = str(tr.get("side", "LONG")).upper()
+            sl = float(tr.get("stop_loss") or tr.get("stopLoss") or entry)
+            risk = abs(entry - sl)
+            if risk <= 1e-9:
+                continue
+            rr = (px - entry) / risk if side == "LONG" else (entry - px) / risk
+            unrealized_r += float(rr)
+        except Exception:
+            continue
+
+    return {
+        "session_id": state.session_id,
+        "open_positions": len(open_trades),
+        "closed_trades": closed_n,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round(win_rate, 4),
+        "expectancy_r": round(expectancy, 6),
+        "profit_factor": round(float(profit_factor), 4),
+        "realized_net_r": round(total_net_r, 6),
+        "unrealized_r": round(float(unrealized_r), 6),
+        "predictions": len(state.predictions),
+        "cycle_logs": len(state.cycle_logs),
+        "updated_at_ms": state.updated_at_ms,
+    }
+
+
+def _equity_curve(state: _DashboardSessionState) -> List[Dict[str, Any]]:
+    curve: List[Dict[str, Any]] = []
+    eq = 0.0
+    peak = 0.0
+    for i, tid in enumerate(state.trade_order, start=1):
+        tr = state.trades.get(tid)
+        if not tr or str(tr.get("status", "")).lower() != "closed":
+            continue
+        net_r = float(tr.get("net_r", tr.get("gross_r", 0.0)) or 0.0)
+        eq += net_r
+        peak = max(peak, eq)
+        drawdown = eq - peak
+        curve.append(
+            {
+                "seq": i,
+                "trade_id": int(tid),
+                "symbol": tr.get("symbol"),
+                "net_r": round(net_r, 6),
+                "equity_r": round(eq, 6),
+                "drawdown_r": round(drawdown, 6),
+                "exit_time": tr.get("exit_time"),
+            }
+        )
+    return curve
+
+
+@app.post("/api/gpu/push-prediction")
+async def push_prediction_local(payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
+    sid = _resolve_session_id(payload, session_id=session_id)
+    state = _get_dashboard_session(sid)
+    pred = dict(payload)
+    pred_id = state.next_prediction_id
+    state.next_prediction_id += 1
+    pred["id"] = pred_id
+    pred["session_id"] = sid
+    pred["ts"] = int(time.time() * 1000)
+    state.predictions.append(pred)
+    state.updated_at_ms = pred["ts"]
+    _trim_dashboard_state(state)
+    return {"ok": True, "id": pred_id, "session_id": sid}
+
+
+@app.post("/api/live/cycle-log")
+async def push_cycle_log_local(payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
+    sid = _resolve_session_id(payload, session_id=session_id)
+    state = _get_dashboard_session(sid)
+    row = dict(payload)
+    row_id = state.next_cycle_id
+    state.next_cycle_id += 1
+    row["id"] = row_id
+    row["session_id"] = sid
+    row["server_ts"] = int(time.time() * 1000)
+    state.cycle_logs.append(row)
+    state.updated_at_ms = row["server_ts"]
+    _trim_dashboard_state(state)
+    return {"ok": True, "id": row_id, "session_id": sid}
+
+
+@app.post("/api/live/trade")
+async def create_live_trade(payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
+    sid = _resolve_session_id(payload, session_id=session_id)
+    state = _get_dashboard_session(sid)
+    trade = dict(payload)
+    trade_id = state.next_trade_id
+    state.next_trade_id += 1
+    trade["id"] = trade_id
+    trade["session_id"] = sid
+    trade.setdefault("status", "open")
+    trade.setdefault("entry_time", int(time.time() * 1000))
+    trade.setdefault("entry_price", trade.get("current_price"))
+    state.trades[trade_id] = trade
+    state.trade_order.append(trade_id)
+    state.updated_at_ms = int(time.time() * 1000)
+    _trim_dashboard_state(state)
+    return {"id": trade_id, "session_id": sid}
+
+
+@app.patch("/api/live/trade/{trade_id}")
+async def update_live_trade(trade_id: int, payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
+    sid = _resolve_session_id(payload, session_id=session_id)
+    trade = None
+    state = _dashboard_sessions.get(sid)
+    if state is not None:
+        trade = state.trades.get(int(trade_id))
+    if trade is None:
+        for candidate in _dashboard_sessions.values():
+            maybe = candidate.trades.get(int(trade_id))
+            if maybe is not None and (not session_id or candidate.session_id == sid):
+                state = candidate
+                trade = maybe
+                break
+    if trade is None or state is None:
+        raise HTTPException(status_code=404, detail=f"Trade {trade_id} not found")
+    trade.update(payload or {})
+    trade["id"] = int(trade_id)
+    trade["session_id"] = state.session_id
+    state.updated_at_ms = int(time.time() * 1000)
+    return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade}
+
+
+@app.get("/api/paper/open-positions-summary")
+async def open_positions_summary(session_id: str = Query(default="default")):
+    state = _get_dashboard_session(session_id)
+    positions: List[Dict[str, Any]] = []
+    for tid in state.trade_order:
+        tr = state.trades.get(tid)
+        if not tr or str(tr.get("status", "open")).lower() != "open":
+            continue
+        positions.append(
+            {
+                "id": int(tid),
+                "symbol": tr.get("symbol"),
+                "side": tr.get("side", "LONG"),
+                "entryPrice": float(tr.get("entry_price") or tr.get("entryPrice") or 0.0),
+                "stopLoss": float(tr.get("stop_loss") or tr.get("stopLoss") or 0.0),
+                "tp2": float(tr.get("take_profit") or tr.get("tp2") or tr.get("take_profit_price") or 0.0),
+                "entryTs": int(tr.get("entry_time") or tr.get("entryTs") or 0),
+                "signalConfidence": float(tr.get("p_enter") or tr.get("signalConfidence") or 0.0),
+                "lane": tr.get("lane", "V5"),
+            }
+        )
+    return {"session_id": session_id, "count": len(positions), "positions": positions}
+
+
+@app.get("/api/dashboard/sessions")
+async def dashboard_sessions():
+    sessions = []
+    for sid in sorted(_dashboard_sessions.keys()):
+        sessions.append(_session_summary(_dashboard_sessions[sid]))
+    return {"sessions": sessions, "count": len(sessions)}
+
+
+@app.get("/api/dashboard/state")
+async def dashboard_state(
+    session_id: str = Query(default="default"),
+    predictions_limit: int = Query(default=250, ge=1, le=5000),
+    cycles_limit: int = Query(default=600, ge=1, le=5000),
+    trades_limit: int = Query(default=1000, ge=1, le=5000),
+):
+    state = _get_dashboard_session(session_id)
+    trades = [state.trades[tid] for tid in state.trade_order if tid in state.trades]
+    curve = _equity_curve(state)
+    max_dd = min((pt["drawdown_r"] for pt in curve), default=0.0)
+    return {
+        "summary": {**_session_summary(state), "max_drawdown_r": round(float(max_dd), 6)},
+        "predictions": state.predictions[-predictions_limit:],
+        "cycle_logs": state.cycle_logs[-cycles_limit:],
+        "trades": trades[-trades_limit:],
+        "equity_curve": curve[-3000:],
+    }
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_html():
+    html_path = Path(__file__).parent / "dashboard.html"
+    if not html_path.exists():
+        return HTMLResponse(
+            content="<html><body><h1>Dashboard not found</h1><p>Create api/dashboard.html</p></body></html>",
+            status_code=404,
+        )
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard_root():
+    return HTMLResponse(content="<html><body><meta http-equiv='refresh' content='0; url=/dashboard' /></body></html>")
 
 
 def start_server(host: str = "0.0.0.0", port: int = 8000):
