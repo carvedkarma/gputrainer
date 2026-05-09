@@ -1102,8 +1102,19 @@ class LiveRunner:
         )
         self.predictive_sltp = predictive_sltp
         self.paper_session_id = str(paper_session_id or "default").strip() or "default"
-        self.live_model = str(live_model or "v5").strip().lower()
         self.dashboard_engine = _normalize_dashboard_engine(dashboard_engine)
+        raw_live_model = str(live_model or "auto").strip().lower()
+        if raw_live_model in {"", "auto"}:
+            resolved_live_model = "mythos" if self.dashboard_engine == "mythos" else "v5"
+        else:
+            resolved_live_model = raw_live_model
+        if resolved_live_model != "mythos" and self.dashboard_engine == "mythos":
+            log.warning(
+                "[MODE_SYNC] dashboard_engine=mythos but live_model=%s — forcing live_model=mythos",
+                resolved_live_model,
+            )
+            resolved_live_model = "mythos"
+        self.live_model = resolved_live_model
 
         self.halt_on_data_staleness: bool = _shared.halt_on_data_staleness if _shared else True
         self.max_data_staleness_seconds: float = _shared.max_data_staleness_seconds if _shared else 300.0
@@ -1122,6 +1133,8 @@ class LiveRunner:
             self.v5_mae_floor, self.v5_min_p_side, self.v5_min_p_short,
             self.v5_slippage_bps, self.cooldown_bars,
         )
+        if self.live_model == "mythos":
+            log.info("[CONFIG] Mythos runtime selected for live/paper inference")
         log.info(
             "[CONFIG] Halt switches: data_staleness=%s/%gs api_errors=%s/%d daily_loss_r=%s",
             self.halt_on_data_staleness, self.max_data_staleness_seconds,
@@ -1602,7 +1615,10 @@ class LiveRunner:
         log.info(f"  [MODE] execution_mode={self.execution_mode} record_trades={self.record_trades} "
                  f"paper={self.paper} live={self.execution_mode == 'live'}")
         log.info(f"  Symbols: {', '.join(self.symbols)}")
-        log.info(f"  V5 Scoring: lambda={self.v5_score_lambda} threshold={self.v5_score_threshold} min_mu_r={self.v5_min_mu_r}")
+        if self.live_model == "mythos":
+            log.info("  Runtime model: MYTHOS")
+        else:
+            log.info(f"  V5 Scoring: lambda={self.v5_score_lambda} threshold={self.v5_score_threshold} min_mu_r={self.v5_min_mu_r}")
         log.info(f"  TP={self.tp_mult}x SL={self.sl_mult}x | Cooldown: {self.cooldown_bars} bars")
         log.info(f"  Per-symbol models: {self.per_symbol_models}")
 
@@ -1623,6 +1639,9 @@ class LiveRunner:
         self.model, self.engineer, self.feature_columns, self.temperature, self.symbol_map = _load_model(
             self.device, model_backend=self.live_model
         )
+        if self.live_model == "mythos" and not getattr(self.model, "_is_mythos", False):
+            log.error("[MYTHOS] live_model=mythos but loaded model is not Mythos. Aborting.")
+            sys.exit(1)
         if getattr(self.model, "_is_mythos", False):
             log.info(
                 "[MYTHOS] Runtime model active (symbol=%s artifact=%s)",
