@@ -5038,6 +5038,11 @@ class _DashboardSessionState:
     trade_order: List[int] = field(default_factory=list)
     updated_at_ms: int = 0
     engine_hint: str = "unknown"
+    account_equity_usd: float = 10000.0
+    risk_per_trade_pct: float = 1.0
+    base_leverage: float = 1.0
+    max_leverage: float = 3.0
+    auto_leverage: bool = True
 
 
 _dashboard_sessions: Dict[str, _DashboardSessionState] = {}
@@ -5087,6 +5092,79 @@ def _latest_price_by_symbol(state: _DashboardSessionState) -> Dict[str, float]:
         except Exception:
             continue
     return out
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
+def _clip(value: float, lo: float, hi: float) -> float:
+    return float(max(lo, min(hi, value)))
+
+
+def _normalize_risk_pct(value: Any, fallback: float = 1.0) -> float:
+    raw = _safe_float(value, fallback)
+    if raw <= 0.0:
+        raw = fallback
+    return _clip(raw, 0.01, 100.0)
+
+
+def _session_paper_settings(state: _DashboardSessionState) -> Dict[str, Any]:
+    return {
+        "account_equity_usd": round(float(state.account_equity_usd), 2),
+        "risk_per_trade_pct": round(float(state.risk_per_trade_pct), 4),
+        "base_leverage": round(float(state.base_leverage), 4),
+        "max_leverage": round(float(state.max_leverage), 4),
+        "auto_leverage": bool(state.auto_leverage),
+    }
+
+
+def _resolve_trade_risk_and_leverage(state: _DashboardSessionState, trade: Dict[str, Any]) -> Dict[str, float]:
+    risk_pct = _normalize_risk_pct(
+        trade.get("risk_pct_used", trade.get("risk_pct")),
+        fallback=state.risk_per_trade_pct,
+    )
+    base_lev = _clip(_safe_float(state.base_leverage, 1.0), 1.0, 50.0)
+    max_lev = _clip(_safe_float(state.max_leverage, 3.0), base_lev, 50.0)
+
+    explicit_lev = trade.get("leverage")
+    if explicit_lev is not None:
+        leverage = _clip(_safe_float(explicit_lev, base_lev), 1.0, max_lev)
+    else:
+        confidence = _clip(_safe_float(trade.get("p_enter", trade.get("confidence")), 0.0), 0.0, 1.0)
+        edge = abs(_safe_float(trade.get("edge", trade.get("expected_return")), 0.0))
+        if bool(state.auto_leverage):
+            leverage = base_lev
+            leverage += max(confidence - 0.55, 0.0) * 2.0
+            leverage += max(edge - 0.02, 0.0) * 3.0
+            leverage = _clip(leverage, base_lev, max_lev)
+        else:
+            leverage = base_lev
+
+    equity = max(_safe_float(trade.get("equity_usd"), state.account_equity_usd), 0.0)
+    risk_usd = max(equity * (risk_pct / 100.0) * leverage, 0.0)
+    return {
+        "risk_pct_used": float(risk_pct),
+        "leverage": float(leverage),
+        "equity_usd_at_entry": float(equity),
+        "risk_usd_used": float(risk_usd),
+    }
 
 
 def _normalize_engine_tag(value: Any) -> str:
@@ -5227,6 +5305,8 @@ def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
     total_gross_r = 0.0
     total_fee_r = 0.0
     total_fee_usd = 0.0
+    total_net_usd = 0.0
+    leverage_values: List[float] = []
     manual_closes = 0
     long_taken = sum(1 for t in trades if str(t.get("side", "")).upper() == "LONG")
     short_taken = sum(1 for t in trades if str(t.get("side", "")).upper() == "SHORT")
@@ -5241,8 +5321,21 @@ def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
         net_r = float(tr.get("net_r", tr.get("gross_r", 0.0)) or 0.0)
         total_gross_r += gross_r
         total_fee_r += cost_r
-        total_fee_usd += float(tr.get("pnl_usd_cost", 0.0) or 0.0)
+        fee_usd = float(tr.get("pnl_usd_cost", 0.0) or 0.0)
+        total_fee_usd += fee_usd
         total_net_r += net_r
+        risk_usd = float(tr.get("risk_usd_used", 0.0) or 0.0)
+        lev = float(tr.get("leverage", 0.0) or 0.0)
+        if lev > 0.0:
+            leverage_values.append(lev)
+        net_usd = tr.get("pnl_usd")
+        if net_usd is None:
+            net_usd = net_r * risk_usd
+        net_usd = float(net_usd or 0.0)
+        # Recover missing USD valuation from R if needed.
+        if abs(net_usd) < 1e-9 and abs(net_r) > 1e-9 and risk_usd > 0.0:
+            net_usd = net_r * risk_usd
+        total_net_usd += net_usd
         if net_r > 0:
             wins += 1
             if side == "LONG":
@@ -5263,6 +5356,7 @@ def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
 
     prices = _latest_price_by_symbol(state)
     unrealized_r = 0.0
+    unrealized_usd = 0.0
     for tr in open_trades:
         sym = str(tr.get("symbol", "")).upper()
         px = prices.get(sym)
@@ -5277,6 +5371,14 @@ def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
                 continue
             rr = (px - entry) / risk if side == "LONG" else (entry - px) / risk
             unrealized_r += float(rr)
+            open_risk_usd = float(tr.get("risk_usd_used", 0.0) or 0.0)
+            if open_risk_usd <= 0.0:
+                derived = _resolve_trade_risk_and_leverage(state, tr)
+                open_risk_usd = float(derived.get("risk_usd_used", 0.0))
+            unrealized_usd += float(rr) * open_risk_usd
+            lev = float(tr.get("leverage", 0.0) or 0.0)
+            if lev > 0.0:
+                leverage_values.append(lev)
         except Exception:
             continue
 
@@ -5298,6 +5400,11 @@ def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
         }
     )
 
+    start_equity_usd = float(max(state.account_equity_usd, 0.0))
+    equity_live_usd = start_equity_usd + total_net_usd + unrealized_usd
+    avg_leverage = float(np.mean(leverage_values)) if leverage_values else 0.0
+    max_leverage_used = float(max(leverage_values)) if leverage_values else 0.0
+
     return {
         "session_id": state.session_id,
         "engine": engine,
@@ -5316,6 +5423,13 @@ def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
         "fees_usd": round(float(total_fee_usd), 4),
         "realized_net_r": round(total_net_r, 6),
         "unrealized_r": round(float(unrealized_r), 6),
+        "paper_equity_usd": round(start_equity_usd, 2),
+        "equity_live_usd": round(float(equity_live_usd), 2),
+        "realized_net_usd": round(float(total_net_usd), 2),
+        "unrealized_usd": round(float(unrealized_usd), 2),
+        "avg_leverage": round(float(avg_leverage), 4),
+        "max_leverage_used": round(float(max_leverage_used), 4),
+        "paper_settings": _session_paper_settings(state),
         "long_taken": long_taken,
         "short_taken": short_taken,
         "long_success": long_success,
@@ -5404,6 +5518,14 @@ async def create_live_trade(payload: Dict[str, Any], session_id: Optional[str] =
     trade.setdefault("status", "open")
     trade.setdefault("entry_time", int(time.time() * 1000))
     trade.setdefault("entry_price", trade.get("current_price"))
+    risk_meta = _resolve_trade_risk_and_leverage(state, trade)
+    trade["risk_pct_used"] = round(float(risk_meta["risk_pct_used"]), 4)
+    trade["leverage"] = round(float(risk_meta["leverage"]), 4)
+    trade["equity_usd_at_entry"] = round(float(risk_meta["equity_usd_at_entry"]), 2)
+    trade["risk_usd_used"] = round(float(risk_meta["risk_usd_used"]), 2)
+    trade.setdefault("pnl_usd", 0.0)
+    trade.setdefault("pnl_usd_gross", 0.0)
+    trade.setdefault("pnl_usd_cost", 0.0)
     state.trades[trade_id] = trade
     state.trade_order.append(trade_id)
     _refresh_session_engine_hint(state, trade)
@@ -5432,6 +5554,30 @@ async def update_live_trade(trade_id: int, payload: Dict[str, Any], session_id: 
     trade["id"] = int(trade_id)
     trade["session_id"] = state.session_id
     trade["engine"] = _infer_engine_from_payload(trade, session_id=state.session_id)
+    if str(trade.get("status", "open")).lower() == "closed":
+        risk_usd = float(trade.get("risk_usd_used", 0.0) or 0.0)
+        if risk_usd <= 0.0:
+            risk_meta = _resolve_trade_risk_and_leverage(state, trade)
+            trade["risk_pct_used"] = round(float(risk_meta["risk_pct_used"]), 4)
+            trade["leverage"] = round(float(risk_meta["leverage"]), 4)
+            trade["equity_usd_at_entry"] = round(float(risk_meta["equity_usd_at_entry"]), 2)
+            trade["risk_usd_used"] = round(float(risk_meta["risk_usd_used"]), 2)
+            risk_usd = float(trade["risk_usd_used"])
+        gross_r = float(trade.get("gross_r", trade.get("net_r", 0.0)) or 0.0)
+        cost_r = float(trade.get("cost_r", 0.0) or 0.0)
+        net_r = float(trade.get("net_r", gross_r - cost_r) or 0.0)
+        gross_usd = float(trade.get("pnl_usd_gross", 0.0) or 0.0)
+        cost_usd = float(trade.get("pnl_usd_cost", 0.0) or 0.0)
+        net_usd = float(trade.get("pnl_usd", 0.0) or 0.0)
+        if abs(gross_usd) < 1e-9 and abs(gross_r) > 1e-9 and risk_usd > 0.0:
+            gross_usd = gross_r * risk_usd
+        if abs(cost_usd) < 1e-9 and abs(cost_r) > 1e-9 and risk_usd > 0.0:
+            cost_usd = cost_r * risk_usd
+        if abs(net_usd) < 1e-9 and abs(net_r) > 1e-9 and risk_usd > 0.0:
+            net_usd = net_r * risk_usd
+        trade["pnl_usd_gross"] = round(float(gross_usd), 2)
+        trade["pnl_usd_cost"] = round(float(cost_usd), 2)
+        trade["pnl_usd"] = round(float(net_usd), 2)
     _refresh_session_engine_hint(state, trade)
     state.updated_at_ms = int(time.time() * 1000)
     return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade}
@@ -5481,6 +5627,13 @@ async def manual_close_paper_trade(
     net_r = gross_r - cost_r
 
     risk_usd = float(trade.get("risk_usd_used", 0.0) or 0.0)
+    if risk_usd <= 0.0:
+        risk_meta = _resolve_trade_risk_and_leverage(state, trade)
+        trade["risk_pct_used"] = round(float(risk_meta["risk_pct_used"]), 4)
+        trade["leverage"] = round(float(risk_meta["leverage"]), 4)
+        trade["equity_usd_at_entry"] = round(float(risk_meta["equity_usd_at_entry"]), 2)
+        trade["risk_usd_used"] = round(float(risk_meta["risk_usd_used"]), 2)
+        risk_usd = float(trade["risk_usd_used"])
     gross_usd = round(gross_r * risk_usd, 2)
     cost_usd = round(cost_r * risk_usd, 2)
     net_usd = round(net_r * risk_usd, 2)
@@ -5502,12 +5655,55 @@ async def manual_close_paper_trade(
             "pnl_usd_gross": gross_usd,
             "pnl_usd_cost": cost_usd,
             "pnl_usd": net_usd,
+            "leverage": round(float(trade.get("leverage", 1.0) or 1.0), 4),
             "engine": _infer_engine_from_payload(trade, session_id=state.session_id),
         }
     )
     state.updated_at_ms = now_ms
     _refresh_session_engine_hint(state, trade)
     return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade}
+
+
+@app.get("/api/paper/settings")
+async def get_paper_settings(session_id: str = Query(default="default")):
+    state = _get_dashboard_session(session_id)
+    return {"session_id": state.session_id, "settings": _session_paper_settings(state)}
+
+
+@app.post("/api/paper/settings")
+async def update_paper_settings(payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
+    sid = _resolve_session_id(payload, session_id=session_id)
+    state = _get_dashboard_session(sid)
+
+    if "account_equity_usd" in payload:
+        state.account_equity_usd = _clip(_safe_float(payload.get("account_equity_usd"), state.account_equity_usd), 0.0, 1e12)
+    if "risk_per_trade_pct" in payload:
+        state.risk_per_trade_pct = _normalize_risk_pct(payload.get("risk_per_trade_pct"), fallback=state.risk_per_trade_pct)
+    if "base_leverage" in payload:
+        state.base_leverage = _clip(_safe_float(payload.get("base_leverage"), state.base_leverage), 1.0, 50.0)
+    if "max_leverage" in payload:
+        state.max_leverage = _clip(_safe_float(payload.get("max_leverage"), state.max_leverage), state.base_leverage, 50.0)
+    if "auto_leverage" in payload:
+        state.auto_leverage = _safe_bool(payload.get("auto_leverage"), state.auto_leverage)
+
+    if _safe_bool(payload.get("revalue_open_positions"), True):
+        for tid in state.trade_order:
+            tr = state.trades.get(tid)
+            if not tr or str(tr.get("status", "open")).lower() != "open":
+                continue
+            risk_meta = _resolve_trade_risk_and_leverage(state, tr)
+            tr["risk_pct_used"] = round(float(risk_meta["risk_pct_used"]), 4)
+            tr["leverage"] = round(float(risk_meta["leverage"]), 4)
+            tr["equity_usd_at_entry"] = round(float(risk_meta["equity_usd_at_entry"]), 2)
+            tr["risk_usd_used"] = round(float(risk_meta["risk_usd_used"]), 2)
+
+    state.updated_at_ms = int(time.time() * 1000)
+    return {
+        "ok": True,
+        "session_id": state.session_id,
+        "settings": _session_paper_settings(state),
+        "summary": _session_summary(state),
+    }
 
 
 @app.get("/api/paper/open-positions-summary")
@@ -5529,6 +5725,8 @@ async def open_positions_summary(session_id: str = Query(default="default")):
                 "entryTs": int(tr.get("entry_time") or tr.get("entryTs") or 0),
                 "signalConfidence": float(tr.get("p_enter") or tr.get("signalConfidence") or 0.0),
                 "lane": tr.get("lane", "V5"),
+                "leverage": float(tr.get("leverage") or 1.0),
+                "riskUsd": float(tr.get("risk_usd_used") or 0.0),
             }
         )
     return {"session_id": session_id, "count": len(positions), "positions": positions}
