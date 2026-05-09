@@ -6307,6 +6307,8 @@ Examples:
                         help="Optional paper trading session id for multi-terminal isolation (e.g. SOL-paper)")
     parser.add_argument("--dashboard-engine", type=str, default="v5", choices=["v5", "mythos"],
                         help="Engine tag propagated to dashboard payloads for isolated model pages")
+    parser.add_argument("--live-model", type=str, default="auto", choices=["auto", "v5", "mythos"],
+                        help="Model backend for live/paper engine (auto: mythos when --dashboard-engine mythos, else v5)")
     parser.add_argument("--execution-mode", type=str, default=None,
                         choices=["signal_only", "paper", "live"],
                         help="Explicit execution mode override (default: derived from --paper/--live flags)")
@@ -6489,6 +6491,10 @@ Examples:
 
         record_trades = args.record_trades or args.paper or (exec_mode in ("paper", "live"))
         log.info(f"[MODE] execution_mode={exec_mode} record_trades={record_trades} paper={args.paper} live={exec_mode == 'live'}")
+        resolved_live_model = args.live_model
+        if resolved_live_model == "auto":
+            resolved_live_model = "mythos" if str(args.dashboard_engine).lower() == "mythos" else "v5"
+        log.info(f"[MODE] live_model={resolved_live_model} dashboard_engine={args.dashboard_engine}")
 
         runner = LiveRunner(
             replit_url=args.url,
@@ -6520,6 +6526,7 @@ Examples:
             predictive_sltp=getattr(args, 'v5_predictive_sltp', False),
             paper_session_id=args.paper_session_id,
             dashboard_engine=args.dashboard_engine,
+            live_model=resolved_live_model,
         )
         runner.learning_manager = learning_mgr
 
