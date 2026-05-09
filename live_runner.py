@@ -1072,6 +1072,21 @@ class LiveRunner:
         self.direction_balance_cap = direction_balance_cap
         self.direction_balance_threshold = direction_balance_threshold
         self._recent_signal_sides: list = []
+        self.predictive_sltp = predictive_sltp
+        self.paper_session_id = str(paper_session_id or "default").strip() or "default"
+        self.dashboard_engine = _normalize_dashboard_engine(dashboard_engine)
+        raw_live_model = str(live_model or "auto").strip().lower()
+        if raw_live_model in {"", "auto"}:
+            resolved_live_model = "mythos" if self.dashboard_engine == "mythos" else "v5"
+        else:
+            resolved_live_model = raw_live_model
+        if resolved_live_model != "mythos" and self.dashboard_engine == "mythos":
+            log.warning(
+                "[MODE_SYNC] dashboard_engine=mythos but live_model=%s — forcing live_model=mythos",
+                resolved_live_model,
+            )
+            resolved_live_model = "mythos"
+        self.live_model = resolved_live_model
 
         # ── Regime-aware signal router ─────────────────────────────────────────
         # Tracks H4 SMA20 regime per symbol with 3-bar confirmation.
@@ -1079,11 +1094,14 @@ class LiveRunner:
         self._regime_history: Dict[str, list] = {}   # symbol -> last 3 regime readings
         self._regime_confirmed: Dict[str, str] = {}  # symbol -> 'BULL' | 'BEAR'
 
-        try:
-            from config.shared_v5_trade_config import load_shared_defaults
-            _shared = load_shared_defaults()
-        except Exception:
+        if self.live_model == "mythos":
             _shared = None
+        else:
+            try:
+                from config.shared_v5_trade_config import load_shared_defaults
+                _shared = load_shared_defaults()
+            except Exception:
+                _shared = None
 
         self.v5_score_lambda = V5_SCORE_LAMBDA if _shared is None else _shared.score_lambda
         self.v5_score_threshold = (
@@ -1100,21 +1118,6 @@ class LiveRunner:
             if (_shared is not None and cooldown_bars == 8)
             else cooldown_bars
         )
-        self.predictive_sltp = predictive_sltp
-        self.paper_session_id = str(paper_session_id or "default").strip() or "default"
-        self.dashboard_engine = _normalize_dashboard_engine(dashboard_engine)
-        raw_live_model = str(live_model or "auto").strip().lower()
-        if raw_live_model in {"", "auto"}:
-            resolved_live_model = "mythos" if self.dashboard_engine == "mythos" else "v5"
-        else:
-            resolved_live_model = raw_live_model
-        if resolved_live_model != "mythos" and self.dashboard_engine == "mythos":
-            log.warning(
-                "[MODE_SYNC] dashboard_engine=mythos but live_model=%s — forcing live_model=mythos",
-                resolved_live_model,
-            )
-            resolved_live_model = "mythos"
-        self.live_model = resolved_live_model
 
         self.halt_on_data_staleness: bool = _shared.halt_on_data_staleness if _shared else True
         self.max_data_staleness_seconds: float = _shared.max_data_staleness_seconds if _shared else 300.0
@@ -1997,6 +2000,10 @@ class LiveRunner:
                 blocks.append(f"conf={confidence:.3f}<min={conf_floor:.3f}")
             hold_reason = "; ".join(blocks) if blocks else "mythos_hold"
             mythos_info["hold_reason"] = hold_reason
+            log.info(
+                "[MYTHOS_DECISION] sym=%s side=%s edge=%.4f conf=%.3f abstain=%s -> HOLD reason=%s",
+                symbol, side, edge, confidence, abstain, hold_reason,
+            )
             try:
                 self._push_cycle_log(
                     symbol=symbol,
@@ -2014,6 +2021,10 @@ class LiveRunner:
             return None
 
         try:
+            log.info(
+                "[MYTHOS_DECISION] sym=%s side=%s edge=%.4f conf=%.3f expert=%s regime=%s -> ENTER",
+                symbol, side, edge, confidence, pred.get("expert_name"), pred.get("regime"),
+            )
             self._push_cycle_log(
                 symbol=symbol,
                 price=current_price,
