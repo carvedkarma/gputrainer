@@ -6305,6 +6305,8 @@ Examples:
                         help="Enable trade recording (POST to /api/live/trade). Default: off unless --paper or --live")
     parser.add_argument("--paper-session-id", type=str, default=None,
                         help="Optional paper trading session id for multi-terminal isolation (e.g. SOL-paper)")
+    parser.add_argument("--dashboard-engine", type=str, default="v5", choices=["v5", "mythos"],
+                        help="Engine tag propagated to dashboard payloads for isolated model pages")
     parser.add_argument("--execution-mode", type=str, default=None,
                         choices=["signal_only", "paper", "live"],
                         help="Explicit execution mode override (default: derived from --paper/--live flags)")
@@ -6517,6 +6519,7 @@ Examples:
             v5_mae_floor=getattr(args, 'v5_live_mae_floor', None),
             predictive_sltp=getattr(args, 'v5_predictive_sltp', False),
             paper_session_id=args.paper_session_id,
+            dashboard_engine=args.dashboard_engine,
         )
         runner.learning_manager = learning_mgr
 

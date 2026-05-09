@@ -49,6 +49,17 @@ V5_MAE_FLOOR = 0.5         # minimum MAE to prevent score explosion in low-vol m
 COST_BPS = 8.0
 
 
+def _normalize_dashboard_engine(engine: Optional[str]) -> str:
+    raw = str(engine or "").strip().lower()
+    if not raw:
+        return "v5"
+    if "myth" in raw:
+        return "mythos"
+    if raw in {"v5", "v5_forecaster", "forecaster"}:
+        return "v5"
+    return raw
+
+
 def _retry_request(method: str, url: str, **kwargs) -> Optional[requests.Response]:
     timeout = kwargs.pop('timeout', 15)
     for attempt in range(RETRY_ATTEMPTS):
@@ -958,7 +969,7 @@ def _build_prediction_payload(
         "risk_reward_ratio": round(rr, 2),
         "position_size_pct": round(position_size, 1),
         "current_price": round(current_price, 2),
-        "model_name": "enter_quality_v3.3_live_multi",
+        "model_name": "v5_forecaster_live",
         "is_multihead": True,
         "urgency": "high" if p_enter > 0.7 else "medium",
         "suggested_order_type": "limit",
@@ -1000,6 +1011,7 @@ class LiveRunner:
         v5_mae_floor: float = None,
         predictive_sltp: bool = False,
         paper_session_id: Optional[str] = None,
+        dashboard_engine: str = "v5",
     ):
         self.replit_url = replit_url
         self.symbols = symbols
@@ -1054,6 +1066,7 @@ class LiveRunner:
         )
         self.predictive_sltp = predictive_sltp
         self.paper_session_id = str(paper_session_id or "default").strip() or "default"
+        self.dashboard_engine = _normalize_dashboard_engine(dashboard_engine)
 
         self.halt_on_data_staleness: bool = _shared.halt_on_data_staleness if _shared else True
         self.max_data_staleness_seconds: float = _shared.max_data_staleness_seconds if _shared else 300.0
@@ -1062,7 +1075,8 @@ class LiveRunner:
         self.max_daily_loss_r: Optional[float] = _shared.max_daily_loss_r if _shared else None
 
         log.info(f"[INIT] LiveRunner {SYSTEM_VERSION} execution_mode={execution_mode} "
-                 f"record_trades={record_trades} symbols={symbols} session={self.paper_session_id}")
+                 f"record_trades={record_trades} symbols={symbols} session={self.paper_session_id} "
+                 f"engine={self.dashboard_engine}")
         log.info(
             "[CONFIG] V5 scoring (shared defaults applied): "
             "lambda=%.3f threshold=%.3f min_mu_r=%.3f mae_floor=%.3f "
@@ -1305,6 +1319,7 @@ class LiveRunner:
         if not isinstance(prediction, dict):
             prediction = {}
         prediction.setdefault("session_id", self.paper_session_id)
+        prediction.setdefault("engine", self.dashboard_engine)
         push_prediction(self.replit_url, prediction)
 
     def _push_cycle_log(self, symbol: str, price: float, p_enter: float,
@@ -1318,6 +1333,7 @@ class LiveRunner:
             "symbol": symbol,
             "cycle_ts": int(time.time() * 1000),
             "session_id": self.paper_session_id,
+            "engine": self.dashboard_engine,
             "price": float(price),
             "p_enter": float(p_enter),
             "htf_h1_trend": str(htf.get('h1_trend', '')),
@@ -1343,6 +1359,7 @@ class LiveRunner:
             "v5_p_short": li.get('p_short'),
             "sl_price": li.get('sl_price'),
             "tp_price": li.get('tp_price'),
+            "model_name": li.get('model_name', f"{self.dashboard_engine}_runtime"),
         }
         if self.gpu_self_url:
             payload["gpu_callback_url"] = self.gpu_self_url
@@ -1359,6 +1376,7 @@ class LiveRunner:
             "symbol": symbol,
             "side": side,
             "session_id": self.paper_session_id,
+            "engine": self.dashboard_engine,
             "entry_time": int(time.time() * 1000),
             "entry_price": entry_price,
             "stop_loss": sl_price,
@@ -1373,6 +1391,7 @@ class LiveRunner:
             "lane_threshold_used": li.get('threshold_used'),
             "lane_size_mult": li.get('lane_size_mult', 1.0),
             "lane_horizon": li.get('lane_horizon', 24),
+            "model_name": li.get('model_name', f"{self.dashboard_engine}_runtime"),
         }
         resp = _retry_request("POST", url, json=payload)
         if resp and resp.status_code == 200:
@@ -1397,6 +1416,7 @@ class LiveRunner:
         url = f"{self.replit_url.rstrip('/')}/api/live/trade/{trade_id}"
         payload = {
             "session_id": self.paper_session_id,
+            "engine": self.dashboard_engine,
             "exit_time": int(time.time() * 1000),
             "exit_price": exit_price,
             "outcome": outcome,
@@ -2375,6 +2395,7 @@ class LiveRunner:
                     'threshold_used': self.v5_score_threshold,
                     'lane_size_mult': 1.0,
                     'lane_horizon': 24,
+                    'model_name': 'v5_forecaster_live',
                 },
             )
             if trade_id:

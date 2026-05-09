@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dual Engine Paper Trading Dashboard</title>
+  <style>
+    :root {
+      --bg: #030812;
+      --bg2: #0a1324;
+      --card: rgba(11, 24, 44, 0.78);
+      --line: rgba(118, 165, 255, 0.24);
+      --txt: #e5efff;
+      --muted: #9eb0cd;
+      --pos: #2ae2ad;
+      --neg: #ff6f8d;
+      --warn: #ffd166;
+      --blue: #63a6ff;
+      --violet: #9a7bff;
+      --cyan: #62e5ff;
+      --shadow: 0 14px 38px rgba(8, 20, 40, 0.55);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      color: var(--txt);
+      font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+      background:
+        radial-gradient(circle at 12% 12%, rgba(64, 122, 214, 0.28), transparent 36%),
+        radial-gradient(circle at 90% 0%, rgba(112, 76, 189, 0.32), transparent 38%),
+        linear-gradient(180deg, var(--bg), #02050c 70%);
+      overflow-x: hidden;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(130, 170, 255, 0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(130, 170, 255, 0.06) 1px, transparent 1px);
+      background-size: 34px 34px;
+      mask-image: radial-gradient(circle at 50% 28%, #000 15%, transparent 80%);
+      animation: drift 24s linear infinite;
+    }
+    @keyframes drift { from { transform: translate3d(0,0,0);} to { transform: translate3d(34px,34px,0);} }
+
+    .shell { max-width: 1680px; margin: 0 auto; padding: 16px 16px 30px; position: relative; z-index: 2; }
+    .glass {
+      background: linear-gradient(165deg, rgba(13, 30, 58, 0.9), rgba(7, 17, 34, 0.9));
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(7px);
+    }
+
+    .top {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .title {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .pulse {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--pos);
+      box-shadow: 0 0 0 0 rgba(42, 226, 173, 0.7);
+      animation: pulse 1.9s infinite;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(42, 226, 173, 0.75); }
+      70% { box-shadow: 0 0 0 12px rgba(42, 226, 173, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(42, 226, 173, 0); }
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.02rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .sub { margin-top: 2px; font-size: .81rem; color: var(--muted); }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .btn, select, input {
+      height: 35px;
+      border-radius: 10px;
+      border: 1px solid rgba(133, 178, 255, 0.34);
+      background: rgba(9, 21, 44, 0.92);
+      color: var(--txt);
+      padding: 0 12px;
+      font-size: .8rem;
+    }
+    .btn { cursor: pointer; transition: .15s ease; }
+    .btn:hover { transform: translateY(-1px); border-color: rgba(169, 201, 255, 0.6); }
+    .btn.primary { background: linear-gradient(135deg, #437cff, #8f6fff); border-color: transparent; font-weight: 600; }
+    .btn.warn { background: linear-gradient(135deg, #875803, #b17707); border-color: rgba(255, 209, 102, .4); }
+    .chip {
+      height: 35px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      padding: 0 11px;
+      border: 1px solid rgba(130, 170, 235, 0.35);
+      background: rgba(8, 19, 37, 0.85);
+      color: #b9cbe4;
+      font-size: .79rem;
+    }
+
+    .engine-tabs {
+      margin-bottom: 10px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .engine-tab {
+      padding: 8px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: rgba(9, 20, 39, .8);
+      color: #bdd2f1;
+      text-decoration: none;
+      font-size: .8rem;
+      letter-spacing: .03em;
+    }
+    .engine-tab.active {
+      background: linear-gradient(135deg, rgba(67,124,255,0.33), rgba(141,107,255,0.35));
+      color: #fff;
+      border-color: rgba(156, 192, 255, .55);
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(10, minmax(130px, 1fr));
+      gap: 9px;
+      margin-bottom: 10px;
+    }
+    .metric {
+      padding: 10px 11px;
+      min-height: 88px;
+      position: relative;
+      overflow: hidden;
+    }
+    .metric::after {
+      content: "";
+      position: absolute;
+      inset: auto -35% -50% -35%;
+      height: 72px;
+      background: radial-gradient(circle at 50% 15%, rgba(96, 148, 243, .24), transparent 65%);
+      pointer-events: none;
+    }
+    .metric .k { font-size: .68rem; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+    .metric .v { margin-top: 5px; font-size: 1.11rem; font-weight: 700; }
+    .metric .s { margin-top: 4px; font-size: .74rem; color: #99adca; }
+    .pos { color: var(--pos); } .neg { color: var(--neg); }
+
+    .grid-main {
+      display: grid;
+      grid-template-columns: 2fr 1.05fr;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .card { padding: 12px; }
+    .card h3 {
+      margin: 0 0 10px;
+      font-size: .8rem;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: #9fb4d2;
+    }
+    .chart-wrap { height: 280px; position: relative; }
+    .chart-wrap.small { height: 170px; }
+    canvas { width: 100%; height: 100%; display: block; }
+    .empty {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: #7184a1;
+      font-size: .8rem;
+    }
+    .insight { padding: 9px 10px; border: 1px solid rgba(118, 165, 255, 0.2); border-radius: 10px; background: rgba(8, 19, 36, 0.78); font-size: .79rem; color: #cad9ee; line-height: 1.35; margin-bottom: 8px; }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+    .table-wrap { max-height: 295px; overflow: auto; border: 1px solid rgba(117, 162, 245, .2); border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: .77rem; }
+    th, td { padding: 7px 9px; text-align: left; border-bottom: 1px solid rgba(103, 145, 214, .12); white-space: nowrap; }
+    th { position: sticky; top: 0; z-index: 1; background: rgba(8, 19, 36, 0.97); color: #95a8c6; font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; }
+    tr:hover { background: rgba(20, 39, 70, .34); }
+    .tag { font-size: .66rem; border-radius: 999px; padding: 3px 7px; border: 1px solid rgba(127, 166, 224, .35); background: rgba(11, 23, 45, .84); color: #c7d7ed; }
+    .tag.long { color: #8bf0c5; border-color: rgba(42,226,173,.45); }
+    .tag.short { color: #ffb0be; border-color: rgba(255,111,141,.45); }
+    .tag.open { color: #ffe2a8; border-color: rgba(255, 209, 102, .5); }
+    .tag.closed { color: #9dcbff; border-color: rgba(98, 167, 255, .55); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .model-list { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 6px; }
+    .model-pill { padding: 4px 8px; border-radius: 999px; border: 1px solid rgba(118, 165, 255, .35); background: rgba(8, 18, 35, .78); font-size: .72rem; color: #c9daf2; }
+    .small { font-size: .74rem; color: #9ab0cf; }
+
+    @media (max-width: 1450px) {
+      .metrics { grid-template-columns: repeat(5, minmax(130px, 1fr)); }
+      .grid-main { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 860px) {
+      .metrics { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      .grid-2 { grid-template-columns: 1fr; }
+      .toolbar { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="top">
+      <div class="title">
+        <div class="pulse"></div>
+        <div>
+          <h1 id="mainTitle">Advanced Paper Trading Dashboard</h1>
+          <div id="runMeta" class="sub">Booting dashboard...</div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <span id="liveState" class="chip"><span style="width:8px;height:8px;border-radius:50%;background:var(--warn);display:inline-block"></span>Connecting...</span>
+        <label class="small" for="sessionSelect">Session</label>
+        <select id="sessionSelect"></select>
+        <button id="refreshBtn" class="btn">Refresh</button>
+        <button id="autoBtn" class="btn primary">Auto: ON</button>
+      </div>
+    </div>
+
+    <div class="engine-tabs">
+      <a id="tabAll" class="engine-tab" href="/dashboard">All Sessions</a>
+      <a id="tabV5" class="engine-tab" href="/dashboard/v5">V5 Forecaster</a>
+      <a id="tabMythos" class="engine-tab" href="/dashboard/mythos">Mythos</a>
+    </div>
+
+    <section class="metrics">
+      <article class="metric glass"><div class="k">Open</div><div id="mOpen" class="v">0</div><div class="s">active positions</div></article>
+      <article class="metric glass"><div class="k">Closed</div><div id="mClosed" class="v">0</div><div class="s">history count</div></article>
+      <article class="metric glass"><div class="k">Win Rate</div><div id="mWR" class="v">0%</div><div class="s">net close basis</div></article>
+      <article class="metric glass"><div class="k">Expectancy</div><div id="mExp" class="v">0R</div><div class="s">per closed trade</div></article>
+      <article class="metric glass"><div class="k">Profit Factor</div><div id="mPF" class="v">0.00</div><div class="s">net PF</div></article>
+      <article class="metric glass"><div class="k">Net Realized</div><div id="mNet" class="v">0R</div><div id="mUnreal" class="s">0R unrealized</div></article>
+      <article class="metric glass"><div class="k">Gross / Fees</div><div id="mGrossFee" class="v">0R / 0R</div><div id="mFeeUsd" class="s">$0.00 fees</div></article>
+      <article class="metric glass"><div class="k">LONG</div><div id="mLong" class="v">0 / 0</div><div id="mLongRate" class="s">0% successful</div></article>
+      <article class="metric glass"><div class="k">SHORT</div><div id="mShort" class="v">0 / 0</div><div id="mShortRate" class="s">0% successful</div></article>
+      <article class="metric glass"><div class="k">Engine</div><div id="mEngine" class="v">-</div><div id="mAssets" class="s">0 assets</div></article>
+    </section>
+
+    <section class="grid-main">
+      <article class="card glass">
+        <h3>Equity Curve (Net R) + PnL Components</h3>
+        <div class="chart-wrap"><canvas id="equityCanvas"></canvas><div id="eqEmpty" class="empty" hidden>No closed trades yet.</div></div>
+        <div class="chart-wrap small" style="margin-top:8px"><canvas id="grossCanvas"></canvas><div id="grossEmpty" class="empty" hidden>No fee/gross data yet.</div></div>
+      </article>
+      <article class="card glass">
+        <h3>Live Insights</h3>
+        <div id="insights"></div>
+        <h3 style="margin-top:10px">Models Active</h3>
+        <div id="modelList" class="model-list"></div>
+        <h3 style="margin-top:10px">Assets Running</h3>
+        <div class="table-wrap" style="max-height:210px">
+          <table>
+            <thead><tr><th>Asset</th><th>Open</th><th>Closed</th><th>Net R</th><th>WR</th><th>Last Price</th></tr></thead>
+            <tbody id="assetBody"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid-2">
+      <article class="card glass">
+        <h3>Open Trades (Manual Close Enabled)</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>Symbol</th><th>Side</th><th>Entry</th><th>SL</th><th>TP</th><th>Live R</th><th>Action</th></tr></thead>
+            <tbody id="openBody"></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="card glass">
+        <h3>Signals</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>Symbol</th><th>Action</th><th>Conf</th><th>Edge</th><th>Model</th><th>Engine</th></tr></thead>
+            <tbody id="signalBody"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid-2">
+      <article class="card glass">
+        <h3>Trade History + Fees</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>Symbol</th><th>Side</th><th>Status</th><th>Gross R</th><th>Fee R</th><th>Net R</th><th>Net USD</th><th>Exit</th></tr></thead>
+            <tbody id="tradeBody"></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="card glass">
+        <h3>Cycle Decisions</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>Symbol</th><th>Decision</th><th>Direction</th><th>P Enter</th><th>Price</th><th>Reason</th></tr></thead>
+            <tbody id="cycleBody"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+  </div>
+
+  <script>
+    const routePath = window.location.pathname.toLowerCase();
+    const ENGINE_FILTER = routePath.endsWith("/dashboard/v5")
+      ? "v5"
+      : routePath.endsWith("/dashboard/mythos")
+      ? "mythos"
+      : "all";
+
+    const state = {
+      sessionId: "default",
+      sessions: [],
+      data: null,
+      auto: true,
+      timer: null,
+    };
+    const $ = (id) => document.getElementById(id);
+    const fmt = {
+      n: (x, d = 2) => Number.isFinite(+x) ? (+x).toFixed(d) : "0.00",
+      pct: (x, d = 1) => Number.isFinite(+x) ? `${(+x * 100).toFixed(d)}%` : "0.0%",
+      r: (x, d = 3) => Number.isFinite(+x) ? `${(+x).toFixed(d)}R` : "0.000R",
+      usd: (x) => Number.isFinite(+x) ? `$${(+x).toFixed(2)}` : "$0.00",
+    };
+    const klass = (v) => Number(v || 0) > 0 ? "pos" : Number(v || 0) < 0 ? "neg" : "";
+
+    function setupRouteUI() {
+      $("tabAll").classList.toggle("active", ENGINE_FILTER === "all");
+      $("tabV5").classList.toggle("active", ENGINE_FILTER === "v5");
+      $("tabMythos").classList.toggle("active", ENGINE_FILTER === "mythos");
+      const titleMap = {
+        all: "Dual Engine Paper Trading Dashboard",
+        v5: "V5 Forecaster Paper Trading Dashboard",
+        mythos: "Mythos Paper Trading Dashboard",
+      };
+      $("mainTitle").textContent = titleMap[ENGINE_FILTER] || titleMap.all;
+    }
+
+    async function fetchJson(url, options) {
+      const res = await fetch(url, options || { cache: "no-store" });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return await res.json();
+    }
+
+    async function loadSessions() {
+      const q = ENGINE_FILTER === "all" ? "" : `?engine=${encodeURIComponent(ENGINE_FILTER)}`;
+      const payload = await fetchJson(`/api/dashboard/sessions${q}`);
+      state.sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+      if (!state.sessions.find(s => s.session_id === state.sessionId)) {
+        state.sessionId = state.sessions[0]?.session_id || "default";
+      }
+      renderSessionSelect();
+    }
+
+    function renderSessionSelect() {
+      const sel = $("sessionSelect");
+      const rows = state.sessions.length ? state.sessions : [{ session_id: "default" }];
+      sel.innerHTML = rows.map(r => `<option value="${r.session_id}">${r.session_id}</option>`).join("");
+      sel.value = state.sessionId;
+    }
+
+    async function loadState() {
+      const qEngine = ENGINE_FILTER === "all" ? "" : `&engine=${encodeURIComponent(ENGINE_FILTER)}`;
+      const url = `/api/dashboard/state?session_id=${encodeURIComponent(state.sessionId)}${qEngine}&predictions_limit=350&cycles_limit=1200&trades_limit=3000`;
+      state.data = await fetchJson(url);
+    }
+
+    function drawSeries(canvasId, emptyId, series, opt = {}) {
+      const canvas = $(canvasId);
+      const empty = $(emptyId);
+      const parent = canvas.parentElement;
+      const w = parent.clientWidth;
+      const h = parent.clientHeight;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(w * dpr));
+      canvas.height = Math.max(1, Math.floor(h * dpr));
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      const values = (series || []).map(Number).filter(v => Number.isFinite(v));
+      if (!values.length) {
+        empty.hidden = false;
+        return;
+      }
+      empty.hidden = true;
+      const pad = 22;
+      const min = Math.min(...values, 0);
+      const max = Math.max(...values, 0);
+      const span = Math.max(max - min, 1e-6);
+      const zeroY = pad + ((max - 0) / span) * (h - pad * 2);
+      const xSpan = Math.max(values.length - 1, 1);
+
+      ctx.strokeStyle = "rgba(130,170,235,.22)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pad, zeroY);
+      ctx.lineTo(w - pad, zeroY);
+      ctx.stroke();
+
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = opt.color || "rgba(94,163,255,.95)";
+      ctx.beginPath();
+      values.forEach((v, i) => {
+        const x = pad + (i / xSpan) * (w - pad * 2);
+        const y = pad + ((max - v) / span) * (h - pad * 2);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      if (opt.fill) {
+        ctx.lineTo(w - pad, h - pad);
+        ctx.lineTo(pad, h - pad);
+        ctx.closePath();
+        const g = ctx.createLinearGradient(0, pad, 0, h - pad);
+        g.addColorStop(0, opt.fillTop || "rgba(95,156,255,.27)");
+        g.addColorStop(1, opt.fillBottom || "rgba(10,22,42,.02)");
+        ctx.fillStyle = g;
+        ctx.fill();
+      }
+    }
+
+    function buildPriceMap(cycles) {
+      const out = new Map();
+      (cycles || []).forEach(c => {
+        const sym = String(c.symbol || "").toUpperCase();
+        if (!sym) return;
+        const p = Number(c.price || 0);
+        if (!Number.isFinite(p) || p <= 0) return;
+        out.set(sym, p);
+      });
+      return out;
+    }
+
+    function renderMetrics(summary) {
+      const s = summary || {};
+      $("mOpen").textContent = s.open_positions ?? 0;
+      $("mClosed").textContent = s.closed_trades ?? 0;
+      $("mWR").textContent = fmt.pct(s.win_rate || 0);
+      $("mExp").textContent = fmt.r(s.expectancy_r || 0);
+      $("mPF").textContent = fmt.n(s.profit_factor || 0, 2);
+      $("mNet").textContent = fmt.r(s.realized_net_r || 0);
+      $("mNet").className = `v ${klass(s.realized_net_r)}`;
+      $("mUnreal").textContent = `${fmt.r(s.unrealized_r || 0)} unrealized`;
+      $("mGrossFee").textContent = `${fmt.r(s.gross_realized_r || 0)} / ${fmt.r(s.fees_r || 0)}`;
+      $("mGrossFee").className = `v ${klass(s.gross_realized_r)}`;
+      $("mFeeUsd").textContent = `${fmt.usd(s.fees_usd || 0)} fees`;
+      $("mLong").textContent = `${s.long_success || 0} / ${s.long_taken || 0}`;
+      $("mLongRate").textContent = `${fmt.pct(s.long_success_rate || 0)} successful`;
+      $("mShort").textContent = `${s.short_success || 0} / ${s.short_taken || 0}`;
+      $("mShortRate").textContent = `${fmt.pct(s.short_success_rate || 0)} successful`;
+      $("mEngine").textContent = String((s.engine || "-")).toUpperCase();
+      $("mAssets").textContent = `${s.asset_count || 0} assets`;
+    }
+
+    function renderInsights(summary, trades, cycles, assets) {
+      const openN = trades.filter(t => String(t.status || "").toLowerCase() === "open").length;
+      const closedN = trades.filter(t => String(t.status || "").toLowerCase() === "closed").length;
+      const holdN = cycles.filter(c => String(c.decision || "").toUpperCase().includes("HOLD")).length;
+      const holdRate = cycles.length ? holdN / cycles.length : 0;
+      const manual = summary.manual_closes || 0;
+      const lines = [
+        `Session <b>${summary.session_id || state.sessionId}</b> • Engine <b>${String(summary.engine || "-").toUpperCase()}</b> • Models <b>${(summary.models || []).length}</b>`,
+        `Open trades <b>${openN}</b>, closed trades <b>${closedN}</b>, cycle hold ratio <b>${fmt.pct(holdRate)}</b>.`,
+        `Realized net <b class="${klass(summary.realized_net_r)}">${fmt.r(summary.realized_net_r || 0)}</b> vs unrealized <b class="${klass(summary.unrealized_r)}">${fmt.r(summary.unrealized_r || 0)}</b>.`,
+        `Fees paid <b>${fmt.r(summary.fees_r || 0)}</b> (${fmt.usd(summary.fees_usd || 0)}), manual closes <b>${manual}</b>.`,
+        `Top assets: <b>${assets.slice(0, 4).map(a => a.symbol).join(", ") || "-"}</b>.`
+      ];
+      $("insights").innerHTML = lines.map(l => `<div class="insight">${l}</div>`).join("");
+    }
+
+    function renderModels(models) {
+      const rows = (models || []).slice(0, 28);
+      $("modelList").innerHTML = rows.length
+        ? rows.map(m => `<span class="model-pill">${m}</span>`).join("")
+        : `<span class="small">No model-name payloads yet.</span>`;
+    }
+
+    function renderAssets(assets) {
+      const rows = (assets || []).slice(0, 160);
+      $("assetBody").innerHTML = rows.length ? rows.map(a => `
+        <tr>
+          <td>${a.symbol || "-"}</td>
+          <td>${a.open || 0}</td>
+          <td>${a.closed || 0}</td>
+          <td class="${klass(a.net_r)}">${fmt.n(a.net_r || 0, 3)}</td>
+          <td>${fmt.pct(a.win_rate || 0)}</td>
+          <td>${a.last_price != null ? fmt.n(a.last_price, 2) : "-"}</td>
+        </tr>
+      `).join("") : `<tr><td colspan="6" class="small">No asset activity yet.</td></tr>`;
+    }
+
+    function renderOpenTrades(trades, cycles) {
+      const latest = buildPriceMap(cycles);
+      const open = (trades || []).filter(t => String(t.status || "").toLowerCase() === "open").reverse();
+      $("openBody").innerHTML = open.length ? open.map(t => {
+        const entry = Number(t.entry_price || t.entryPrice || 0);
+        const sl = Number(t.stop_loss || t.stopLoss || t.initial_sl || entry);
+        const risk = Math.abs(entry - sl);
+        const px = Number(latest.get(String(t.symbol || "").toUpperCase()) || entry);
+        const side = String(t.side || "LONG").toUpperCase();
+        const rr = risk > 1e-9 ? (side === "LONG" ? (px - entry) / risk : (entry - px) / risk) : 0;
+        return `
+          <tr>
+            <td>${t.id ?? "-"}</td>
+            <td>${t.symbol ?? "-"}</td>
+            <td><span class="tag ${side.toLowerCase()}">${side}</span></td>
+            <td>${fmt.n(entry, 2)}</td>
+            <td>${fmt.n(sl, 2)}</td>
+            <td>${fmt.n(t.take_profit || t.tp2 || t.take_profit_price || 0, 2)}</td>
+            <td class="${klass(rr)}">${fmt.n(rr, 3)}</td>
+            <td><button class="btn mono" data-close-id="${t.id}">Manual Close</button></td>
+          </tr>`;
+      }).join("") : `<tr><td colspan="8" class="small">No open positions.</td></tr>`;
+    }
+
+    function renderSignals(preds) {
+      const rows = (preds || []).slice().reverse().slice(0, 260);
+      $("signalBody").innerHTML = rows.length ? rows.map(p => `
+        <tr>
+          <td>${p.id ?? "-"}</td>
+          <td>${p.symbol ?? "-"}</td>
+          <td><span class="tag ${String(p.action || "").toLowerCase()}">${p.action ?? "-"}</span></td>
+          <td>${fmt.pct(p.confidence ?? p.p_enter ?? 0, 2)}</td>
+          <td>${fmt.n(p.edge ?? p.expected_return ?? 0, 4)}</td>
+          <td>${p.model_name ?? "-"}</td>
+          <td>${String(p.engine || "-").toUpperCase()}</td>
+        </tr>
+      `).join("") : `<tr><td colspan="7" class="small">No signals yet.</td></tr>`;
+    }
+
+    function renderTrades(trades) {
+      const rows = (trades || []).slice().reverse().slice(0, 500);
+      $("tradeBody").innerHTML = rows.length ? rows.map(t => {
+        const status = String(t.status || "-").toLowerCase();
+        const maybeManual = t.manual_close ? "manual" : "";
+        return `
+          <tr>
+            <td>${t.id ?? "-"}</td>
+            <td>${t.symbol ?? "-"}</td>
+            <td><span class="tag ${String(t.side || "").toLowerCase()}">${t.side ?? "-"}</span></td>
+            <td><span class="tag ${status}">${status}${maybeManual ? `:${maybeManual}` : ""}</span></td>
+            <td class="${klass(t.gross_r)}">${fmt.n(t.gross_r ?? 0, 4)}</td>
+            <td>${fmt.n(t.cost_r ?? 0, 4)}</td>
+            <td class="${klass(t.net_r ?? t.gross_r)}">${fmt.n(t.net_r ?? t.gross_r ?? 0, 4)}</td>
+            <td>${fmt.usd(t.pnl_usd ?? 0)}</td>
+            <td title="${t.exit_reason || t.outcome || "-"}">${t.outcome || "-"}</td>
+          </tr>
+        `;
+      }).join("") : `<tr><td colspan="9" class="small">No trades yet.</td></tr>`;
+    }
+
+    function renderCycles(cycles) {
+      const rows = (cycles || []).slice().reverse().slice(0, 420);
+      $("cycleBody").innerHTML = rows.length ? rows.map(c => `
+        <tr>
+          <td>${c.id ?? "-"}</td>
+          <td>${c.symbol ?? "-"}</td>
+          <td>${c.decision ?? "-"}</td>
+          <td>${c.direction ?? "-"}</td>
+          <td>${fmt.pct(c.p_enter ?? 0, 2)}</td>
+          <td>${fmt.n(c.price ?? 0, 2)}</td>
+          <td title="${Array.isArray(c.reasons) ? c.reasons.join(" | ") : (c.hold_reason || "-")}">${c.hold_reason || (Array.isArray(c.reasons) ? c.reasons[0] : "-")}</td>
+        </tr>
+      `).join("") : `<tr><td colspan="7" class="small">No cycle logs yet.</td></tr>`;
+    }
+
+    function renderCharts(payload) {
+      const curve = Array.isArray(payload.equity_curve) ? payload.equity_curve : [];
+      const trades = Array.isArray(payload.trades) ? payload.trades : [];
+      const eq = curve.map(x => Number(x.equity_r || 0));
+      drawSeries("equityCanvas", "eqEmpty", eq, { color: "rgba(90, 170, 255, .95)", fill: true });
+      const closed = trades.filter(t => String(t.status || "").toLowerCase() === "closed");
+      const grossCum = [];
+      const netCum = [];
+      let g = 0;
+      let n = 0;
+      closed.forEach(t => {
+        g += Number(t.gross_r || t.net_r || 0);
+        n += Number(t.net_r || t.gross_r || 0);
+        grossCum.push(g);
+        netCum.push(n);
+      });
+      const diff = grossCum.map((gv, i) => gv - (netCum[i] || 0));
+      drawSeries("grossCanvas", "grossEmpty", diff, { color: "rgba(255, 209, 102, .92)", fill: true, fillTop: "rgba(255, 209, 102, .28)" });
+    }
+
+    function applyState() {
+      const payload = state.data || {};
+      const summary = payload.summary || {};
+      const preds = Array.isArray(payload.predictions) ? payload.predictions : [];
+      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+      const trades = Array.isArray(payload.trades) ? payload.trades : [];
+      const models = Array.isArray(payload.models) ? payload.models : (summary.models || []);
+      const assets = Array.isArray(payload.assets) ? payload.assets : [];
+
+      renderMetrics(summary);
+      renderInsights(summary, trades, cycles, assets);
+      renderModels(models);
+      renderAssets(assets);
+      renderOpenTrades(trades, cycles);
+      renderSignals(preds);
+      renderTrades(trades);
+      renderCycles(cycles);
+      renderCharts(payload);
+
+      const stamp = new Date().toLocaleTimeString();
+      $("runMeta").textContent = `Session ${summary.session_id || state.sessionId} • Engine ${String(summary.engine || ENGINE_FILTER).toUpperCase()} • Assets ${summary.asset_count || assets.length || 0} • Updated ${stamp}`;
+    }
+
+    function setStatus(ok, msg = "") {
+      $("liveState").innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${ok ? "var(--pos)" : "var(--neg)"};display:inline-block"></span>${ok ? "Live" : "Disconnected"}${msg ? ` • ${msg}` : ""}`;
+    }
+
+    async function manualClose(tradeId) {
+      const id = Number(tradeId);
+      if (!Number.isFinite(id)) return;
+      await fetchJson(
+        `/api/paper/trade/${id}/manual-close?session_id=${encodeURIComponent(state.sessionId)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ note: "manual_close_ui", fee_bps: 8.0 }),
+        },
+      );
+      await tick();
+    }
+
+    async function tick() {
+      try {
+        await loadSessions();
+        await loadState();
+        applyState();
+        setStatus(true);
+      } catch (err) {
+        setStatus(false, err.message || "fetch error");
+      }
+    }
+
+    function schedule() {
+      if (state.timer) clearInterval(state.timer);
+      if (!state.auto) return;
+      state.timer = setInterval(tick, 4500);
+    }
+
+    $("refreshBtn").addEventListener("click", () => tick());
+    $("autoBtn").addEventListener("click", () => {
+      state.auto = !state.auto;
+      $("autoBtn").textContent = `Auto: ${state.auto ? "ON" : "OFF"}`;
+      $("autoBtn").classList.toggle("warn", !state.auto);
+      schedule();
+    });
+    $("sessionSelect").addEventListener("change", (e) => {
+      state.sessionId = e.target.value || "default";
+      tick();
+    });
+    $("openBody").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-close-id]");
+      if (!btn) return;
+      const id = btn.getAttribute("data-close-id");
+      btn.disabled = true;
+      btn.textContent = "Closing...";
+      try {
+        await manualClose(id);
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = "Manual Close";
+      }
+    });
+    window.addEventListener("resize", () => {
+      if (state.data) renderCharts(state.data);
+    });
+
+    setupRouteUI();
+    tick();
+    schedule();
+  </script>
+</body>
+</html>

@@ -5037,6 +5037,7 @@ class _DashboardSessionState:
     trades: Dict[int, Dict[str, Any]] = field(default_factory=dict)
     trade_order: List[int] = field(default_factory=list)
     updated_at_ms: int = 0
+    engine_hint: str = "unknown"
 
 
 _dashboard_sessions: Dict[str, _DashboardSessionState] = {}
@@ -5088,18 +5089,166 @@ def _latest_price_by_symbol(state: _DashboardSessionState) -> Dict[str, float]:
     return out
 
 
+def _normalize_engine_tag(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return "unknown"
+    if "myth" in raw:
+        return "mythos"
+    if raw in {"v5", "v5_forecaster", "forecaster"}:
+        return "v5"
+    if "v5" in raw:
+        return "v5"
+    return "unknown"
+
+
+def _infer_engine_from_payload(payload: Optional[Dict[str, Any]] = None, session_id: str = "") -> str:
+    row = payload or {}
+    candidates = [
+        row.get("engine"),
+        row.get("engine_type"),
+        row.get("model_engine"),
+        row.get("model_name"),
+        row.get("lane"),
+    ]
+    for cand in candidates:
+        eng = _normalize_engine_tag(cand)
+        if eng != "unknown":
+            return eng
+    sid = str(session_id or "").lower()
+    if "myth" in sid:
+        return "mythos"
+    if "v5" in sid:
+        return "v5"
+    return "unknown"
+
+
+def _refresh_session_engine_hint(state: _DashboardSessionState, payload: Optional[Dict[str, Any]] = None) -> None:
+    eng = _infer_engine_from_payload(payload, session_id=state.session_id)
+    if eng != "unknown":
+        state.engine_hint = eng
+
+
+def _collect_session_models(state: _DashboardSessionState) -> List[str]:
+    models = set()
+    for row in state.predictions[-2000:]:
+        name = str(row.get("model_name", "")).strip()
+        if name:
+            models.add(name)
+    for row in state.cycle_logs[-2000:]:
+        name = str(row.get("model_name", "")).strip()
+        if name:
+            models.add(name)
+    for tid in state.trade_order[-4000:]:
+        tr = state.trades.get(tid) or {}
+        name = str(tr.get("model_name", "")).strip()
+        if name:
+            models.add(name)
+    return sorted(models)[:40]
+
+
+def _assets_snapshot(state: _DashboardSessionState) -> List[Dict[str, Any]]:
+    prices = _latest_price_by_symbol(state)
+    by_symbol: Dict[str, Dict[str, Any]] = {}
+    for tid in state.trade_order:
+        tr = state.trades.get(tid)
+        if not tr:
+            continue
+        sym = str(tr.get("symbol", "")).upper()
+        if not sym:
+            continue
+        row = by_symbol.setdefault(
+            sym,
+            {
+                "symbol": sym,
+                "open": 0,
+                "closed": 0,
+                "wins": 0,
+                "losses": 0,
+                "long_taken": 0,
+                "short_taken": 0,
+                "net_r": 0.0,
+                "fees_r": 0.0,
+                "last_price": None,
+            },
+        )
+        side = str(tr.get("side", "")).upper()
+        if side == "LONG":
+            row["long_taken"] += 1
+        elif side == "SHORT":
+            row["short_taken"] += 1
+        status = str(tr.get("status", "open")).lower()
+        if status == "open":
+            row["open"] += 1
+            continue
+        row["closed"] += 1
+        net_r = float(tr.get("net_r", tr.get("gross_r", 0.0)) or 0.0)
+        cost_r = float(tr.get("cost_r", 0.0) or 0.0)
+        row["net_r"] += net_r
+        row["fees_r"] += cost_r
+        if net_r > 0:
+            row["wins"] += 1
+        elif net_r < 0:
+            row["losses"] += 1
+    for sym, row in by_symbol.items():
+        row["last_price"] = prices.get(sym)
+        closed_n = int(row["closed"])
+        row["win_rate"] = round(float(row["wins"] / max(closed_n, 1)), 4)
+        row["expectancy_r"] = round(float(row["net_r"] / max(closed_n, 1)), 6)
+        row["net_r"] = round(float(row["net_r"]), 6)
+        row["fees_r"] = round(float(row["fees_r"]), 6)
+    out = sorted(by_symbol.values(), key=lambda r: (r.get("open", 0), r.get("net_r", 0.0)), reverse=True)
+    return out
+
+
 def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
     trades = [state.trades[tid] for tid in state.trade_order if tid in state.trades]
     open_trades = [t for t in trades if str(t.get("status", "open")).lower() == "open"]
     closed_trades = [t for t in trades if str(t.get("status", "")).lower() == "closed"]
+    engine_counts: Dict[str, int] = {}
+    for row in state.predictions[-2000:]:
+        eng = _infer_engine_from_payload(row, session_id=state.session_id)
+        engine_counts[eng] = engine_counts.get(eng, 0) + 1
+    for row in state.cycle_logs[-2000:]:
+        eng = _infer_engine_from_payload(row, session_id=state.session_id)
+        engine_counts[eng] = engine_counts.get(eng, 0) + 1
+    for tr in trades:
+        eng = _infer_engine_from_payload(tr, session_id=state.session_id)
+        engine_counts[eng] = engine_counts.get(eng, 0) + 1
+    engine = state.engine_hint
+    if engine_counts:
+        engine = max(engine_counts.items(), key=lambda kv: kv[1])[0]
+    if not engine or engine == "unknown":
+        engine = _infer_engine_from_payload({}, session_id=state.session_id)
+
     wins = 0
     losses = 0
     total_net_r = 0.0
+    total_gross_r = 0.0
+    total_fee_r = 0.0
+    total_fee_usd = 0.0
+    manual_closes = 0
+    long_taken = sum(1 for t in trades if str(t.get("side", "")).upper() == "LONG")
+    short_taken = sum(1 for t in trades if str(t.get("side", "")).upper() == "SHORT")
+    long_success = 0
+    short_success = 0
     for tr in closed_trades:
+        side = str(tr.get("side", "")).upper()
+        if bool(tr.get("manual_close")):
+            manual_closes += 1
+        gross_r = float(tr.get("gross_r", tr.get("net_r", 0.0)) or 0.0)
+        cost_r = float(tr.get("cost_r", 0.0) or 0.0)
         net_r = float(tr.get("net_r", tr.get("gross_r", 0.0)) or 0.0)
+        total_gross_r += gross_r
+        total_fee_r += cost_r
+        total_fee_usd += float(tr.get("pnl_usd_cost", 0.0) or 0.0)
         total_net_r += net_r
         if net_r > 0:
             wins += 1
+            if side == "LONG":
+                long_success += 1
+            elif side == "SHORT":
+                short_success += 1
         elif net_r < 0:
             losses += 1
     closed_n = len(closed_trades)
@@ -5131,8 +5280,30 @@ def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
         except Exception:
             continue
 
+    all_symbols = sorted(
+        {
+            str(t.get("symbol", "")).upper()
+            for t in trades
+            if str(t.get("symbol", "")).strip()
+        }
+        | {
+            str(p.get("symbol", "")).upper()
+            for p in state.predictions
+            if str(p.get("symbol", "")).strip()
+        }
+        | {
+            str(c.get("symbol", "")).upper()
+            for c in state.cycle_logs
+            if str(c.get("symbol", "")).strip()
+        }
+    )
+
     return {
         "session_id": state.session_id,
+        "engine": engine,
+        "models": _collect_session_models(state),
+        "symbols": all_symbols,
+        "asset_count": len(all_symbols),
         "open_positions": len(open_trades),
         "closed_trades": closed_n,
         "wins": wins,
@@ -5140,8 +5311,18 @@ def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
         "win_rate": round(win_rate, 4),
         "expectancy_r": round(expectancy, 6),
         "profit_factor": round(float(profit_factor), 4),
+        "gross_realized_r": round(float(total_gross_r), 6),
+        "fees_r": round(float(total_fee_r), 6),
+        "fees_usd": round(float(total_fee_usd), 4),
         "realized_net_r": round(total_net_r, 6),
         "unrealized_r": round(float(unrealized_r), 6),
+        "long_taken": long_taken,
+        "short_taken": short_taken,
+        "long_success": long_success,
+        "short_success": short_success,
+        "long_success_rate": round(float(long_success / max(long_taken, 1)), 4),
+        "short_success_rate": round(float(short_success / max(short_taken, 1)), 4),
+        "manual_closes": manual_closes,
         "predictions": len(state.predictions),
         "cycle_logs": len(state.cycle_logs),
         "updated_at_ms": state.updated_at_ms,
@@ -5183,8 +5364,10 @@ async def push_prediction_local(payload: Dict[str, Any], session_id: Optional[st
     state.next_prediction_id += 1
     pred["id"] = pred_id
     pred["session_id"] = sid
+    pred["engine"] = _infer_engine_from_payload(pred, session_id=sid)
     pred["ts"] = int(time.time() * 1000)
     state.predictions.append(pred)
+    _refresh_session_engine_hint(state, pred)
     state.updated_at_ms = pred["ts"]
     _trim_dashboard_state(state)
     return {"ok": True, "id": pred_id, "session_id": sid}
@@ -5199,8 +5382,10 @@ async def push_cycle_log_local(payload: Dict[str, Any], session_id: Optional[str
     state.next_cycle_id += 1
     row["id"] = row_id
     row["session_id"] = sid
+    row["engine"] = _infer_engine_from_payload(row, session_id=sid)
     row["server_ts"] = int(time.time() * 1000)
     state.cycle_logs.append(row)
+    _refresh_session_engine_hint(state, row)
     state.updated_at_ms = row["server_ts"]
     _trim_dashboard_state(state)
     return {"ok": True, "id": row_id, "session_id": sid}
@@ -5215,11 +5400,13 @@ async def create_live_trade(payload: Dict[str, Any], session_id: Optional[str] =
     state.next_trade_id += 1
     trade["id"] = trade_id
     trade["session_id"] = sid
+    trade["engine"] = _infer_engine_from_payload(trade, session_id=sid)
     trade.setdefault("status", "open")
     trade.setdefault("entry_time", int(time.time() * 1000))
     trade.setdefault("entry_price", trade.get("current_price"))
     state.trades[trade_id] = trade
     state.trade_order.append(trade_id)
+    _refresh_session_engine_hint(state, trade)
     state.updated_at_ms = int(time.time() * 1000)
     _trim_dashboard_state(state)
     return {"id": trade_id, "session_id": sid}
@@ -5244,7 +5431,82 @@ async def update_live_trade(trade_id: int, payload: Dict[str, Any], session_id: 
     trade.update(payload or {})
     trade["id"] = int(trade_id)
     trade["session_id"] = state.session_id
+    trade["engine"] = _infer_engine_from_payload(trade, session_id=state.session_id)
+    _refresh_session_engine_hint(state, trade)
     state.updated_at_ms = int(time.time() * 1000)
+    return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade}
+
+
+@app.post("/api/paper/trade/{trade_id}/manual-close")
+async def manual_close_paper_trade(
+    trade_id: int,
+    payload: Dict[str, Any],
+    session_id: Optional[str] = Query(default=None),
+):
+    sid = _resolve_session_id(payload, session_id=session_id)
+    state = _dashboard_sessions.get(sid)
+    trade: Optional[Dict[str, Any]] = None
+    if state is not None:
+        trade = state.trades.get(int(trade_id))
+    if trade is None:
+        for candidate in _dashboard_sessions.values():
+            maybe = candidate.trades.get(int(trade_id))
+            if maybe is not None and (not session_id or candidate.session_id == sid):
+                state = candidate
+                trade = maybe
+                break
+    if trade is None or state is None:
+        raise HTTPException(status_code=404, detail=f"Trade {trade_id} not found")
+
+    if str(trade.get("status", "open")).lower() == "closed":
+        return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade, "already_closed": True}
+
+    symbol = str(trade.get("symbol", "")).upper()
+    latest_px = _latest_price_by_symbol(state).get(symbol)
+    entry = float(trade.get("entry_price") or trade.get("entryPrice") or 0.0)
+    exit_price = float(payload.get("exit_price") or latest_px or entry or 0.0)
+    side = str(trade.get("side", "LONG")).upper()
+    initial_sl = float(trade.get("initial_sl") or trade.get("stop_loss") or trade.get("stopLoss") or entry)
+    risk_abs = abs(entry - initial_sl)
+    if risk_abs <= 1e-9:
+        risk_abs = max(entry * 0.001, 1e-6)
+
+    gross_r = (exit_price - entry) / risk_abs if side == "LONG" else (entry - exit_price) / risk_abs
+    fee_bps = float(payload.get("fee_bps", 8.0) or 0.0)
+    explicit_cost_r = payload.get("cost_r")
+    if explicit_cost_r is not None:
+        cost_r = float(explicit_cost_r)
+    else:
+        cost_r = (fee_bps / 10000.0) * 2.0 / (risk_abs / max(entry, 1e-9))
+    net_r = gross_r - cost_r
+
+    risk_usd = float(trade.get("risk_usd_used", 0.0) or 0.0)
+    gross_usd = round(gross_r * risk_usd, 2)
+    cost_usd = round(cost_r * risk_usd, 2)
+    net_usd = round(net_r * risk_usd, 2)
+
+    now_ms = int(time.time() * 1000)
+    trade.update(
+        {
+            "status": "closed",
+            "manual_close": True,
+            "exit_time": now_ms,
+            "exit_price": round(exit_price, 6),
+            "outcome": str(payload.get("outcome") or "MANUAL_CLOSE"),
+            "exit_reason": str(payload.get("note") or "manual_close_dashboard"),
+            "gross_r": round(float(gross_r), 6),
+            "cost_r": round(float(cost_r), 6),
+            "net_r": round(float(net_r), 6),
+            "sized_r": round(float(net_r * float(trade.get("lane_size_mult", 1.0) or 1.0)), 6),
+            "risk_usd_used": round(float(risk_usd), 2),
+            "pnl_usd_gross": gross_usd,
+            "pnl_usd_cost": cost_usd,
+            "pnl_usd": net_usd,
+            "engine": _infer_engine_from_payload(trade, session_id=state.session_id),
+        }
+    )
+    state.updated_at_ms = now_ms
+    _refresh_session_engine_hint(state, trade)
     return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade}
 
 
@@ -5273,36 +5535,53 @@ async def open_positions_summary(session_id: str = Query(default="default")):
 
 
 @app.get("/api/dashboard/sessions")
-async def dashboard_sessions():
+async def dashboard_sessions(engine: Optional[str] = Query(default=None)):
+    engine_filter = _normalize_engine_tag(engine) if engine else None
     sessions = []
     for sid in sorted(_dashboard_sessions.keys()):
-        sessions.append(_session_summary(_dashboard_sessions[sid]))
+        summary = _session_summary(_dashboard_sessions[sid])
+        if engine_filter and engine_filter != "unknown" and summary.get("engine") != engine_filter:
+            continue
+        sessions.append(summary)
     return {"sessions": sessions, "count": len(sessions)}
 
 
 @app.get("/api/dashboard/state")
 async def dashboard_state(
     session_id: str = Query(default="default"),
+    engine: Optional[str] = Query(default=None),
     predictions_limit: int = Query(default=250, ge=1, le=5000),
     cycles_limit: int = Query(default=600, ge=1, le=5000),
     trades_limit: int = Query(default=1000, ge=1, le=5000),
 ):
     state = _get_dashboard_session(session_id)
+    summary = _session_summary(state)
+    engine_filter = _normalize_engine_tag(engine) if engine else None
+    if (
+        engine_filter
+        and engine_filter != "unknown"
+        and summary.get("engine") not in {engine_filter, "unknown"}
+    ):
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' is not tagged as engine={engine_filter}")
     trades = [state.trades[tid] for tid in state.trade_order if tid in state.trades]
     curve = _equity_curve(state)
     max_dd = min((pt["drawdown_r"] for pt in curve), default=0.0)
     return {
-        "summary": {**_session_summary(state), "max_drawdown_r": round(float(max_dd), 6)},
+        "summary": {**summary, "max_drawdown_r": round(float(max_dd), 6)},
         "predictions": state.predictions[-predictions_limit:],
         "cycle_logs": state.cycle_logs[-cycles_limit:],
         "trades": trades[-trades_limit:],
         "equity_curve": curve[-3000:],
+        "assets": _assets_snapshot(state),
+        "models": _collect_session_models(state),
     }
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_html():
-    html_path = Path(__file__).parent / "dashboard.html"
+    html_path = Path(__file__).parent / "dashboard_engine.html"
+    if not html_path.exists():
+        html_path = Path(__file__).parent / "dashboard.html"
     if not html_path.exists():
         return HTMLResponse(
             content="<html><body><h1>Dashboard not found</h1><p>Create api/dashboard.html</p></body></html>",
@@ -5311,9 +5590,19 @@ async def dashboard_html():
     return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
 
 
+@app.get("/dashboard/v5", response_class=HTMLResponse)
+async def dashboard_html_v5():
+    return await dashboard_html()
+
+
+@app.get("/dashboard/mythos", response_class=HTMLResponse)
+async def dashboard_html_mythos():
+    return await dashboard_html()
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard_root():
-    return HTMLResponse(content="<html><body><meta http-equiv='refresh' content='0; url=/dashboard' /></body></html>")
+    return HTMLResponse(content="<html><body><meta http-equiv='refresh' content='0; url=/dashboard/v5' /></body></html>")
 
 
 def start_server(host: str = "0.0.0.0", port: int = 8000):
