@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import time
+import httpx
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -5094,6 +5095,115 @@ def _latest_price_by_symbol(state: _DashboardSessionState) -> Dict[str, float]:
     return out
 
 
+_MARKET_PRICE_CACHE: Dict[str, Dict[str, Any]] = {}
+_MARKET_PRICE_TTL_S = 0.9
+_COINBASE_PRODUCT_MAP: Dict[str, str] = {
+    "BTCUSDT": "BTC-USD",
+    "ETHUSDT": "ETH-USD",
+    "SOLUSDT": "SOL-USD",
+    "BNBUSDT": "BNB-USD",
+    "ADAUSDT": "ADA-USD",
+    "XRPUSDT": "XRP-USD",
+    "DOGEUSDT": "DOGE-USD",
+}
+
+
+def _parse_symbol_list(raw: Optional[str]) -> List[str]:
+    if not raw:
+        return ["BTCUSDT", "ETHUSDT"]
+    out: List[str] = []
+    for part in str(raw).split(","):
+        sym = str(part or "").strip().upper()
+        if not sym:
+            continue
+        if sym.endswith("-USD"):
+            sym = sym.replace("-", "")
+        out.append(sym)
+    return sorted(set(out))[:20] or ["BTCUSDT", "ETHUSDT"]
+
+
+async def _fetch_binance_batch(symbols: List[str]) -> Dict[str, float]:
+    # Binance supports a JSON encoded `symbols` parameter for batch ticker price.
+    if not symbols:
+        return {}
+    url = "https://api.binance.com/api/v3/ticker/price"
+    params = {"symbols": json.dumps(symbols)}
+    out: Dict[str, float] = {}
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.get(url, params=params)
+            if resp.status_code != 200:
+                return {}
+            payload = resp.json()
+    except Exception:
+        return {}
+    if not isinstance(payload, list):
+        return {}
+    for row in payload:
+        try:
+            sym = str(row.get("symbol", "")).upper()
+            price = float(row.get("price", 0.0))
+            if sym and np.isfinite(price) and price > 0:
+                out[sym] = price
+        except Exception:
+            continue
+    return out
+
+
+async def _fetch_coinbase_price(symbol: str) -> Optional[float]:
+    product = _COINBASE_PRODUCT_MAP.get(symbol)
+    if not product:
+        return None
+    url = f"https://api.exchange.coinbase.com/products/{product}/ticker"
+    try:
+        async with httpx.AsyncClient(timeout=4.0, headers={"User-Agent": "Mozilla/5.0"}) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return None
+            payload = resp.json()
+    except Exception:
+        return None
+    try:
+        px = float(payload.get("price", 0.0))
+        if np.isfinite(px) and px > 0:
+            return px
+    except Exception:
+        return None
+    return None
+
+
+async def _resolve_market_prices(symbols: List[str], force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
+    now_ms = int(time.time() * 1000)
+    out: Dict[str, Dict[str, Any]] = {}
+    stale: List[str] = []
+    ttl_ms = int(_MARKET_PRICE_TTL_S * 1000)
+
+    for sym in symbols:
+        row = _MARKET_PRICE_CACHE.get(sym)
+        if row and not force_refresh and (now_ms - int(row.get("ts", 0))) <= ttl_ms:
+            out[sym] = row
+        else:
+            stale.append(sym)
+
+    if stale:
+        binance = await _fetch_binance_batch(stale)
+        for sym in stale:
+            px = binance.get(sym)
+            source = "binance"
+            if px is None:
+                px = await _fetch_coinbase_price(sym)
+                source = "coinbase" if px is not None else "cache"
+            if px is None:
+                prior = _MARKET_PRICE_CACHE.get(sym)
+                if prior:
+                    out[sym] = prior
+                continue
+            row = {"price": round(float(px), 8), "ts": now_ms, "source": source}
+            _MARKET_PRICE_CACHE[sym] = row
+            out[sym] = row
+    return out
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -5730,6 +5840,24 @@ async def open_positions_summary(session_id: str = Query(default="default")):
             }
         )
     return {"session_id": session_id, "count": len(positions), "positions": positions}
+
+
+@app.get("/api/market/ticks")
+async def market_ticks(
+    symbols: str = Query(default="BTCUSDT,ETHUSDT"),
+    force_refresh: bool = Query(default=False),
+):
+    symbol_list = _parse_symbol_list(symbols)
+    rows = await _resolve_market_prices(symbol_list, force_refresh=bool(force_refresh))
+    prices = {sym: float(row["price"]) for sym, row in rows.items()}
+    sources = {sym: str(row.get("source", "unknown")) for sym, row in rows.items()}
+    latest_ts = max((int(row.get("ts", 0)) for row in rows.values()), default=int(time.time() * 1000))
+    return {
+        "symbols": symbol_list,
+        "prices": prices,
+        "sources": sources,
+        "server_ts": latest_ts,
+    }
 
 
 @app.get("/api/dashboard/sessions")

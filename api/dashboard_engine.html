@@ -527,6 +527,9 @@
       timer: null,
       openSparkSeries: {},
       marketSymbol: "BTCUSDT",
+      livePrices: {},
+      livePriceTs: 0,
+      liveTimer: null,
     };
     const $ = (id) => document.getElementById(id);
     const fmt = {
@@ -838,6 +841,108 @@
       return out;
     }
 
+    function trackedSymbols(summary, cycles, trades) {
+      const set = new Set();
+      (summary?.symbols || []).forEach((s) => {
+        const sym = String(s || "").toUpperCase();
+        if (sym) set.add(sym);
+      });
+      (cycles || []).forEach((c) => {
+        const sym = String(c.symbol || "").toUpperCase();
+        if (sym) set.add(sym);
+      });
+      (trades || []).forEach((t) => {
+        const sym = String(t.symbol || "").toUpperCase();
+        if (sym) set.add(sym);
+      });
+      if (!set.size) {
+        set.add("BTCUSDT");
+        set.add("ETHUSDT");
+      }
+      return Array.from(set).slice(0, 20);
+    }
+
+    async function refreshLiveTicks(summary, cycles, trades) {
+      const syms = trackedSymbols(summary, cycles, trades);
+      if (!syms.length) return;
+      const q = encodeURIComponent(syms.join(","));
+      try {
+        const payload = await fetchJson(`/api/market/ticks?symbols=${q}`);
+        const prices = payload?.prices || {};
+        const ts = Number(payload?.server_ts || Date.now());
+        for (const [sym, px] of Object.entries(prices)) {
+          const v = Number(px);
+          if (Number.isFinite(v) && v > 0) {
+            state.livePrices[String(sym).toUpperCase()] = v;
+          }
+        }
+        state.livePriceTs = ts;
+      } catch (_) {
+        // keep previous prices if live tick fetch fails
+      }
+    }
+
+    function priceMapWithLive(cycles) {
+      const map = buildPriceMap(cycles);
+      for (const [sym, px] of Object.entries(state.livePrices || {})) {
+        const v = Number(px);
+        if (Number.isFinite(v) && v > 0) {
+          map.set(String(sym).toUpperCase(), v);
+        }
+      }
+      return map;
+    }
+
+    function trackedSymbols(summary, cycles, trades) {
+      const set = new Set();
+      (summary?.symbols || []).forEach((s) => {
+        const sym = String(s || "").toUpperCase();
+        if (sym) set.add(sym);
+      });
+      (cycles || []).forEach((c) => {
+        const sym = String(c.symbol || "").toUpperCase();
+        if (sym) set.add(sym);
+      });
+      (trades || []).forEach((t) => {
+        const sym = String(t.symbol || "").toUpperCase();
+        if (sym) set.add(sym);
+      });
+      if (!set.size) {
+        set.add("BTCUSDT");
+        set.add("ETHUSDT");
+      }
+      return Array.from(set).slice(0, 20);
+    }
+
+    async function refreshLiveTicks(summary, cycles, trades) {
+      const syms = trackedSymbols(summary, cycles, trades);
+      if (!syms.length) return;
+      const q = encodeURIComponent(syms.join(","));
+      try {
+        const payload = await fetchJson(`/api/market/ticks?symbols=${q}`);
+        const prices = payload?.prices || {};
+        const ts = Number(payload?.server_ts || Date.now());
+        for (const [sym, px] of Object.entries(prices)) {
+          const v = Number(px);
+          if (Number.isFinite(v) && v > 0) {
+            state.livePrices[String(sym).toUpperCase()] = v;
+          }
+        }
+        state.livePriceTs = ts;
+      } catch (_) {
+        // keep previous prices if tick request fails
+      }
+    }
+
+    function priceMapWithLive(cycles) {
+      const map = buildPriceMap(cycles);
+      for (const [sym, px] of Object.entries(state.livePrices || {})) {
+        const v = Number(px);
+        if (Number.isFinite(v) && v > 0) map.set(String(sym).toUpperCase(), v);
+      }
+      return map;
+    }
+
     function mergeDashboardPayloads(payloads) {
       const items = (payloads || []).filter(Boolean);
       if (!items.length) return emptyDashboardPayload();
@@ -1131,7 +1236,12 @@
           <td>${a.closed || 0}</td>
           <td class="${klass(a.net_r)}">${fmt.n(a.net_r || 0, 3)}</td>
           <td>${fmt.pct(a.win_rate || 0)}</td>
-          <td>${a.last_price != null ? fmt.n(a.last_price, 2) : "-"}</td>
+          <td>${(() => {
+            const sym = String(a.symbol || "").toUpperCase();
+            const live = Number(state.livePrices?.[sym]);
+            if (Number.isFinite(live) && live > 0) return fmt.n(live, 2);
+            return a.last_price != null ? fmt.n(a.last_price, 2) : "-";
+          })()}</td>
         </tr>
       `).join("") : `<tr><td colspan="6" class="small">No asset activity yet.</td></tr>`;
     }
@@ -1246,6 +1356,13 @@
         uniq.push(r);
       }
       const points = uniq.slice(-1400);
+      const livePx = Number(state.livePrices?.[symbol]);
+      if (Number.isFinite(livePx) && livePx > 0) {
+        const liveTs = Number(state.livePriceTs || Date.now());
+        if (!points.length || Math.abs((points[points.length - 1]?.price || 0) - livePx) > 1e-9) {
+          points.push({ ts: liveTs, price: livePx });
+        }
+      }
 
       const canvas = $("marketCanvas");
       const empty = $("marketEmpty");
@@ -1388,6 +1505,12 @@
         price: Number(c.price || 0),
         ts: tsMs(c.server_ts || c.ts || c.timestamp || c.time || 0),
       })).filter(r => r.symbol && Number.isFinite(r.price) && r.price > 0 && r.ts > 0);
+      const liveTs = Number(state.livePriceTs || Date.now());
+      for (const [sym, px] of Object.entries(state.livePrices || {})) {
+        const p = Number(px);
+        if (!Number.isFinite(p) || p <= 0) continue;
+        rows.push({ symbol: String(sym).toUpperCase(), price: p, ts: liveTs });
+      }
       const series = [];
       if (rows.length && (openTrades || []).length) {
         rows.sort((a, b) => a.ts - b.ts);
@@ -1476,7 +1599,7 @@
     }
 
     function renderOpenTrades(trades, cycles) {
-      const latest = buildPriceMap(cycles);
+      const latest = priceMapWithLive(cycles);
       const cycleSeriesMap = buildCyclePriceSeries(cycles);
       const open = (trades || []).filter(t => String(t.status || "").toLowerCase() === "open").reverse();
       $("openBody").innerHTML = open.length ? open.map(t => {
@@ -1631,11 +1754,29 @@
       try {
         await loadSessions();
         await loadState();
+        const payload = state.data || {};
+        const summary = payload.summary || {};
+        const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+        const trades = Array.isArray(payload.trades) ? payload.trades : [];
+        await refreshLiveTicks(summary, cycles, trades);
         applyState();
         setStatus(true);
       } catch (err) {
         setStatus(false, err.message || "fetch error");
       }
+    }
+
+    async function tickLiveOnly() {
+      if (!state.data) return;
+      const payload = state.data || {};
+      const summary = payload.summary || {};
+      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+      const trades = Array.isArray(payload.trades) ? payload.trades : [];
+      const assets = Array.isArray(payload.assets) ? payload.assets : [];
+      await refreshLiveTicks(summary, cycles, trades);
+      renderAssets(assets);
+      drawMarketChart(cycles, trades, summary);
+      renderOpenTrades(trades, cycles);
     }
 
     function schedule() {
@@ -1644,12 +1785,21 @@
       state.timer = setInterval(tick, 2500);
     }
 
+    function scheduleLiveTicks() {
+      if (state.liveTimer) clearInterval(state.liveTimer);
+      if (!state.auto) return;
+      state.liveTimer = setInterval(() => {
+        tickLiveOnly().catch(() => {});
+      }, 1000);
+    }
+
     $("refreshBtn").addEventListener("click", () => tick());
     $("autoBtn").addEventListener("click", () => {
       state.auto = !state.auto;
       $("autoBtn").textContent = `Auto: ${state.auto ? "ON" : "OFF"}`;
       $("autoBtn").classList.toggle("warn", !state.auto);
       schedule();
+      scheduleLiveTicks();
     });
     $("sessionSelect").addEventListener("change", (e) => {
       state.sessionId = e.target.value || "default";
@@ -1693,6 +1843,7 @@
     setupRouteUI();
     tick();
     schedule();
+    scheduleLiveTicks();
   </script>
 </body>
 </html>
