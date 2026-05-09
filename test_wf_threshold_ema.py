@@ -138,6 +138,23 @@ class TestWFThresholdFloorSourceVerification:
                 f"Found old hardcoded 0.01 floor in threshold_ema max() call:\n{ml}"
             )
 
+    def test_fold_override_uses_live_threshold_ema_state(self):
+        """WF fold calls must pass threshold_ema, not stale blended_threshold snapshots."""
+        override_lines = [
+            ln for ln in self.wf_lines
+            if "wf_threshold_override=" in ln
+        ]
+        assert override_lines, "Could not find wf_threshold_override assignments in run_v5_walk_forward"
+        for ln in override_lines:
+            assert "threshold_ema" in ln, (
+                "wf_threshold_override must be sourced from threshold_ema so dead/low-conf "
+                f"EMA updates carry into the next fold:\n{ln}"
+            )
+            assert "blended_threshold" not in ln, (
+                "wf_threshold_override should not read blended_threshold (can become stale "
+                f"across dead/low-conf folds):\n{ln}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Behavioral tests: correct logic vs old logic on V5-realistic values
