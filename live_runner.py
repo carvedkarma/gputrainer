@@ -1585,6 +1585,7 @@ class LiveRunner:
                 side = str(wp.get("side", "LONG")).upper()
                 atr = abs(entry_price - sl_price) if sl_price else entry_price * 0.005
                 risk_pct = atr / entry_price * 100 if entry_price > 0 else 1.0
+                lane = str(wp.get("lane") or ("MYTHOS" if self.live_model == "mythos" else "V5"))
 
                 pos = _Pos(
                     symbol=sym, side=side,
@@ -1597,7 +1598,7 @@ class LiveRunner:
                     size_mult=1.0,
                     risk_pct=risk_pct,
                     bar_index=self.cycle_count,
-                    lane="V5", horizon=96,
+                    lane=lane, horizon=96,
                 )
                 self.portfolio.open_positions[sym] = pos
                 log.info(f"[PortfolioSync/{source}] Restored {side} {sym} @ {entry_price:.2f} from web app")
@@ -1628,7 +1629,10 @@ class LiveRunner:
 
         self.portfolio.on_close_callback = self._on_position_close
         log.info(f"  15m fetch limit: {self.limit_15m} | Direct HTF fetch: {self.direct_htf}")
-        log.info(f"  HTF warmup gates: min h1={MIN_H1_BARS} h4={MIN_H4_BARS} bars")
+        if self.live_model == "mythos":
+            log.info("  Pure Mythos mode: HTF warmup/trend gates disabled")
+        else:
+            log.info(f"  HTF warmup gates: min h1={MIN_H1_BARS} h4={MIN_H4_BARS} bars")
         if self.dry_run:
             log.info(f"  DRY RUN MODE — replaying cached candles")
         log.info("=" * 80)
@@ -1836,7 +1840,10 @@ class LiveRunner:
                         self._consecutive_api_errors)
         if self.execution_mode in ("paper", "live") and self.record_trades:
             self.portfolio.check_exits(prices, highs=highs, lows=lows)
-            self._run_trade_manager(prices, highs, lows)
+            # Pure model isolation: TradeManager overlays are V5-specific.
+            # Mythos sessions run with native signal+SL/TP flow only.
+            if self.live_model != "mythos":
+                self._run_trade_manager(prices, highs, lows)
 
         candidates = []
         for symbol in self.symbols:
@@ -1932,10 +1939,8 @@ class LiveRunner:
         symbol: str,
         df_candles: pd.DataFrame,
         model,
-        use_direct_htf: bool = False,
-        htf_direct: Optional[Dict[str, pd.DataFrame]] = None,
     ) -> Optional[dict]:
-        """Process one symbol using Mythos runtime inference."""
+        """Process one symbol using pure Mythos runtime inference."""
         try:
             from mythos.features import build_feature_frame
 
@@ -1955,16 +1960,14 @@ class LiveRunner:
         abstain = bool(pred.get("abstain", False))
         reason = str(pred.get("reason", ""))
 
-        if use_direct_htf and htf_direct:
-            htf = self._compute_htf_from_direct(htf_direct, df_candles)
-        else:
-            htf = _apply_htf_gates(features_df)
+        # Pure Mythos mode: no HTF trend scoring/gating overlay.
+        htf = {"h1_trend": 0, "h4_trend": 0, "slope_ok": True, "range_ok": True}
 
         current_price = float(df_candles.iloc[-1]["close"])
         atr = _compute_atr(df_candles)
         edge_floor = float(getattr(model, "live_edge_threshold", 0.0))
         conf_floor = float(getattr(model, "live_min_confidence", 0.0))
-        htf_score = _compute_htf_score(htf, side if side in {"LONG", "SHORT"} else "LONG")
+        htf_score = 0
 
         mythos_info = {
             "lane": "MYTHOS",
@@ -2049,6 +2052,13 @@ class LiveRunner:
             return None
 
         df_candles = self._update_candle_cache(symbol, df_candles)
+        model, engineer, feature_columns, temperature, symbol_map = self._get_model_for_symbol(symbol)
+        if getattr(model, "_is_mythos", False):
+            return self._process_symbol_mythos(
+                symbol=symbol,
+                df_candles=df_candles,
+                model=model,
+            )
 
         htf_direct = None
         use_direct_htf = False
@@ -2101,16 +2111,6 @@ class LiveRunner:
                 return None
             else:
                 self.warmup_logged[symbol] = False
-
-        model, engineer, feature_columns, temperature, symbol_map = self._get_model_for_symbol(symbol)
-        if getattr(model, "_is_mythos", False):
-            return self._process_symbol_mythos(
-                symbol=symbol,
-                df_candles=df_candles,
-                model=model,
-                use_direct_htf=use_direct_htf,
-                htf_direct=htf_direct,
-            )
 
         v6_seq_len = getattr(model, '_v6_seq_len', 1) if getattr(model, '_is_v6', False) else 1
 
