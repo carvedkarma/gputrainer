@@ -1125,16 +1125,20 @@ class LiveRunner:
         log.info(f"[INIT] LiveRunner {SYSTEM_VERSION} execution_mode={execution_mode} "
                  f"record_trades={record_trades} symbols={symbols} session={self.paper_session_id} "
                  f"engine={self.dashboard_engine} model={self.live_model}")
-        log.info(
-            "[CONFIG] V5 scoring (shared defaults applied): "
-            "lambda=%.3f threshold=%.3f min_mu_r=%.3f mae_floor=%.3f "
-            "min_p_side=%.3f min_p_short=%.3f slippage_bps=%.1f cooldown=%d",
-            self.v5_score_lambda, self.v5_score_threshold, self.v5_min_mu_r,
-            self.v5_mae_floor, self.v5_min_p_side, self.v5_min_p_short,
-            self.v5_slippage_bps, self.cooldown_bars,
-        )
         if self.live_model == "mythos":
-            log.info("[CONFIG] Mythos runtime selected for live/paper inference")
+            log.info(
+                "[CONFIG] Mythos runtime selected for live/paper inference "
+                "(V5 scorer settings ignored)"
+            )
+        else:
+            log.info(
+                "[CONFIG] V5 scoring (shared defaults applied): "
+                "lambda=%.3f threshold=%.3f min_mu_r=%.3f mae_floor=%.3f "
+                "min_p_side=%.3f min_p_short=%.3f slippage_bps=%.1f cooldown=%d",
+                self.v5_score_lambda, self.v5_score_threshold, self.v5_min_mu_r,
+                self.v5_mae_floor, self.v5_min_p_side, self.v5_min_p_short,
+                self.v5_slippage_bps, self.cooldown_bars,
+            )
         log.info(
             "[CONFIG] Halt switches: data_staleness=%s/%gs api_errors=%s/%d daily_loss_r=%s",
             self.halt_on_data_staleness, self.max_data_staleness_seconds,
