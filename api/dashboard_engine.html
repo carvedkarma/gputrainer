@@ -210,6 +210,88 @@
     .model-list { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 6px; }
     .model-pill { padding: 4px 8px; border-radius: 999px; border: 1px solid rgba(118, 165, 255, .35); background: rgba(8, 18, 35, .78); font-size: .72rem; color: #c9daf2; }
     .small { font-size: .74rem; color: #9ab0cf; }
+    .open-visual-grid {
+      margin-top: 9px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 8px;
+      max-height: 260px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .trade-visual-card {
+      border: 1px solid rgba(122, 168, 246, .24);
+      border-radius: 10px;
+      background: rgba(8, 19, 37, .78);
+      padding: 8px;
+    }
+    .trade-visual-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .trade-visual-title { font-size: .77rem; font-weight: 600; letter-spacing: .02em; }
+    .trade-visual-meta { font-size: .69rem; color: #9db0cf; }
+    .trade-visual-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-bottom: 7px;
+    }
+    .trade-visual-stat {
+      border: 1px solid rgba(111, 158, 235, .18);
+      background: rgba(6, 16, 30, .6);
+      border-radius: 8px;
+      padding: 5px 6px;
+    }
+    .trade-visual-stat .k { font-size: .62rem; text-transform: uppercase; letter-spacing: .04em; color: #92a7c7; }
+    .trade-visual-stat .v { font-size: .76rem; font-weight: 700; margin-top: 2px; }
+    .risk-rail {
+      position: relative;
+      height: 28px;
+      border: 1px solid rgba(119, 166, 244, .25);
+      background: linear-gradient(90deg, rgba(255,111,141,.18), rgba(98,167,255,.08), rgba(42,226,173,.18));
+      border-radius: 999px;
+      margin-bottom: 7px;
+      overflow: hidden;
+    }
+    .risk-marker {
+      position: absolute;
+      top: 3px;
+      width: 2px;
+      bottom: 3px;
+      background: rgba(195, 221, 255, .95);
+    }
+    .risk-dot {
+      position: absolute;
+      top: 50%;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      background: var(--cyan);
+      box-shadow: 0 0 0 0 rgba(98, 229, 255, .7);
+      animation: pulse 1.5s infinite;
+    }
+    .risk-label {
+      position: absolute;
+      top: 1px;
+      transform: translateX(-50%);
+      font-size: .58rem;
+      color: #d4e4ff;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      pointer-events: none;
+    }
+    .sparkline-wrap {
+      height: 62px;
+      border: 1px solid rgba(117, 160, 234, .2);
+      border-radius: 8px;
+      background: rgba(5, 13, 27, .72);
+      overflow: hidden;
+    }
 
     @media (max-width: 1450px) {
       .metrics { grid-template-columns: repeat(5, minmax(130px, 1fr)); }
@@ -283,13 +365,19 @@
 
     <section class="grid-2">
       <article class="card glass">
-        <h3>Open Trades (Manual Close Enabled)</h3>
+        <h3>Open Trades Live Command Center (Manual Close Enabled)</h3>
+        <div class="chart-wrap small" style="margin-bottom:8px">
+          <canvas id="openExposureCanvas"></canvas>
+          <div id="openExposureEmpty" class="empty" hidden>No open-trade timeline yet.</div>
+        </div>
+        <div id="openExposureMeta" class="small" style="margin-bottom:8px">Open exposure graph booting...</div>
         <div class="table-wrap">
           <table>
             <thead><tr><th>ID</th><th>Symbol</th><th>Side</th><th>Entry</th><th>SL</th><th>TP</th><th>Live R</th><th>Action</th></tr></thead>
             <tbody id="openBody"></tbody>
           </table>
         </div>
+        <div id="openVisuals" class="open-visual-grid"></div>
       </article>
       <article class="card glass">
         <h3>Signals</h3>
@@ -338,6 +426,7 @@
       data: null,
       auto: true,
       timer: null,
+      openSparkSeries: {},
     };
     const $ = (id) => document.getElementById(id);
     const fmt = {
@@ -442,6 +531,126 @@
       }
     }
 
+    function tsMs(v) {
+      const n = Number(v || 0);
+      if (!Number.isFinite(n) || n <= 0) return 0;
+      if (n > 1e12) return n;
+      if (n > 1e10) return n;
+      if (n > 1e9) return n * 1000;
+      return n;
+    }
+
+    function clamp(v, lo, hi) {
+      return Math.max(lo, Math.min(hi, v));
+    }
+
+    function buildCyclePriceSeries(cycles) {
+      const out = new Map();
+      (cycles || []).forEach(c => {
+        const sym = String(c.symbol || "").toUpperCase();
+        const px = Number(c.price || 0);
+        if (!sym || !Number.isFinite(px) || px <= 0) return;
+        const ts = tsMs(c.server_ts || c.ts || c.timestamp || c.time || Date.now());
+        if (!out.has(sym)) out.set(sym, []);
+        out.get(sym).push({ ts, price: px });
+      });
+      for (const [sym, rows] of out.entries()) {
+        rows.sort((a, b) => a.ts - b.ts);
+        if (rows.length > 1800) out.set(sym, rows.slice(-1800));
+      }
+      return out;
+    }
+
+    function rrAtPrice(trade, px) {
+      const entry = Number(trade.entry_price || trade.entryPrice || 0);
+      const sl = Number(trade.stop_loss || trade.stopLoss || trade.initial_sl || entry);
+      const side = String(trade.side || "LONG").toUpperCase();
+      const risk = Math.abs(entry - sl);
+      if (!Number.isFinite(px) || !Number.isFinite(entry) || risk <= 1e-9) return 0;
+      return side === "LONG" ? (px - entry) / risk : (entry - px) / risk;
+    }
+
+    function buildOpenTradeTrack(trade, latestPriceMap, cycleSeriesMap) {
+      const symbol = String(trade.symbol || "").toUpperCase();
+      const entryTs = tsMs(trade.entry_time || trade.entryTs || trade.entry_ts || 0);
+      const entry = Number(trade.entry_price || trade.entryPrice || 0);
+      const sl = Number(trade.stop_loss || trade.stopLoss || trade.initial_sl || entry);
+      const tp = Number(trade.take_profit || trade.tp2 || trade.take_profit_price || entry);
+      const side = String(trade.side || "LONG").toUpperCase();
+      const risk = Math.abs(entry - sl);
+      const rawSeries = cycleSeriesMap.get(symbol) || [];
+      const rrSeries = [];
+      for (const pt of rawSeries) {
+        if (entryTs > 0 && pt.ts < entryTs) continue;
+        rrSeries.push(rrAtPrice(trade, pt.price));
+      }
+      const latestPx = Number(latestPriceMap.get(symbol) || rawSeries[rawSeries.length - 1]?.price || entry);
+      const liveR = rrAtPrice(trade, latestPx);
+      if (!rrSeries.length || Math.abs(rrSeries[rrSeries.length - 1] - liveR) > 1e-9) {
+        rrSeries.push(liveR);
+      }
+      const tpR = risk > 1e-9 ? (side === "LONG" ? (tp - entry) / risk : (entry - tp) / risk) : 0;
+      const lo = Math.min(-1, tpR, liveR, -2);
+      const hi = Math.max(1, tpR, liveR, 2);
+      const toPct = (r) => clamp(((r - lo) / Math.max(hi - lo, 1e-9)) * 100, 0, 100);
+      const nowMs = Date.now();
+      const ageMins = entryTs > 0 ? Math.max(0, (nowMs - entryTs) / 60000) : 0;
+      return {
+        symbol,
+        side,
+        entry,
+        sl,
+        tp,
+        liveR,
+        latestPx,
+        rrSeries: rrSeries.slice(-220),
+        slPct: toPct(-1),
+        entryPct: toPct(0),
+        tpPct: toPct(tpR),
+        livePct: toPct(liveR),
+        ageMins,
+      };
+    }
+
+    function drawSparkline(canvasId, series, colorHint) {
+      const canvas = $(canvasId);
+      if (!canvas) return;
+      const parent = canvas.parentElement;
+      const w = parent.clientWidth;
+      const h = parent.clientHeight;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(w * dpr));
+      canvas.height = Math.max(1, Math.floor(h * dpr));
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      const values = (series || []).map(Number).filter(v => Number.isFinite(v));
+      if (!values.length) return;
+      const pad = 6;
+      const min = Math.min(...values, 0);
+      const max = Math.max(...values, 0);
+      const span = Math.max(max - min, 1e-9);
+      const zeroY = pad + ((max - 0) / span) * (h - pad * 2);
+      const xSpan = Math.max(values.length - 1, 1);
+
+      ctx.strokeStyle = "rgba(121, 165, 242, .25)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pad, zeroY);
+      ctx.lineTo(w - pad, zeroY);
+      ctx.stroke();
+
+      ctx.lineWidth = 1.8;
+      ctx.strokeStyle = colorHint || "rgba(98, 229, 255, .95)";
+      ctx.beginPath();
+      values.forEach((v, i) => {
+        const x = pad + (i / xSpan) * (w - pad * 2);
+        const y = pad + ((max - v) / span) * (h - pad * 2);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
     function buildPriceMap(cycles) {
       const out = new Map();
       (cycles || []).forEach(c => {
@@ -512,16 +721,109 @@
       `).join("") : `<tr><td colspan="6" class="small">No asset activity yet.</td></tr>`;
     }
 
+    function renderOpenExposure(openTrades, cycles) {
+      const rows = (cycles || []).slice(-1400).map(c => ({
+        symbol: String(c.symbol || "").toUpperCase(),
+        price: Number(c.price || 0),
+        ts: tsMs(c.server_ts || c.ts || c.timestamp || c.time || 0),
+      })).filter(r => r.symbol && Number.isFinite(r.price) && r.price > 0 && r.ts > 0);
+      const series = [];
+      if (rows.length && (openTrades || []).length) {
+        rows.sort((a, b) => a.ts - b.ts);
+        const latest = new Map();
+        for (const row of rows) {
+          latest.set(row.symbol, row.price);
+          let totalR = 0;
+          let active = 0;
+          for (const tr of openTrades) {
+            const sym = String(tr.symbol || "").toUpperCase();
+            const entryTs = tsMs(tr.entry_time || tr.entryTs || tr.entry_ts || 0);
+            if (!sym || (entryTs > 0 && row.ts < entryTs)) continue;
+            const px = latest.get(sym);
+            if (!Number.isFinite(px)) continue;
+            totalR += rrAtPrice(tr, px);
+            active += 1;
+          }
+          if (active > 0) series.push(totalR);
+        }
+      }
+      drawSeries("openExposureCanvas", "openExposureEmpty", series.slice(-320), {
+        color: "rgba(98, 229, 255, .96)",
+        fill: true,
+        fillTop: "rgba(98, 229, 255, .24)",
+      });
+      const liveTotal = series.length ? series[series.length - 1] : 0;
+      const peak = series.length ? Math.max(...series) : 0;
+      const trough = series.length ? Math.min(...series) : 0;
+      $("openExposureMeta").innerHTML = [
+        `Open exposure now <b class="${klass(liveTotal)}">${fmt.r(liveTotal, 3)}</b>`,
+        `peak <b class="${klass(peak)}">${fmt.r(peak, 3)}</b>`,
+        `trough <b class="${klass(trough)}">${fmt.r(trough, 3)}</b>`,
+        `samples <b>${series.length}</b>`
+      ].join(" • ");
+    }
+
+    function renderOpenVisuals(openTrades, latest, cycleSeriesMap) {
+      const root = $("openVisuals");
+      state.openSparkSeries = {};
+      if (!openTrades.length) {
+        root.innerHTML = `<div class="small">No open trades to visualize yet.</div>`;
+        return;
+      }
+      const cards = openTrades.slice(0, 40).map((t, idx) => {
+        const tr = buildOpenTradeTrack(t, latest, cycleSeriesMap);
+        const cid = `openSpark_${t.id || idx}_${idx}`;
+        state.openSparkSeries[cid] = tr.rrSeries;
+        const liveCls = klass(tr.liveR);
+        const ageTxt = tr.ageMins >= 120
+          ? `${fmt.n(tr.ageMins / 60, 1)}h`
+          : `${fmt.n(tr.ageMins, 0)}m`;
+        return `
+          <article class="trade-visual-card">
+            <div class="trade-visual-top">
+              <div>
+                <div class="trade-visual-title">${tr.symbol || "-"}</div>
+                <div class="trade-visual-meta">#${t.id ?? "-"} • ${ageTxt} live</div>
+              </div>
+              <span class="tag ${tr.side.toLowerCase()}">${tr.side}</span>
+            </div>
+            <div class="trade-visual-stats">
+              <div class="trade-visual-stat"><div class="k">Live R</div><div class="v ${liveCls}">${fmt.n(tr.liveR, 3)}</div></div>
+              <div class="trade-visual-stat"><div class="k">Price</div><div class="v">${fmt.n(tr.latestPx, 3)}</div></div>
+              <div class="trade-visual-stat"><div class="k">Entry</div><div class="v">${fmt.n(tr.entry, 3)}</div></div>
+            </div>
+            <div class="risk-rail">
+              <div class="risk-label" style="left:${tr.slPct}%">SL</div>
+              <div class="risk-label" style="left:${tr.entryPct}%">ENTRY</div>
+              <div class="risk-label" style="left:${tr.tpPct}%">TP</div>
+              <div class="risk-marker" style="left:${tr.slPct}%"></div>
+              <div class="risk-marker" style="left:${tr.entryPct}%"></div>
+              <div class="risk-marker" style="left:${tr.tpPct}%"></div>
+              <div class="risk-dot" style="left:${tr.livePct}%"></div>
+            </div>
+            <div class="sparkline-wrap">
+              <canvas id="${cid}"></canvas>
+            </div>
+          </article>
+        `;
+      });
+      root.innerHTML = cards.join("");
+      for (const [cid, series] of Object.entries(state.openSparkSeries)) {
+        const tail = Number(series?.[series.length - 1] || 0);
+        drawSparkline(cid, series, tail >= 0 ? "rgba(42, 226, 173, .95)" : "rgba(255, 111, 141, .95)");
+      }
+    }
+
     function renderOpenTrades(trades, cycles) {
       const latest = buildPriceMap(cycles);
+      const cycleSeriesMap = buildCyclePriceSeries(cycles);
       const open = (trades || []).filter(t => String(t.status || "").toLowerCase() === "open").reverse();
       $("openBody").innerHTML = open.length ? open.map(t => {
         const entry = Number(t.entry_price || t.entryPrice || 0);
         const sl = Number(t.stop_loss || t.stopLoss || t.initial_sl || entry);
-        const risk = Math.abs(entry - sl);
         const px = Number(latest.get(String(t.symbol || "").toUpperCase()) || entry);
+        const rr = rrAtPrice(t, px);
         const side = String(t.side || "LONG").toUpperCase();
-        const rr = risk > 1e-9 ? (side === "LONG" ? (px - entry) / risk : (entry - px) / risk) : 0;
         return `
           <tr>
             <td>${t.id ?? "-"}</td>
@@ -534,6 +836,8 @@
             <td><button class="btn mono" data-close-id="${t.id}">Manual Close</button></td>
           </tr>`;
       }).join("") : `<tr><td colspan="8" class="small">No open positions.</td></tr>`;
+      renderOpenExposure(open, cycles);
+      renderOpenVisuals(open, latest, cycleSeriesMap);
     }
 
     function renderSignals(preds) {
@@ -627,7 +931,7 @@
       renderCharts(payload);
 
       const stamp = new Date().toLocaleTimeString();
-      $("runMeta").textContent = `Session ${summary.session_id || state.sessionId} • Engine ${String(summary.engine || ENGINE_FILTER).toUpperCase()} • Assets ${summary.asset_count || assets.length || 0} • Updated ${stamp}`;
+      $("runMeta").textContent = `Session ${summary.session_id || state.sessionId} • Engine ${String(summary.engine || ENGINE_FILTER).toUpperCase()} • Assets ${summary.asset_count || assets.length || 0} • Open ${summary.open_positions || 0} • Updated ${stamp}`;
     }
 
     function setStatus(ok, msg = "") {
@@ -662,7 +966,7 @@
     function schedule() {
       if (state.timer) clearInterval(state.timer);
       if (!state.auto) return;
-      state.timer = setInterval(tick, 4500);
+      state.timer = setInterval(tick, 2500);
     }
 
     $("refreshBtn").addEventListener("click", () => tick());
@@ -690,7 +994,12 @@
       }
     });
     window.addEventListener("resize", () => {
-      if (state.data) renderCharts(state.data);
+      if (!state.data) return;
+      const payload = state.data || {};
+      renderCharts(payload);
+      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+      const trades = Array.isArray(payload.trades) ? payload.trades : [];
+      renderOpenTrades(trades, cycles);
     });
 
     setupRouteUI();
