@@ -1099,6 +1099,7 @@ class LiveRunner:
         self._daily_closed_r: float = 0.0
         self._daily_r_date: str = ""
         self._last_candle_time: float = 0.0
+        self._closed_trade_stats: List[Dict[str, object]] = []
 
         if self.execution_mode == "live" and self.execution is None:
             log.warning(
@@ -1248,6 +1249,15 @@ class LiveRunner:
         gross_usd = round(gross_r * risk_usd, 2)
         cost_usd = round(cost_r * risk_usd, 2)
         net_usd = round(net_r * risk_usd, 2)
+        self._closed_trade_stats.append({
+            "symbol": pos.symbol,
+            "side": pos.side,
+            "outcome": outcome,
+            "gross_r": float(gross_r),
+            "cost_r": float(cost_r),
+            "net_r": float(net_r),
+            "sized_r": float(sized_r),
+        })
 
         exit_reason = outcome
         if outcome == "TIME_EXIT":
@@ -2387,13 +2397,85 @@ class LiveRunner:
 
     def _print_summary(self):
         summary = self.portfolio.summary()
+
+        def _fmt_pf(pf: float) -> str:
+            if np.isinf(pf):
+                return "inf"
+            return f"{pf:.2f}"
+
+        closed_rows = list(self._closed_trade_stats)
+        # Fallback for resumed sessions where in-memory callback history is empty.
+        if not closed_rows and self.portfolio.trade_history:
+            closed_rows = [
+                {
+                    "side": t.side,
+                    "gross_r": float(t.gross_r),
+                    "cost_r": 0.0,
+                    "net_r": float(t.gross_r),
+                    "outcome": t.outcome,
+                }
+                for t in self.portfolio.trade_history
+            ]
+
+        net_values = [float(r.get("net_r", 0.0)) for r in closed_rows]
+        total_closed = len(net_values)
+        net_wins = sum(1 for r in net_values if r > 0)
+        net_losses = total_closed - net_wins
+        net_win_rate = (net_wins / total_closed) if total_closed > 0 else 0.0
+        net_expectancy = (sum(net_values) / total_closed) if total_closed > 0 else 0.0
+        net_profit = sum(r for r in net_values if r > 0)
+        net_loss_abs = abs(sum(r for r in net_values if r < 0))
+        net_pf = (net_profit / net_loss_abs) if net_loss_abs > 1e-12 else (float("inf") if net_profit > 0 else 0.0)
+
+        side_stats: Dict[str, Dict[str, object]] = {}
+        for side in ("LONG", "SHORT"):
+            side_rows = [r for r in closed_rows if str(r.get("side", "")).upper() == side]
+            side_vals = [float(r.get("net_r", 0.0)) for r in side_rows]
+            side_taken = len(side_vals)
+            side_success = sum(1 for r in side_vals if r > 0)
+            side_success_rate = (side_success / side_taken) if side_taken > 0 else 0.0
+            side_profit = sum(r for r in side_vals if r > 0)
+            side_loss_abs = abs(sum(r for r in side_vals if r < 0))
+            side_pf = (side_profit / side_loss_abs) if side_loss_abs > 1e-12 else (float("inf") if side_profit > 0 else 0.0)
+            side_stats[side] = {
+                "taken": side_taken,
+                "success": side_success,
+                "success_rate": side_success_rate,
+                "net_r_sum": sum(side_vals),
+                "net_expectancy": (sum(side_vals) / side_taken) if side_taken > 0 else 0.0,
+                "net_pf": side_pf,
+            }
+
         log.info("")
         log.info("=" * 60)
         log.info("  SESSION SUMMARY")
         log.info("=" * 60)
         log.info(f"  Cycles: {self.cycle_count}")
-        log.info(f"  Trades: {summary['total_trades']} (W:{summary['wins']} L:{summary['losses']})")
-        log.info(f"  Win rate: {summary['win_rate']:.1%}")
-        log.info(f"  Avg R: {summary['avg_r']:+.2f}")
+        log.info(f"  Trades: {total_closed} (net W:{net_wins} L:{net_losses})")
+        log.info(
+            "  Net: win_rate=%s expectancy=%+0.3fR pf=%s",
+            f"{net_win_rate:.1%}", net_expectancy, _fmt_pf(net_pf)
+        )
+        long_stats = side_stats.get("LONG", {})
+        short_stats = side_stats.get("SHORT", {})
+        log.info(
+            "  LONG: taken=%s successful=%s (%s) netR=%+0.2f exp=%+0.3fR pf=%s",
+            int(long_stats.get("taken", 0)),
+            int(long_stats.get("success", 0)),
+            f"{float(long_stats.get('success_rate', 0.0)):.1%}",
+            float(long_stats.get("net_r_sum", 0.0)),
+            float(long_stats.get("net_expectancy", 0.0)),
+            _fmt_pf(float(long_stats.get("net_pf", 0.0))),
+        )
+        log.info(
+            "  SHORT: taken=%s successful=%s (%s) netR=%+0.2f exp=%+0.3fR pf=%s",
+            int(short_stats.get("taken", 0)),
+            int(short_stats.get("success", 0)),
+            f"{float(short_stats.get('success_rate', 0.0)):.1%}",
+            float(short_stats.get("net_r_sum", 0.0)),
+            float(short_stats.get("net_expectancy", 0.0)),
+            _fmt_pf(float(short_stats.get("net_pf", 0.0))),
+        )
+        log.info(f"  Gross (legacy): win_rate={summary['win_rate']:.1%} avg_r={summary['avg_r']:+.2f}")
         log.info(f"  Open: {summary['open_positions']} | Risk: {summary['total_risk_pct']:.1f}%")
         log.info("=" * 60)
