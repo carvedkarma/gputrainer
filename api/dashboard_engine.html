@@ -373,7 +373,7 @@
         <div id="openExposureMeta" class="small" style="margin-bottom:8px">Open exposure graph booting...</div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Symbol</th><th>Side</th><th>Entry</th><th>SL</th><th>TP</th><th>Live R</th><th>Action</th></tr></thead>
+            <thead><tr><th>ID</th><th>Session</th><th>Symbol</th><th>Side</th><th>Entry</th><th>SL</th><th>TP</th><th>Live R</th><th>Action</th></tr></thead>
             <tbody id="openBody"></tbody>
           </table>
         </div>
@@ -383,7 +383,7 @@
         <h3>Signals</h3>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Symbol</th><th>Action</th><th>Conf</th><th>Edge</th><th>Model</th><th>Engine</th></tr></thead>
+            <thead><tr><th>ID</th><th>Session</th><th>Symbol</th><th>Action</th><th>Conf</th><th>Edge</th><th>Model</th><th>Engine</th></tr></thead>
             <tbody id="signalBody"></tbody>
           </table>
         </div>
@@ -395,7 +395,7 @@
         <h3>Trade History + Fees</h3>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Symbol</th><th>Side</th><th>Status</th><th>Gross R</th><th>Fee R</th><th>Net R</th><th>Net USD</th><th>Exit</th></tr></thead>
+            <thead><tr><th>ID</th><th>Session</th><th>Symbol</th><th>Side</th><th>Status</th><th>Gross R</th><th>Fee R</th><th>Net R</th><th>Net USD</th><th>Exit</th></tr></thead>
             <tbody id="tradeBody"></tbody>
           </table>
         </div>
@@ -404,7 +404,7 @@
         <h3>Cycle Decisions</h3>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Symbol</th><th>Decision</th><th>Direction</th><th>P Enter</th><th>Price</th><th>Reason</th></tr></thead>
+            <thead><tr><th>ID</th><th>Session</th><th>Symbol</th><th>Decision</th><th>Direction</th><th>P Enter</th><th>Price</th><th>Reason</th></tr></thead>
             <tbody id="cycleBody"></tbody>
           </table>
         </div>
@@ -421,7 +421,7 @@
       : "all";
 
     const state = {
-      sessionId: "default",
+      sessionId: "__all__",
       sessions: [],
       data: null,
       auto: true,
@@ -449,6 +449,45 @@
       $("mainTitle").textContent = titleMap[ENGINE_FILTER] || titleMap.all;
     }
 
+    function emptyDashboardPayload() {
+      return {
+        summary: {
+          session_id: state.sessionId,
+          engine: ENGINE_FILTER === "all" ? "multi" : ENGINE_FILTER,
+          models: [],
+          symbols: [],
+          asset_count: 0,
+          open_positions: 0,
+          closed_trades: 0,
+          wins: 0,
+          losses: 0,
+          win_rate: 0,
+          expectancy_r: 0,
+          profit_factor: 0,
+          gross_realized_r: 0,
+          fees_r: 0,
+          fees_usd: 0,
+          realized_net_r: 0,
+          unrealized_r: 0,
+          long_taken: 0,
+          short_taken: 0,
+          long_success: 0,
+          short_success: 0,
+          long_success_rate: 0,
+          short_success_rate: 0,
+          manual_closes: 0,
+          max_drawdown_r: 0,
+          session_count: 0,
+        },
+        predictions: [],
+        cycle_logs: [],
+        trades: [],
+        equity_curve: [],
+        assets: [],
+        models: [],
+      };
+    }
+
     async function fetchJson(url, options) {
       const res = await fetch(url, options || { cache: "no-store" });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -459,21 +498,44 @@
       const q = ENGINE_FILTER === "all" ? "" : `?engine=${encodeURIComponent(ENGINE_FILTER)}`;
       const payload = await fetchJson(`/api/dashboard/sessions${q}`);
       state.sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
-      if (!state.sessions.find(s => s.session_id === state.sessionId)) {
-        state.sessionId = state.sessions[0]?.session_id || "default";
+      if (state.sessionId !== "__all__" && !state.sessions.find(s => s.session_id === state.sessionId)) {
+        state.sessionId = "__all__";
       }
       renderSessionSelect();
     }
 
     function renderSessionSelect() {
       const sel = $("sessionSelect");
-      const rows = state.sessions.length ? state.sessions : [{ session_id: "default" }];
-      sel.innerHTML = rows.map(r => `<option value="${r.session_id}">${r.session_id}</option>`).join("");
+      const rows = state.sessions.length ? state.sessions : [];
+      const opts = [
+        `<option value="__all__">ALL SESSIONS (${rows.length})</option>`,
+        ...rows.map(r => {
+          const sid = r.session_id || "unknown";
+          const eng = String(r.engine || "unknown").toUpperCase();
+          const assets = Number(r.asset_count || 0);
+          return `<option value="${sid}">${sid} • ${eng} • ${assets} assets</option>`;
+        }),
+      ];
+      sel.innerHTML = opts.join("");
       sel.value = state.sessionId;
     }
 
     async function loadState() {
       const qEngine = ENGINE_FILTER === "all" ? "" : `&engine=${encodeURIComponent(ENGINE_FILTER)}`;
+      if (state.sessionId === "__all__") {
+        const sessionIds = state.sessions.map(s => s.session_id).filter(Boolean);
+        if (!sessionIds.length) {
+          state.data = emptyDashboardPayload();
+          return;
+        }
+        const requests = sessionIds.map((sid) => {
+          const url = `/api/dashboard/state?session_id=${encodeURIComponent(sid)}${qEngine}&predictions_limit=350&cycles_limit=1200&trades_limit=3000`;
+          return fetchJson(url).catch(() => null);
+        });
+        const payloads = (await Promise.all(requests)).filter(Boolean);
+        state.data = mergeDashboardPayloads(payloads);
+        return;
+      }
       const url = `/api/dashboard/state?session_id=${encodeURIComponent(state.sessionId)}${qEngine}&predictions_limit=350&cycles_limit=1200&trades_limit=3000`;
       state.data = await fetchJson(url);
     }
@@ -663,6 +725,208 @@
       return out;
     }
 
+    function mergeDashboardPayloads(payloads) {
+      const items = (payloads || []).filter(Boolean);
+      if (!items.length) return emptyDashboardPayload();
+
+      const predictions = [];
+      const cycleLogs = [];
+      const trades = [];
+      const modelsSet = new Set();
+      const sessionsSet = new Set();
+      let updatedAtMs = 0;
+
+      items.forEach((p) => {
+        const summary = p.summary || {};
+        const sid = String(summary.session_id || "unknown");
+        sessionsSet.add(sid);
+        updatedAtMs = Math.max(updatedAtMs, Number(summary.updated_at_ms || 0));
+        (p.models || summary.models || []).forEach((m) => {
+          const name = String(m || "").trim();
+          if (name) modelsSet.add(name);
+        });
+        (p.predictions || []).forEach((row) => predictions.push({ ...row, session_id: row.session_id || sid }));
+        (p.cycle_logs || []).forEach((row) => cycleLogs.push({ ...row, session_id: row.session_id || sid }));
+        (p.trades || []).forEach((row) => trades.push({ ...row, session_id: row.session_id || sid }));
+      });
+
+      predictions.sort((a, b) => tsMs(a.ts || a.server_ts || 0) - tsMs(b.ts || b.server_ts || 0));
+      cycleLogs.sort((a, b) => tsMs(a.server_ts || a.ts || 0) - tsMs(b.server_ts || b.ts || 0));
+      trades.sort((a, b) => tsMs(a.entry_time || a.entryTs || 0) - tsMs(b.entry_time || b.entryTs || 0));
+
+      const latestPrices = buildPriceMap(cycleLogs);
+      const openTrades = trades.filter(t => String(t.status || "").toLowerCase() === "open");
+      const closedTrades = trades.filter(t => String(t.status || "").toLowerCase() === "closed");
+
+      let wins = 0;
+      let losses = 0;
+      let totalNetR = 0;
+      let totalGrossR = 0;
+      let totalFeeR = 0;
+      let totalFeeUsd = 0;
+      let manualCloses = 0;
+      let longTaken = 0;
+      let shortTaken = 0;
+      let longSuccess = 0;
+      let shortSuccess = 0;
+      for (const tr of trades) {
+        const side = String(tr.side || "").toUpperCase();
+        if (side === "LONG") longTaken += 1;
+        if (side === "SHORT") shortTaken += 1;
+      }
+      for (const tr of closedTrades) {
+        const side = String(tr.side || "").toUpperCase();
+        if (tr.manual_close) manualCloses += 1;
+        const grossR = Number(tr.gross_r ?? tr.net_r ?? 0);
+        const costR = Number(tr.cost_r ?? 0);
+        const netR = Number(tr.net_r ?? tr.gross_r ?? 0);
+        const feeUsd = Number(tr.pnl_usd_cost ?? 0);
+        totalGrossR += Number.isFinite(grossR) ? grossR : 0;
+        totalFeeR += Number.isFinite(costR) ? costR : 0;
+        totalFeeUsd += Number.isFinite(feeUsd) ? feeUsd : 0;
+        totalNetR += Number.isFinite(netR) ? netR : 0;
+        if (netR > 0) {
+          wins += 1;
+          if (side === "LONG") longSuccess += 1;
+          if (side === "SHORT") shortSuccess += 1;
+        } else if (netR < 0) {
+          losses += 1;
+        }
+      }
+      const closedN = closedTrades.length;
+      const winRate = closedN > 0 ? wins / closedN : 0;
+      const expectancy = closedN > 0 ? totalNetR / closedN : 0;
+      const grossProfit = closedTrades.reduce((s, t) => s + Math.max(Number(t.net_r ?? t.gross_r ?? 0) || 0, 0), 0);
+      const grossLoss = closedTrades.reduce((s, t) => s + Math.max(-(Number(t.net_r ?? t.gross_r ?? 0) || 0), 0), 0);
+      let profitFactor = grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? 9999 : 0);
+      if (!Number.isFinite(profitFactor)) profitFactor = 0;
+
+      let unrealizedR = 0;
+      for (const tr of openTrades) {
+        const sym = String(tr.symbol || "").toUpperCase();
+        const px = Number(latestPrices.get(sym));
+        if (!Number.isFinite(px) || px <= 0) continue;
+        unrealizedR += rrAtPrice(tr, px);
+      }
+
+      const closedChrono = closedTrades.slice().sort((a, b) => tsMs(a.exit_time || a.exitTs || 0) - tsMs(b.exit_time || b.exitTs || 0));
+      const equityCurve = [];
+      let eq = 0;
+      let peak = 0;
+      for (let i = 0; i < closedChrono.length; i++) {
+        const tr = closedChrono[i];
+        const netR = Number(tr.net_r ?? tr.gross_r ?? 0) || 0;
+        eq += netR;
+        peak = Math.max(peak, eq);
+        equityCurve.push({
+          seq: i + 1,
+          trade_id: tr.id ?? i + 1,
+          symbol: tr.symbol,
+          session_id: tr.session_id,
+          net_r: Number(netR.toFixed(6)),
+          equity_r: Number(eq.toFixed(6)),
+          drawdown_r: Number((eq - peak).toFixed(6)),
+          exit_time: tr.exit_time,
+        });
+      }
+      const maxDrawdown = equityCurve.reduce((m, pt) => Math.min(m, Number(pt.drawdown_r || 0)), 0);
+
+      const symbolSet = new Set();
+      const bySymbol = new Map();
+      const ensureSym = (sym) => {
+        if (!sym) return null;
+        const key = String(sym).toUpperCase();
+        if (!key) return null;
+        symbolSet.add(key);
+        if (!bySymbol.has(key)) {
+          bySymbol.set(key, {
+            symbol: key,
+            open: 0,
+            closed: 0,
+            wins: 0,
+            losses: 0,
+            long_taken: 0,
+            short_taken: 0,
+            net_r: 0,
+            fees_r: 0,
+            last_price: null,
+          });
+        }
+        return bySymbol.get(key);
+      };
+      for (const tr of trades) {
+        const row = ensureSym(tr.symbol);
+        if (!row) continue;
+        const side = String(tr.side || "").toUpperCase();
+        if (side === "LONG") row.long_taken += 1;
+        if (side === "SHORT") row.short_taken += 1;
+        const status = String(tr.status || "").toLowerCase();
+        if (status === "open") {
+          row.open += 1;
+        } else if (status === "closed") {
+          row.closed += 1;
+          const net = Number(tr.net_r ?? tr.gross_r ?? 0) || 0;
+          const fee = Number(tr.cost_r ?? 0) || 0;
+          row.net_r += net;
+          row.fees_r += fee;
+          if (net > 0) row.wins += 1;
+          if (net < 0) row.losses += 1;
+        }
+      }
+      for (const p of predictions) ensureSym(p.symbol);
+      for (const c of cycleLogs) ensureSym(c.symbol);
+      const assets = Array.from(bySymbol.values()).map((row) => {
+        row.last_price = latestPrices.get(row.symbol) ?? null;
+        row.win_rate = Number((row.wins / Math.max(row.closed, 1)).toFixed(4));
+        row.expectancy_r = Number((row.net_r / Math.max(row.closed, 1)).toFixed(6));
+        row.net_r = Number(row.net_r.toFixed(6));
+        row.fees_r = Number(row.fees_r.toFixed(6));
+        return row;
+      }).sort((a, b) => (b.open - a.open) || (b.net_r - a.net_r));
+
+      const summary = {
+        session_id: "__all__",
+        engine: ENGINE_FILTER === "all" ? "multi" : ENGINE_FILTER,
+        models: Array.from(modelsSet).sort(),
+        symbols: Array.from(symbolSet).sort(),
+        asset_count: symbolSet.size,
+        open_positions: openTrades.length,
+        closed_trades: closedN,
+        wins,
+        losses,
+        win_rate: Number(winRate.toFixed(4)),
+        expectancy_r: Number(expectancy.toFixed(6)),
+        profit_factor: Number(profitFactor.toFixed(4)),
+        gross_realized_r: Number(totalGrossR.toFixed(6)),
+        fees_r: Number(totalFeeR.toFixed(6)),
+        fees_usd: Number(totalFeeUsd.toFixed(4)),
+        realized_net_r: Number(totalNetR.toFixed(6)),
+        unrealized_r: Number(unrealizedR.toFixed(6)),
+        long_taken: longTaken,
+        short_taken: shortTaken,
+        long_success: longSuccess,
+        short_success: shortSuccess,
+        long_success_rate: Number((longSuccess / Math.max(longTaken, 1)).toFixed(4)),
+        short_success_rate: Number((shortSuccess / Math.max(shortTaken, 1)).toFixed(4)),
+        manual_closes: manualCloses,
+        predictions: predictions.length,
+        cycle_logs: cycleLogs.length,
+        updated_at_ms: updatedAtMs,
+        max_drawdown_r: Number(maxDrawdown.toFixed(6)),
+        session_count: sessionsSet.size,
+      };
+
+      return {
+        summary,
+        predictions: predictions.slice(-2500),
+        cycle_logs: cycleLogs.slice(-3500),
+        trades: trades.slice(-4000),
+        equity_curve: equityCurve.slice(-3000),
+        assets,
+        models: Array.from(modelsSet).sort(),
+      };
+    }
+
     function renderMetrics(summary) {
       const s = summary || {};
       $("mOpen").textContent = s.open_positions ?? 0;
@@ -824,18 +1088,20 @@
         const px = Number(latest.get(String(t.symbol || "").toUpperCase()) || entry);
         const rr = rrAtPrice(t, px);
         const side = String(t.side || "LONG").toUpperCase();
+        const sid = String(t.session_id || state.sessionId || "-");
         return `
           <tr>
             <td>${t.id ?? "-"}</td>
+            <td class="mono">${sid}</td>
             <td>${t.symbol ?? "-"}</td>
             <td><span class="tag ${side.toLowerCase()}">${side}</span></td>
             <td>${fmt.n(entry, 2)}</td>
             <td>${fmt.n(sl, 2)}</td>
             <td>${fmt.n(t.take_profit || t.tp2 || t.take_profit_price || 0, 2)}</td>
             <td class="${klass(rr)}">${fmt.n(rr, 3)}</td>
-            <td><button class="btn mono" data-close-id="${t.id}">Manual Close</button></td>
+            <td><button class="btn mono" data-close-id="${t.id}" data-close-session="${sid}">Manual Close</button></td>
           </tr>`;
-      }).join("") : `<tr><td colspan="8" class="small">No open positions.</td></tr>`;
+      }).join("") : `<tr><td colspan="9" class="small">No open positions.</td></tr>`;
       renderOpenExposure(open, cycles);
       renderOpenVisuals(open, latest, cycleSeriesMap);
     }
@@ -845,6 +1111,7 @@
       $("signalBody").innerHTML = rows.length ? rows.map(p => `
         <tr>
           <td>${p.id ?? "-"}</td>
+          <td class="mono">${p.session_id ?? "-"}</td>
           <td>${p.symbol ?? "-"}</td>
           <td><span class="tag ${String(p.action || "").toLowerCase()}">${p.action ?? "-"}</span></td>
           <td>${fmt.pct(p.confidence ?? p.p_enter ?? 0, 2)}</td>
@@ -852,7 +1119,7 @@
           <td>${p.model_name ?? "-"}</td>
           <td>${String(p.engine || "-").toUpperCase()}</td>
         </tr>
-      `).join("") : `<tr><td colspan="7" class="small">No signals yet.</td></tr>`;
+      `).join("") : `<tr><td colspan="8" class="small">No signals yet.</td></tr>`;
     }
 
     function renderTrades(trades) {
@@ -863,6 +1130,7 @@
         return `
           <tr>
             <td>${t.id ?? "-"}</td>
+            <td class="mono">${t.session_id ?? "-"}</td>
             <td>${t.symbol ?? "-"}</td>
             <td><span class="tag ${String(t.side || "").toLowerCase()}">${t.side ?? "-"}</span></td>
             <td><span class="tag ${status}">${status}${maybeManual ? `:${maybeManual}` : ""}</span></td>
@@ -873,7 +1141,7 @@
             <td title="${t.exit_reason || t.outcome || "-"}">${t.outcome || "-"}</td>
           </tr>
         `;
-      }).join("") : `<tr><td colspan="9" class="small">No trades yet.</td></tr>`;
+      }).join("") : `<tr><td colspan="10" class="small">No trades yet.</td></tr>`;
     }
 
     function renderCycles(cycles) {
@@ -881,6 +1149,7 @@
       $("cycleBody").innerHTML = rows.length ? rows.map(c => `
         <tr>
           <td>${c.id ?? "-"}</td>
+          <td class="mono">${c.session_id ?? "-"}</td>
           <td>${c.symbol ?? "-"}</td>
           <td>${c.decision ?? "-"}</td>
           <td>${c.direction ?? "-"}</td>
@@ -888,7 +1157,7 @@
           <td>${fmt.n(c.price ?? 0, 2)}</td>
           <td title="${Array.isArray(c.reasons) ? c.reasons.join(" | ") : (c.hold_reason || "-")}">${c.hold_reason || (Array.isArray(c.reasons) ? c.reasons[0] : "-")}</td>
         </tr>
-      `).join("") : `<tr><td colspan="7" class="small">No cycle logs yet.</td></tr>`;
+      `).join("") : `<tr><td colspan="8" class="small">No cycle logs yet.</td></tr>`;
     }
 
     function renderCharts(payload) {
@@ -931,18 +1200,22 @@
       renderCharts(payload);
 
       const stamp = new Date().toLocaleTimeString();
-      $("runMeta").textContent = `Session ${summary.session_id || state.sessionId} • Engine ${String(summary.engine || ENGINE_FILTER).toUpperCase()} • Assets ${summary.asset_count || assets.length || 0} • Open ${summary.open_positions || 0} • Updated ${stamp}`;
+      const sessTxt = summary.session_id === "__all__"
+        ? `All sessions (${summary.session_count || state.sessions.length || 0})`
+        : `Session ${summary.session_id || state.sessionId}`;
+      $("runMeta").textContent = `${sessTxt} • Engine ${String(summary.engine || ENGINE_FILTER).toUpperCase()} • Assets ${summary.asset_count || assets.length || 0} • Open ${summary.open_positions || 0} • Updated ${stamp}`;
     }
 
     function setStatus(ok, msg = "") {
       $("liveState").innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${ok ? "var(--pos)" : "var(--neg)"};display:inline-block"></span>${ok ? "Live" : "Disconnected"}${msg ? ` • ${msg}` : ""}`;
     }
 
-    async function manualClose(tradeId) {
+    async function manualClose(tradeId, tradeSessionId) {
       const id = Number(tradeId);
       if (!Number.isFinite(id)) return;
+      const sid = String(tradeSessionId || state.sessionId || "default");
       await fetchJson(
-        `/api/paper/trade/${id}/manual-close?session_id=${encodeURIComponent(state.sessionId)}`,
+        `/api/paper/trade/${id}/manual-close?session_id=${encodeURIComponent(sid)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -984,10 +1257,11 @@
       const btn = e.target.closest("[data-close-id]");
       if (!btn) return;
       const id = btn.getAttribute("data-close-id");
+      const sid = btn.getAttribute("data-close-session") || state.sessionId;
       btn.disabled = true;
       btn.textContent = "Closing...";
       try {
-        await manualClose(id);
+        await manualClose(id, sid);
       } catch (err) {
         btn.disabled = false;
         btn.textContent = "Manual Close";
