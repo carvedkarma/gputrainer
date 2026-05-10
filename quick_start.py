@@ -50,6 +50,7 @@ import sys
 import time
 import json
 import logging
+import math
 from pathlib import Path
 from datetime import datetime
 
@@ -158,6 +159,128 @@ def _apply_mythos_profile_overrides(args) -> list:
             setattr(args, name, value)
             changes.append((name, old, value))
     return changes
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if isinstance(value, str):
+            txt = value.strip().lower()
+            if txt in {"inf", "+inf", "infinity", "+infinity"}:
+                return float("inf")
+            if txt in {"-inf", "-infinity"}:
+                return float("-inf")
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _mythos_strategy_candidates() -> list:
+    # Candidate policies intentionally cover different long/short behaviors.
+    return [
+        {"name": "baseline", "overrides": {}},
+        {
+            "name": "short_aggressive",
+            "overrides": {
+                "side_rebalance_short_target": 0.46,
+                "short_boost_edge": 0.008,
+                "short_boost_confidence": 0.05,
+                "short_boost_threshold_r": 0.04,
+                "adaptive_short_tp_bias": 0.10,
+                "adaptive_short_sl_bias": 0.02,
+                "time_adaptive_switch_min_gap_r": 0.02,
+                "time_adaptive_switch_conviction_guard": 0.68,
+            },
+        },
+        {
+            "name": "short_precision",
+            "overrides": {
+                "side_rebalance_short_target": 0.42,
+                "short_boost_edge": 0.006,
+                "short_boost_confidence": 0.04,
+                "nonconformity_target_reject_rate": 0.52,
+                "counterfactual_target_reject_rate": 0.62,
+                "time_adaptive_min_bucket_trades": 6,
+                "time_adaptive_switch_min_gap_r": 0.025,
+            },
+        },
+        {
+            "name": "balanced_rotator",
+            "overrides": {
+                "side_rebalance_short_target": 0.40,
+                "time_adaptive_switch_min_gap_r": 0.03,
+                "time_adaptive_switch_conviction_guard": 0.64,
+                "time_adaptive_window": 320,
+                "time_adaptive_edge_scale": 0.012,
+                "time_adaptive_conf_scale": 0.06,
+            },
+        },
+        {
+            "name": "high_precision",
+            "overrides": {
+                "min_confidence": 0.57,
+                "min_edge_threshold": 0.022,
+                "nonconformity_target_reject_rate": 0.45,
+                "counterfactual_target_reject_rate": 0.74,
+                "time_adaptive_switch_min_gap_r": 0.045,
+            },
+        },
+        {
+            "name": "opportunity_rescue",
+            "overrides": {
+                "opportunity_rescue_start_bars": 72,
+                "opportunity_rescue_edge_relax": 0.014,
+                "opportunity_rescue_conf_relax": 0.10,
+                "time_adaptive_switch_min_gap_r": 0.028,
+                "time_adaptive_switch_conviction_guard": 0.60,
+            },
+        },
+    ]
+
+
+def _mythos_strategy_score(report: dict) -> tuple:
+    agg = report.get("aggregate", {}) if isinstance(report, dict) else {}
+    folds = report.get("folds", []) if isinstance(report, dict) else []
+    fold_rs = [_safe_float(f.get("total_r", 0.0), 0.0) for f in folds if isinstance(f, dict)]
+    positive_fold_ratio = (
+        float(sum(1 for r in fold_rs if r > 0.0) / max(len(fold_rs), 1)) if fold_rs else 0.0
+    )
+
+    total_r = _safe_float(agg.get("total_r", 0.0), 0.0)
+    expectancy = _safe_float(agg.get("expectancy_r", 0.0), 0.0)
+    short_r = _safe_float(agg.get("short_total_r", 0.0), 0.0)
+    win_rate = _safe_float(agg.get("win_rate", 0.0), 0.0)
+    dd_abs = abs(_safe_float(agg.get("avg_max_drawdown_r", 0.0), 0.0))
+    robust = _safe_float(agg.get("avg_robust_score", 0.0), 0.0)
+    total_trades = max(int(_safe_float(agg.get("total_trades", 0), 0.0)), 1)
+    short_trades = max(int(_safe_float(agg.get("short_trades", 0), 0.0)), 0)
+    short_share = float(short_trades / max(total_trades, 1))
+    pf = _safe_float(agg.get("profit_factor", 1.0), 1.0)
+    if not math.isfinite(pf):
+        pf = 3.0
+
+    score = (
+        1.00 * total_r
+        + 130.0 * expectancy
+        + 0.55 * short_r
+        + 10.0 * (win_rate - 0.5)
+        + 6.0 * (pf - 1.0)
+        - 0.75 * dd_abs
+        + 16.0 * positive_fold_ratio
+        + 10.0 * max(short_share - 0.20, 0.0)
+        + 0.12 * robust
+    )
+    parts = {
+        "total_r": round(total_r, 4),
+        "expectancy_r": round(expectancy, 4),
+        "short_total_r": round(short_r, 4),
+        "win_rate": round(win_rate, 4),
+        "profit_factor": round(pf, 4),
+        "avg_max_drawdown_r_abs": round(dd_abs, 4),
+        "positive_fold_ratio": round(positive_fold_ratio, 4),
+        "short_share": round(short_share, 4),
+        "avg_robust_score": round(robust, 6),
+    }
+    return float(score), parts
 
 
 def check_gpu():
@@ -5374,6 +5497,15 @@ Examples:
                         help="MYTHOS minimum trades for confidence classification (default: 25)")
     parser.add_argument("--mythos-report-path", type=str, default="checkpoints/mythos_walkforward_report.json",
                         help="MYTHOS output report path (default: checkpoints/mythos_walkforward_report.json)")
+    parser.add_argument("--mythos-strategy-search", dest="mythos_strategy_search", action="store_true",
+                        help="MYTHOS optimizer: run multi-strategy search and keep the best robust strategy (default: disabled)")
+    parser.add_argument("--mythos-no-strategy-search", dest="mythos_strategy_search", action="store_false",
+                        help="MYTHOS optimizer: disable multi-strategy search")
+    parser.set_defaults(mythos_strategy_search=False)
+    parser.add_argument("--mythos-strategy-search-max-candidates", type=int, default=6,
+                        help="MYTHOS optimizer: number of built-in strategy candidates to evaluate (default: 6)")
+    parser.add_argument("--mythos-strategy-search-report-path", type=str, default="checkpoints/mythos_strategy_search.json",
+                        help="MYTHOS optimizer: summary leaderboard path for strategy search (default: checkpoints/mythos_strategy_search.json)")
     parser.add_argument("--mythos-save-best-model", action="store_true", default=True,
                         help="MYTHOS: persist best fold model artifact (default: enabled)")
     parser.add_argument("--mythos-no-save-best-model", dest="mythos_save_best_model", action="store_false",
@@ -7104,14 +7236,128 @@ Examples:
                 meta_learner_ready_prob_floor=args.mythos_meta_ready_prob_floor,
                 meta_learner_ready_prob_ceiling=args.mythos_meta_ready_prob_ceiling,
             )
-            mythos_report = run_mythos_walk_forward(
-                data_dir=data_dir,
-                symbols=symbols_list,
-                train_months=args.mythos_train_months,
-                test_months=args.mythos_test_months,
-                config=mythos_cfg,
-                output_path=Path(args.mythos_report_path),
-            )
+            if args.mythos_strategy_search:
+                base_report_path = Path(args.mythos_report_path)
+                search_report_path = Path(args.mythos_strategy_search_report_path)
+                search_report_path.parent.mkdir(parents=True, exist_ok=True)
+                strategy_specs = _mythos_strategy_candidates()
+                max_candidates = int(max(args.mythos_strategy_search_max_candidates, 1))
+                strategy_specs = strategy_specs[:max_candidates]
+                base_cfg = dict(vars(mythos_cfg))
+                best_strategy_name = "baseline"
+                best_strategy_score = float("-inf")
+                best_strategy_report = None
+                best_strategy_path = None
+                leaderboard = []
+                log.info(
+                    "[MYTHOS][SEARCH] Running %d strategy candidates",
+                    len(strategy_specs),
+                )
+                for idx, spec in enumerate(strategy_specs, start=1):
+                    strat_name = str(spec.get("name", f"strategy_{idx}"))
+                    overrides = dict(spec.get("overrides", {}))
+                    cfg_map = dict(base_cfg)
+                    cfg_map.update(overrides)
+                    trial_cfg = MythosConfig(**cfg_map)
+                    trial_path = base_report_path.with_name(
+                        f"{base_report_path.stem}_{strat_name}{base_report_path.suffix}"
+                    )
+                    log.info(
+                        "[MYTHOS][SEARCH %d/%d] strategy=%s overrides=%s",
+                        idx,
+                        len(strategy_specs),
+                        strat_name,
+                        overrides,
+                    )
+                    trial_report = run_mythos_walk_forward(
+                        data_dir=data_dir,
+                        symbols=symbols_list,
+                        train_months=args.mythos_train_months,
+                        test_months=args.mythos_test_months,
+                        config=trial_cfg,
+                        output_path=trial_path,
+                    )
+                    trial_agg = trial_report.get("aggregate", {})
+                    score, components = _mythos_strategy_score(trial_report)
+                    leaderboard.append(
+                        {
+                            "strategy": strat_name,
+                            "score": round(score, 6),
+                            "overrides": overrides,
+                            "report_path": str(trial_path),
+                            "metrics": components,
+                            "total_trades": int(_safe_float(trial_agg.get("total_trades", 0), 0.0)),
+                            "total_r": round(_safe_float(trial_agg.get("total_r", 0.0), 0.0), 4),
+                            "short_total_r": round(_safe_float(trial_agg.get("short_total_r", 0.0), 0.0), 4),
+                            "win_rate": round(_safe_float(trial_agg.get("win_rate", 0.0), 0.0), 4),
+                            "profit_factor": trial_agg.get("profit_factor", 0.0),
+                            "avg_max_drawdown_r": round(
+                                _safe_float(trial_agg.get("avg_max_drawdown_r", 0.0), 0.0), 4
+                            ),
+                        }
+                    )
+                    log.info(
+                        "[MYTHOS][SEARCH] strategy=%s score=%.4f totalR=%s shortR=%s win=%s pf=%s",
+                        strat_name,
+                        score,
+                        trial_agg.get("total_r"),
+                        trial_agg.get("short_total_r"),
+                        trial_agg.get("win_rate"),
+                        trial_agg.get("profit_factor"),
+                    )
+                    if score > best_strategy_score:
+                        best_strategy_score = score
+                        best_strategy_name = strat_name
+                        best_strategy_report = trial_report
+                        best_strategy_path = trial_path
+
+                leaderboard.sort(key=lambda x: float(x.get("score", float("-inf"))), reverse=True)
+                search_payload = {
+                    "mode": "mythos_strategy_search",
+                    "symbol": symbols_list[0] if symbols_list else "UNKNOWN",
+                    "candidates_tested": len(strategy_specs),
+                    "best_strategy": best_strategy_name,
+                    "best_score": round(best_strategy_score, 6),
+                    "best_report_path": str(best_strategy_path) if best_strategy_path else None,
+                    "leaderboard": leaderboard,
+                    "generated_at_utc": datetime.utcnow().isoformat() + "Z",
+                }
+                search_report_path.write_text(json.dumps(search_payload, indent=2))
+                if best_strategy_report is None:
+                    log.warning("[MYTHOS][SEARCH] No strategy reports produced; falling back to base config run")
+                    mythos_report = run_mythos_walk_forward(
+                        data_dir=data_dir,
+                        symbols=symbols_list,
+                        train_months=args.mythos_train_months,
+                        test_months=args.mythos_test_months,
+                        config=mythos_cfg,
+                        output_path=base_report_path,
+                    )
+                else:
+                    mythos_report = best_strategy_report
+                    mythos_report["strategy_search"] = {
+                        "enabled": True,
+                        "best_strategy": best_strategy_name,
+                        "best_score": round(best_strategy_score, 6),
+                        "search_report_path": str(search_report_path),
+                    }
+                    base_report_path.write_text(json.dumps(mythos_report, indent=2))
+                    log.info(
+                        "[MYTHOS][SEARCH] BEST strategy=%s score=%.4f report=%s search=%s",
+                        best_strategy_name,
+                        best_strategy_score,
+                        base_report_path,
+                        search_report_path,
+                    )
+            else:
+                mythos_report = run_mythos_walk_forward(
+                    data_dir=data_dir,
+                    symbols=symbols_list,
+                    train_months=args.mythos_train_months,
+                    test_months=args.mythos_test_months,
+                    config=mythos_cfg,
+                    output_path=Path(args.mythos_report_path),
+                )
             agg = mythos_report.get("aggregate", {})
             log.info(
                 "[MYTHOS] Complete: trades=%s totalR=%s expectancy=%s win_rate=%s pf=%s avgDD=%s robust=%s change_rate=%s cf_reject_rate=%s active_folds=%s/%s",
