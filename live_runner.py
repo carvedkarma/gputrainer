@@ -47,6 +47,20 @@ V5_MIN_MU_R = 0.03
 V5_MAE_FLOOR = 0.5         # minimum MAE to prevent score explosion in low-vol markets
 
 COST_BPS = 8.0
+LIVE_AWARENESS_WINDOW = 40
+LIVE_AWARENESS_MIN_TRADES = 8
+LIVE_AWARENESS_MIN_SIDE_TRADES = 4
+
+
+def _normalize_dashboard_engine(engine: Optional[str]) -> str:
+    raw = str(engine or "").strip().lower()
+    if not raw:
+        return "v5"
+    if "myth" in raw:
+        return "mythos"
+    if raw in {"v5", "v5_forecaster", "forecaster"}:
+        return "v5"
+    return raw
 
 
 def _retry_request(method: str, url: str, **kwargs) -> Optional[requests.Response]:
@@ -79,15 +93,50 @@ def _get_exchange_time_offset() -> float:
         return 0.0
 
 
-def _load_model(device: str, symbol: Optional[str] = None):
+def _load_model(device: str, symbol: Optional[str] = None, model_backend: str = "v5"):
     """Load the trained model, scaler, feature columns, and temperature.
 
-    Supports both legacy EnhancedMultiHeadMLP and V5Forecaster models.
+    Supports:
+      - v5/v6/legacy checkpoints (.pt)
+      - mythos runtime artifact (.json)
+
     If symbol is provided, first checks checkpoints/deployed/{symbol}/ for a
     per-symbol model. Falls back to the global checkpoints/ directory.
 
     Returns: (model, engineer, feature_columns, temperature, symbol_map)
     """
+    backend = str(model_backend or "v5").strip().lower()
+    if "myth" in backend:
+        from mythos.runtime import MythosRuntimeModel
+
+        candidates = []
+        if symbol:
+            sym = str(symbol).upper()
+            candidates.extend(
+                [
+                    Path(f"checkpoints/deployed/{sym}/mythos_best_{sym}.json"),
+                    Path(f"checkpoints/mythos_models/mythos_best_{sym}.json"),
+                    Path(f"checkpoints/mythos_best_{sym}.json"),
+                ]
+            )
+        candidates.extend(
+            [
+                Path("checkpoints/mythos_models/mythos_best_BTCUSDT.json"),
+                Path("checkpoints/mythos_best_BTCUSDT.json"),
+            ]
+        )
+        artifact_path = next((p for p in candidates if p.exists()), None)
+        if artifact_path is None:
+            log.error(
+                "No Mythos artifact found%s. Expected one of: %s",
+                f" for {symbol}" if symbol else "",
+                ", ".join(str(p) for p in candidates),
+            )
+            sys.exit(1)
+        model = MythosRuntimeModel.from_artifact(artifact_path)
+        log.info(f"Loaded Mythos runtime model from {artifact_path}")
+        return model, None, list(getattr(model, "feature_columns", [])), 1.0, None
+
     import torch
     from data.pipeline import FeatureEngineer
 
@@ -958,7 +1007,7 @@ def _build_prediction_payload(
         "risk_reward_ratio": round(rr, 2),
         "position_size_pct": round(position_size, 1),
         "current_price": round(current_price, 2),
-        "model_name": "enter_quality_v3.3_live_multi",
+        "model_name": "v5_forecaster_live",
         "is_multihead": True,
         "urgency": "high" if p_enter > 0.7 else "medium",
         "suggested_order_type": "limit",
@@ -999,6 +1048,9 @@ class LiveRunner:
         v5_live_threshold: float = None,
         v5_mae_floor: float = None,
         predictive_sltp: bool = False,
+        paper_session_id: Optional[str] = None,
+        dashboard_engine: str = "v5",
+        live_model: str = "v5",
     ):
         self.replit_url = replit_url
         self.symbols = symbols
@@ -1023,6 +1075,21 @@ class LiveRunner:
         self.direction_balance_cap = direction_balance_cap
         self.direction_balance_threshold = direction_balance_threshold
         self._recent_signal_sides: list = []
+        self.predictive_sltp = predictive_sltp
+        self.paper_session_id = str(paper_session_id or "default").strip() or "default"
+        self.dashboard_engine = _normalize_dashboard_engine(dashboard_engine)
+        raw_live_model = str(live_model or "auto").strip().lower()
+        if raw_live_model in {"", "auto"}:
+            resolved_live_model = "mythos" if self.dashboard_engine == "mythos" else "v5"
+        else:
+            resolved_live_model = raw_live_model
+        if resolved_live_model != "mythos" and self.dashboard_engine == "mythos":
+            log.warning(
+                "[MODE_SYNC] dashboard_engine=mythos but live_model=%s — forcing live_model=mythos",
+                resolved_live_model,
+            )
+            resolved_live_model = "mythos"
+        self.live_model = resolved_live_model
 
         # ── Regime-aware signal router ─────────────────────────────────────────
         # Tracks H4 SMA20 regime per symbol with 3-bar confirmation.
@@ -1030,11 +1097,14 @@ class LiveRunner:
         self._regime_history: Dict[str, list] = {}   # symbol -> last 3 regime readings
         self._regime_confirmed: Dict[str, str] = {}  # symbol -> 'BULL' | 'BEAR'
 
-        try:
-            from config.shared_v5_trade_config import load_shared_defaults
-            _shared = load_shared_defaults()
-        except Exception:
+        if self.live_model == "mythos":
             _shared = None
+        else:
+            try:
+                from config.shared_v5_trade_config import load_shared_defaults
+                _shared = load_shared_defaults()
+            except Exception:
+                _shared = None
 
         self.v5_score_lambda = V5_SCORE_LAMBDA if _shared is None else _shared.score_lambda
         self.v5_score_threshold = (
@@ -1051,7 +1121,6 @@ class LiveRunner:
             if (_shared is not None and cooldown_bars == 8)
             else cooldown_bars
         )
-        self.predictive_sltp = predictive_sltp
 
         self.halt_on_data_staleness: bool = _shared.halt_on_data_staleness if _shared else True
         self.max_data_staleness_seconds: float = _shared.max_data_staleness_seconds if _shared else 300.0
@@ -1060,15 +1129,26 @@ class LiveRunner:
         self.max_daily_loss_r: Optional[float] = _shared.max_daily_loss_r if _shared else None
 
         log.info(f"[INIT] LiveRunner {SYSTEM_VERSION} execution_mode={execution_mode} "
-                 f"record_trades={record_trades} symbols={symbols}")
-        log.info(
-            "[CONFIG] V5 scoring (shared defaults applied): "
-            "lambda=%.3f threshold=%.3f min_mu_r=%.3f mae_floor=%.3f "
-            "min_p_side=%.3f min_p_short=%.3f slippage_bps=%.1f cooldown=%d",
-            self.v5_score_lambda, self.v5_score_threshold, self.v5_min_mu_r,
-            self.v5_mae_floor, self.v5_min_p_side, self.v5_min_p_short,
-            self.v5_slippage_bps, self.cooldown_bars,
-        )
+                 f"record_trades={record_trades} symbols={symbols} session={self.paper_session_id} "
+                 f"engine={self.dashboard_engine} model={self.live_model}")
+        if self.live_model == "mythos":
+            log.info(
+                "[CONFIG] Mythos runtime selected for live/paper inference "
+                "(V5 scorer settings ignored)"
+            )
+        else:
+            log.info(
+                "[CONFIG] V5 scoring (shared defaults applied): "
+                "lambda=%.3f threshold=%.3f min_mu_r=%.3f mae_floor=%.3f "
+                "min_p_side=%.3f min_p_short=%.3f slippage_bps=%.1f cooldown=%d",
+                self.v5_score_lambda, self.v5_score_threshold, self.v5_min_mu_r,
+                self.v5_mae_floor, self.v5_min_p_side, self.v5_min_p_short,
+                self.v5_slippage_bps, self.cooldown_bars,
+            )
+            log.info(
+                "[CONFIG] V5 trade model path: checkpoint model_type=v5_forecaster -> V5Forecaster; "
+                "fallback model_type=legacy -> EnhancedMultiHeadMLP"
+            )
         log.info(
             "[CONFIG] Halt switches: data_staleness=%s/%gs api_errors=%s/%d daily_loss_r=%s",
             self.halt_on_data_staleness, self.max_data_staleness_seconds,
@@ -1097,6 +1177,7 @@ class LiveRunner:
         self._daily_closed_r: float = 0.0
         self._daily_r_date: str = ""
         self._last_candle_time: float = 0.0
+        self._closed_trade_stats: List[Dict[str, object]] = []
 
         if self.execution_mode == "live" and self.execution is None:
             log.warning(
@@ -1246,6 +1327,26 @@ class LiveRunner:
         gross_usd = round(gross_r * risk_usd, 2)
         cost_usd = round(cost_r * risk_usd, 2)
         net_usd = round(net_r * risk_usd, 2)
+        self._closed_trade_stats.append({
+            "symbol": pos.symbol,
+            "side": pos.side,
+            "outcome": outcome,
+            "gross_r": float(gross_r),
+            "cost_r": float(cost_r),
+            "net_r": float(net_r),
+            "sized_r": float(sized_r),
+        })
+        aware = self._decision_awareness_snapshot()
+        overall = aware.get("overall", {})
+        log.info(
+            "[LIVE_AWARENESS_UPDATE] model=%s n=%s exp=%+.3f wr=%.1f%% long_exp=%+.3f short_exp=%+.3f",
+            self.live_model,
+            int(overall.get("n", 0)),
+            float(overall.get("expectancy_r", 0.0)),
+            100.0 * float(overall.get("win_rate", 0.0)),
+            float((aware.get("by_side", {}).get("LONG", {}) or {}).get("expectancy_r", 0.0)),
+            float((aware.get("by_side", {}).get("SHORT", {}) or {}).get("expectancy_r", 0.0)),
+        )
 
         exit_reason = outcome
         if outcome == "TIME_EXIT":
@@ -1290,6 +1391,10 @@ class LiveRunner:
 
     def _push_prediction(self, prediction: dict):
         from quick_start import push_prediction
+        if not isinstance(prediction, dict):
+            prediction = {}
+        prediction.setdefault("session_id", self.paper_session_id)
+        prediction.setdefault("engine", self.dashboard_engine)
         push_prediction(self.replit_url, prediction)
 
     def _push_cycle_log(self, symbol: str, price: float, p_enter: float,
@@ -1302,6 +1407,8 @@ class LiveRunner:
         payload = {
             "symbol": symbol,
             "cycle_ts": int(time.time() * 1000),
+            "session_id": self.paper_session_id,
+            "engine": self.dashboard_engine,
             "price": float(price),
             "p_enter": float(p_enter),
             "htf_h1_trend": str(htf.get('h1_trend', '')),
@@ -1327,6 +1434,7 @@ class LiveRunner:
             "v5_p_short": li.get('p_short'),
             "sl_price": li.get('sl_price'),
             "tp_price": li.get('tp_price'),
+            "model_name": li.get('model_name', f"{self.dashboard_engine}_runtime"),
         }
         if self.gpu_self_url:
             payload["gpu_callback_url"] = self.gpu_self_url
@@ -1342,6 +1450,8 @@ class LiveRunner:
         payload = {
             "symbol": symbol,
             "side": side,
+            "session_id": self.paper_session_id,
+            "engine": self.dashboard_engine,
             "entry_time": int(time.time() * 1000),
             "entry_price": entry_price,
             "stop_loss": sl_price,
@@ -1356,6 +1466,7 @@ class LiveRunner:
             "lane_threshold_used": li.get('threshold_used'),
             "lane_size_mult": li.get('lane_size_mult', 1.0),
             "lane_horizon": li.get('lane_horizon', 24),
+            "model_name": li.get('model_name', f"{self.dashboard_engine}_runtime"),
         }
         resp = _retry_request("POST", url, json=payload)
         if resp and resp.status_code == 200:
@@ -1379,6 +1490,8 @@ class LiveRunner:
                              net_usd: float = 0.0):
         url = f"{self.replit_url.rstrip('/')}/api/live/trade/{trade_id}"
         payload = {
+            "session_id": self.paper_session_id,
+            "engine": self.dashboard_engine,
             "exit_time": int(time.time() * 1000),
             "exit_price": exit_price,
             "outcome": outcome,
@@ -1409,20 +1522,114 @@ class LiveRunner:
     def _update_trade_sl(self, trade_id: int, new_sl: float):
         """Update stop loss on an open trade record in the dashboard."""
         url = f"{self.replit_url.rstrip('/')}/api/live/trade/{trade_id}"
-        payload = {"stop_loss": new_sl}
+        payload = {"stop_loss": new_sl, "session_id": self.paper_session_id}
         _retry_request("PATCH", url, json=payload)
 
     def _get_model_for_symbol(self, symbol: str):
         if self.per_symbol_models:
             if symbol not in self.symbol_models:
                 try:
-                    m, e, fc, temp, sm = _load_model(self.device, symbol=symbol)
+                    m, e, fc, temp, sm = _load_model(self.device, symbol=symbol, model_backend=self.live_model)
                     self.symbol_models[symbol] = (m, e, fc, temp, sm)
                 except SystemExit:
                     log.warning(f"No per-symbol model for {symbol}, using global model")
                     self.symbol_models[symbol] = (self.model, self.engineer, self.feature_columns, self.temperature, self.symbol_map)
             return self.symbol_models[symbol]
         return self.model, self.engineer, self.feature_columns, self.temperature, self.symbol_map
+
+    def _effective_staleness_limit_seconds(self) -> float:
+        """Interval-aware staleness budget to avoid false halts on 15m+ bars."""
+        interval_s = float(max(self._interval_seconds(), 60))
+        # Allow at least one full bar + grace and always respect configured floor.
+        adaptive = max(interval_s * 1.25, interval_s + 120.0)
+        return float(max(self.max_data_staleness_seconds, adaptive))
+
+    def _decision_awareness_snapshot(self, window: int = LIVE_AWARENESS_WINDOW) -> Dict[str, object]:
+        rows = list(self._closed_trade_stats[-max(int(window), 1):])
+        side_map: Dict[str, List[float]] = {"LONG": [], "SHORT": []}
+        all_net: List[float] = []
+        for row in rows:
+            net_r = float(row.get("net_r", 0.0) or 0.0)
+            side = str(row.get("side", "")).upper()
+            all_net.append(net_r)
+            if side in side_map:
+                side_map[side].append(net_r)
+
+        def _mk(vals: List[float]) -> Dict[str, float]:
+            n = len(vals)
+            wins = sum(1 for x in vals if x > 0.0)
+            return {
+                "n": float(n),
+                "expectancy_r": float(sum(vals) / n) if n > 0 else 0.0,
+                "win_rate": float(wins / n) if n > 0 else 0.0,
+            }
+
+        return {
+            "window": int(window),
+            "overall": _mk(all_net),
+            "by_side": {k: _mk(v) for k, v in side_map.items()},
+        }
+
+    def _apply_live_awareness(self, side: str, metric: float, confidence: float, mode: str) -> Tuple[float, float, Dict[str, object]]:
+        """Adaptive bias from recent realized quality, shared by V5 and Mythos."""
+        snap = self._decision_awareness_snapshot()
+        overall = snap["overall"]
+        overall_n = int(overall.get("n", 0))
+        info: Dict[str, object] = {
+            "ready": False,
+            "profile": "neutral",
+            "n": overall_n,
+            "expectancy_r": 0.0,
+            "metric_before": float(metric),
+            "metric_after": float(metric),
+            "confidence_before": float(confidence),
+            "confidence_after": float(confidence),
+        }
+        if overall_n < LIVE_AWARENESS_MIN_TRADES:
+            return float(metric), float(confidence), info
+
+        side_key = "LONG" if str(side).upper() == "LONG" else "SHORT"
+        side_stats = (snap.get("by_side") or {}).get(side_key, {})
+        side_n = int(side_stats.get("n", 0))
+        side_exp = float(side_stats.get("expectancy_r", 0.0))
+        if side_n < LIVE_AWARENESS_MIN_SIDE_TRADES:
+            side_exp = float(overall.get("expectancy_r", 0.0))
+            side_n = overall_n
+
+        metric_adj = float(metric)
+        conf_adj = float(confidence)
+        profile = "neutral"
+        if mode == "v5":
+            if side_exp <= -0.10:
+                metric_adj *= 0.88
+                conf_adj -= 0.03
+                profile = "defensive"
+            elif side_exp >= 0.10:
+                metric_adj *= 1.06
+                conf_adj += 0.02
+                profile = "aggressive"
+        else:  # mythos
+            if side_exp <= -0.10:
+                metric_adj -= 0.0025
+                conf_adj -= 0.03
+                profile = "defensive"
+            elif side_exp >= 0.10:
+                metric_adj += 0.0025
+                conf_adj += 0.02
+                profile = "aggressive"
+
+        conf_adj = float(np.clip(conf_adj, 0.0, 1.0))
+        info.update(
+            {
+                "ready": True,
+                "profile": profile,
+                "n": side_n,
+                "expectancy_r": side_exp,
+                "metric_after": metric_adj,
+                "confidence_after": conf_adj,
+            }
+        )
+        return metric_adj, conf_adj, info
 
     def _update_candle_cache(self, symbol: str, new_df: pd.DataFrame) -> pd.DataFrame:
         if symbol not in self.candle_cache:
@@ -1463,6 +1670,7 @@ class LiveRunner:
             import requests as _req
             resp = _req.get(
                 f"{self.replit_url.rstrip('/')}/api/paper/open-positions-summary",
+                params={"session_id": self.paper_session_id},
                 timeout=8,
             )
             if resp.status_code != 200:
@@ -1492,6 +1700,7 @@ class LiveRunner:
                 side = str(wp.get("side", "LONG")).upper()
                 atr = abs(entry_price - sl_price) if sl_price else entry_price * 0.005
                 risk_pct = atr / entry_price * 100 if entry_price > 0 else 1.0
+                lane = str(wp.get("lane") or ("MYTHOS" if self.live_model == "mythos" else "V5"))
 
                 pos = _Pos(
                     symbol=sym, side=side,
@@ -1504,7 +1713,7 @@ class LiveRunner:
                     size_mult=1.0,
                     risk_pct=risk_pct,
                     bar_index=self.cycle_count,
-                    lane="V5", horizon=96,
+                    lane=lane, horizon=96,
                 )
                 self.portfolio.open_positions[sym] = pos
                 log.info(f"[PortfolioSync/{source}] Restored {side} {sym} @ {entry_price:.2f} from web app")
@@ -1526,13 +1735,19 @@ class LiveRunner:
         log.info(f"  [MODE] execution_mode={self.execution_mode} record_trades={self.record_trades} "
                  f"paper={self.paper} live={self.execution_mode == 'live'}")
         log.info(f"  Symbols: {', '.join(self.symbols)}")
-        log.info(f"  V5 Scoring: lambda={self.v5_score_lambda} threshold={self.v5_score_threshold} min_mu_r={self.v5_min_mu_r}")
+        if self.live_model == "mythos":
+            log.info("  Runtime model: MYTHOS")
+        else:
+            log.info(f"  V5 Scoring: lambda={self.v5_score_lambda} threshold={self.v5_score_threshold} min_mu_r={self.v5_min_mu_r}")
         log.info(f"  TP={self.tp_mult}x SL={self.sl_mult}x | Cooldown: {self.cooldown_bars} bars")
         log.info(f"  Per-symbol models: {self.per_symbol_models}")
 
         self.portfolio.on_close_callback = self._on_position_close
         log.info(f"  15m fetch limit: {self.limit_15m} | Direct HTF fetch: {self.direct_htf}")
-        log.info(f"  HTF warmup gates: min h1={MIN_H1_BARS} h4={MIN_H4_BARS} bars")
+        if self.live_model == "mythos":
+            log.info("  Pure Mythos mode: HTF warmup/trend gates disabled")
+        else:
+            log.info(f"  HTF warmup gates: min h1={MIN_H1_BARS} h4={MIN_H4_BARS} bars")
         if self.dry_run:
             log.info(f"  DRY RUN MODE — replaying cached candles")
         log.info("=" * 80)
@@ -1544,7 +1759,18 @@ class LiveRunner:
         self._register_gpu_url()
         self._start_execution_service()
 
-        self.model, self.engineer, self.feature_columns, self.temperature, self.symbol_map = _load_model(self.device)
+        self.model, self.engineer, self.feature_columns, self.temperature, self.symbol_map = _load_model(
+            self.device, model_backend=self.live_model
+        )
+        if self.live_model == "mythos" and not getattr(self.model, "_is_mythos", False):
+            log.error("[MYTHOS] live_model=mythos but loaded model is not Mythos. Aborting.")
+            sys.exit(1)
+        if getattr(self.model, "_is_mythos", False):
+            log.info(
+                "[MYTHOS] Runtime model active (symbol=%s artifact=%s)",
+                getattr(self.model, "symbol", "UNKNOWN"),
+                getattr(self.model, "artifact_path", "UNKNOWN"),
+            )
         if getattr(self.model, '_is_v6', False):
             log.info(f"[V6] V6Forecaster active — seq_len={self.model._v6_seq_len}, confidence gating enabled (min=0.4)")
         self._init_fetcher()
@@ -1729,7 +1955,22 @@ class LiveRunner:
                         self._consecutive_api_errors)
         if self.execution_mode in ("paper", "live") and self.record_trades:
             self.portfolio.check_exits(prices, highs=highs, lows=lows)
-            self._run_trade_manager(prices, highs, lows)
+            # Pure model isolation: TradeManager overlays are V5-specific.
+            # Mythos sessions run with native signal+SL/TP flow only.
+            if self.live_model != "mythos":
+                self._run_trade_manager(prices, highs, lows)
+
+        awareness = self._decision_awareness_snapshot()
+        overall = awareness.get("overall", {})
+        log.info(
+            "[LIVE_AWARENESS] model=%s n=%s exp=%+.3f wr=%.1f%% | long_exp=%+.3f short_exp=%+.3f",
+            self.live_model,
+            int(overall.get("n", 0)),
+            float(overall.get("expectancy_r", 0.0)),
+            100.0 * float(overall.get("win_rate", 0.0)),
+            float((awareness.get("by_side", {}).get("LONG", {}) or {}).get("expectancy_r", 0.0)),
+            float((awareness.get("by_side", {}).get("SHORT", {}) or {}).get("expectancy_r", 0.0)),
+        )
 
         candidates = []
         for symbol in self.symbols:
@@ -1820,6 +2061,131 @@ class LiveRunner:
 
         return result
 
+    def _process_symbol_mythos(
+        self,
+        symbol: str,
+        df_candles: pd.DataFrame,
+        model,
+    ) -> Optional[dict]:
+        """Process one symbol using pure Mythos runtime inference."""
+        try:
+            from mythos.features import build_feature_frame
+
+            features_df = build_feature_frame(df_candles)
+        except Exception as e:
+            log.error(f"{symbol}: failed to build Mythos features: {e}")
+            return None
+        if features_df is None or features_df.empty:
+            return None
+
+        row = features_df.iloc[-1].to_dict()
+        pred = model.predict_from_feature_row(row)
+        side = str(pred.get("side", "NEUTRAL")).upper()
+        edge = float(pred.get("edge", 0.0))
+        confidence = float(pred.get("confidence", 0.0))
+        uncertainty = float(pred.get("uncertainty", 1.0))
+        abstain = bool(pred.get("abstain", False))
+        reason = str(pred.get("reason", ""))
+        edge, confidence, aware = self._apply_live_awareness(
+            side=side, metric=edge, confidence=confidence, mode="mythos"
+        )
+
+        # Pure Mythos mode: no HTF trend scoring/gating overlay.
+        htf = {"h1_trend": 0, "h4_trend": 0, "slope_ok": True, "range_ok": True}
+
+        current_price = float(df_candles.iloc[-1]["close"])
+        atr = _compute_atr(df_candles)
+        edge_floor = float(getattr(model, "live_edge_threshold", 0.0))
+        conf_floor = float(getattr(model, "live_min_confidence", 0.0))
+        htf_score = 0
+
+        mythos_info = {
+            "lane": "MYTHOS",
+            "model_name": "mythos_runtime_live",
+            "v5_score": round(edge, 4),
+            "v5_threshold": edge_floor,
+            "v5_side": side,
+            "threshold_used": edge_floor,
+            "htf_score": htf_score,
+            "mythos_uncertainty": round(uncertainty, 4),
+            "mythos_regime": pred.get("regime"),
+            "mythos_reason": reason,
+            "mythos_expert": pred.get("expert_name"),
+            "awareness_profile": aware.get("profile"),
+            "awareness_expectancy_r": round(float(aware.get("expectancy_r", 0.0)), 4),
+            "awareness_n": int(aware.get("n", 0)),
+            "lane_size_mult": 1.0,
+            "lane_horizon": 24,
+        }
+
+        if side not in {"LONG", "SHORT"} or abstain or edge < edge_floor or confidence < conf_floor:
+            blocks = []
+            if side not in {"LONG", "SHORT"}:
+                blocks.append(f"neutral_side={side}")
+            if abstain:
+                blocks.append(f"abstain:{reason or 'router_abstain'}")
+            if edge < edge_floor:
+                blocks.append(f"edge={edge:.4f}<floor={edge_floor:.4f}")
+            if confidence < conf_floor:
+                blocks.append(f"conf={confidence:.3f}<min={conf_floor:.3f}")
+            hold_reason = "; ".join(blocks) if blocks else "mythos_hold"
+            mythos_info["hold_reason"] = hold_reason
+            log.info(
+                "[MYTHOS_DECISION] sym=%s side=%s edge=%.4f conf=%.3f aware=%s exp=%+.3f n=%s abstain=%s -> HOLD reason=%s",
+                symbol, side, edge, confidence, aware.get("profile"), aware.get("expectancy_r", 0.0), aware.get("n", 0), abstain, hold_reason,
+            )
+            try:
+                self._push_cycle_log(
+                    symbol=symbol,
+                    price=current_price,
+                    p_enter=confidence,
+                    htf=htf,
+                    direction=side,
+                    decision="HOLD",
+                    reasons=[hold_reason],
+                    lane_info=mythos_info,
+                    e_net_pred=edge,
+                )
+            except Exception as e:
+                log.warning(f"Failed to push Mythos HOLD cycle log for {symbol}: {e}")
+            return None
+
+        try:
+            log.info(
+                "[MYTHOS_DECISION] sym=%s side=%s edge=%.4f conf=%.3f aware=%s exp=%+.3f n=%s expert=%s regime=%s -> ENTER",
+                symbol, side, edge, confidence, aware.get("profile"), aware.get("expectancy_r", 0.0), aware.get("n", 0),
+                pred.get("expert_name"), pred.get("regime"),
+            )
+            self._push_cycle_log(
+                symbol=symbol,
+                price=current_price,
+                p_enter=confidence,
+                htf=htf,
+                direction=side,
+                decision="ENTER",
+                reasons=[f"mythos_edge={edge:.4f} conf={confidence:.3f} expert={pred.get('expert_name', '?')}"],
+                lane_info=mythos_info,
+                e_net_pred=edge,
+            )
+        except Exception as e:
+            log.warning(f"Failed to push Mythos ENTER cycle log for {symbol}: {e}")
+
+        sl_pct = self.sl_mult * atr / max(current_price, 1e-9)
+        risk_pct = min(2.0 * sl_pct * 100, 5.0)
+        return {
+            "symbol": symbol,
+            "side": side,
+            "p_enter": confidence,
+            "current_price": current_price,
+            "atr": atr,
+            "htf": htf,
+            "risk_pct": risk_pct,
+            "df_candles": df_candles,
+            "expected_net_r": edge,
+            "v5_info": mythos_info,
+            "features_df": features_df,
+        }
+
     def _process_symbol(self, symbol: str, df_candles: Optional[pd.DataFrame] = None) -> Optional[dict]:
         """Process one symbol: fetch data, compute features, run inference, apply gates."""
         if df_candles is None:
@@ -1828,6 +2194,13 @@ class LiveRunner:
             return None
 
         df_candles = self._update_candle_cache(symbol, df_candles)
+        model, engineer, feature_columns, temperature, symbol_map = self._get_model_for_symbol(symbol)
+        if getattr(model, "_is_mythos", False):
+            return self._process_symbol_mythos(
+                symbol=symbol,
+                df_candles=df_candles,
+                model=model,
+            )
 
         htf_direct = None
         use_direct_htf = False
@@ -1880,8 +2253,6 @@ class LiveRunner:
                 return None
             else:
                 self.warmup_logged[symbol] = False
-
-        model, engineer, feature_columns, temperature, symbol_map = self._get_model_for_symbol(symbol)
 
         v6_seq_len = getattr(model, '_v6_seq_len', 1) if getattr(model, '_is_v6', False) else 1
 
@@ -1945,6 +2316,10 @@ class LiveRunner:
             elif side == "LONG" and ret_mu <= 0:
                 log.info(f"  {symbol}: side_aware BLOCK LONG — ret_mu={ret_mu:.4f} is non-positive")
                 v5_score = -999.0
+
+        v5_score, p_enter, aware = self._apply_live_awareness(
+            side=side, metric=v5_score, confidence=p_enter, mode="v5"
+        )
 
         # Direction balance cap: track recent signal sides, cut size when one direction dominates
         _direction_size_mult = 1.0
@@ -2012,6 +2387,9 @@ class LiveRunner:
             'v5_side': side, 'v5_mfe': round(v5_mfe, 4), 'v5_mae': round(v5_mae, 4),
             'ret_mu': round(ret_mu, 4), 'p_long': round(p_long, 4), 'p_short': round(p_short, 4),
             'htf_score': htf_score, 'threshold_used': effective_threshold,
+            'awareness_profile': aware.get('profile'),
+            'awareness_expectancy_r': round(float(aware.get('expectancy_r', 0.0)), 4),
+            'awareness_n': int(aware.get('n', 0)),
         }
         if v6_confidence is not None:
             v5_info['v6_confidence'] = round(v6_confidence, 4)
@@ -2209,9 +2587,12 @@ class LiveRunner:
 
         if self.halt_on_data_staleness and self._last_candle_time > 0:
             age = now_ts - self._last_candle_time
-            if age > self.max_data_staleness_seconds:
-                return (f"DATA_STALE last_candle_age={age:.0f}s > "
-                        f"max={self.max_data_staleness_seconds:.0f}s")
+            stale_limit = self._effective_staleness_limit_seconds()
+            if age > stale_limit:
+                return (
+                    f"DATA_STALE last_candle_age={age:.0f}s > "
+                    f"max={stale_limit:.0f}s (cfg={self.max_data_staleness_seconds:.0f}s interval={self.interval})"
+                )
 
         if self.halt_on_api_errors and self._consecutive_api_errors >= self.max_consecutive_api_errors:
             return (f"API_ERRORS consecutive={self._consecutive_api_errors} >= "
@@ -2250,6 +2631,11 @@ class LiveRunner:
         p_enter = candidate['p_enter']
         htf = candidate['htf']
         v5_info = candidate.get('v5_info', {})
+        lane = str(v5_info.get("lane", "V5"))
+        lane_threshold = float(v5_info.get("threshold_used", self.v5_score_threshold))
+        lane_horizon = int(v5_info.get("lane_horizon", 24))
+        lane_size_mult = float(v5_info.get("lane_size_mult", 1.0))
+        model_name = str(v5_info.get("model_name", "v5_forecaster_live"))
         htf_score = v5_info.get('htf_score', 0)
 
         if self.execution_mode == "signal_only" or not self.record_trades:
@@ -2328,19 +2714,20 @@ class LiveRunner:
             entry_price=entry_price, tp_mult=self.tp_mult, sl_mult=self.sl_mult,
             htf=htf, exec_result=exec_result,
         )
+        prediction["model_name"] = model_name
 
         sl_pct = abs(entry_price - sl_price) / entry_price
         risk_pct = min(2.0 * sl_pct * 100, 5.0)
-        size_pct = risk_pct
+        size_pct = risk_pct * max(lane_size_mult, 0.0)
 
         pos = Position(
             symbol=symbol, side=side,
             entry_price=entry_price, entry_time=time.time(),
             atr=atr, tp_price=tp_price, sl_price=sl_price,
-            p_enter=p_enter, size_mult=1.0, risk_pct=risk_pct,
+            p_enter=p_enter, size_mult=lane_size_mult, risk_pct=risk_pct,
             bar_index=self.cycle_count,
-            lane="V5", horizon=24, htf_score=htf_score,
-            threshold_used=self.v5_score_threshold,
+            lane=lane, horizon=lane_horizon, htf_score=htf_score,
+            threshold_used=lane_threshold,
         )
         self.portfolio.open_position(pos)
 
@@ -2351,11 +2738,13 @@ class LiveRunner:
                 symbol=symbol, side=side, entry_price=entry_price,
                 sl_price=sl_price, tp_price=tp_price,
                 p_enter=p_enter, size_pct=size_pct, lane_info={
-                    'lane': 'V5', 'htf_score': htf_score,
+                    'lane': lane,
+                    'htf_score': htf_score,
                     'v5_score': v5_info.get('v5_score'),
-                    'threshold_used': self.v5_score_threshold,
-                    'lane_size_mult': 1.0,
-                    'lane_horizon': 24,
+                    'threshold_used': lane_threshold,
+                    'lane_size_mult': lane_size_mult,
+                    'lane_horizon': lane_horizon,
+                    'model_name': model_name,
                 },
             )
             if trade_id:
@@ -2364,27 +2753,99 @@ class LiveRunner:
             log.warning(f"Failed to push trade record for {symbol}: {e}")
 
         if self.execution_mode == "paper":
-            log.info(f"  [PAPER_OPEN] V5 {symbol} {side} @ {entry_price:.2f} "
+            log.info(f"  [PAPER_OPEN] {lane} {symbol} {side} @ {entry_price:.2f} "
                      f"| v5_score={v5_info.get('v5_score','?')}")
         elif self.execution_mode == "live":
             if self.execution is not None:
-                log.info(f"  [LIVE_OPEN] real_order_sent V5 {symbol} {side} @ {entry_price:.2f} "
+                log.info(f"  [LIVE_OPEN] real_order_sent {lane} {symbol} {side} @ {entry_price:.2f} "
                          f"| v5_score={v5_info.get('v5_score','?')}")
             else:
-                log.info(f"  [LIVE_SIGNAL_ONLY] no_adapter_wired V5 {symbol} {side} @ {entry_price:.2f} "
+                log.info(f"  [LIVE_SIGNAL_ONLY] no_adapter_wired {lane} {symbol} {side} @ {entry_price:.2f} "
                          f"| v5_score={v5_info.get('v5_score','?')} "
                          f"[WARNING: execution_mode=live but no real exchange adapter — no order placed]")
         self._push_prediction(prediction)
 
     def _print_summary(self):
         summary = self.portfolio.summary()
+
+        def _fmt_pf(pf: float) -> str:
+            if np.isinf(pf):
+                return "inf"
+            return f"{pf:.2f}"
+
+        closed_rows = list(self._closed_trade_stats)
+        # Fallback for resumed sessions where in-memory callback history is empty.
+        if not closed_rows and self.portfolio.trade_history:
+            closed_rows = [
+                {
+                    "side": t.side,
+                    "gross_r": float(t.gross_r),
+                    "cost_r": 0.0,
+                    "net_r": float(t.gross_r),
+                    "outcome": t.outcome,
+                }
+                for t in self.portfolio.trade_history
+            ]
+
+        net_values = [float(r.get("net_r", 0.0)) for r in closed_rows]
+        total_closed = len(net_values)
+        net_wins = sum(1 for r in net_values if r > 0)
+        net_losses = total_closed - net_wins
+        net_win_rate = (net_wins / total_closed) if total_closed > 0 else 0.0
+        net_expectancy = (sum(net_values) / total_closed) if total_closed > 0 else 0.0
+        net_profit = sum(r for r in net_values if r > 0)
+        net_loss_abs = abs(sum(r for r in net_values if r < 0))
+        net_pf = (net_profit / net_loss_abs) if net_loss_abs > 1e-12 else (float("inf") if net_profit > 0 else 0.0)
+
+        side_stats: Dict[str, Dict[str, object]] = {}
+        for side in ("LONG", "SHORT"):
+            side_rows = [r for r in closed_rows if str(r.get("side", "")).upper() == side]
+            side_vals = [float(r.get("net_r", 0.0)) for r in side_rows]
+            side_taken = len(side_vals)
+            side_success = sum(1 for r in side_vals if r > 0)
+            side_success_rate = (side_success / side_taken) if side_taken > 0 else 0.0
+            side_profit = sum(r for r in side_vals if r > 0)
+            side_loss_abs = abs(sum(r for r in side_vals if r < 0))
+            side_pf = (side_profit / side_loss_abs) if side_loss_abs > 1e-12 else (float("inf") if side_profit > 0 else 0.0)
+            side_stats[side] = {
+                "taken": side_taken,
+                "success": side_success,
+                "success_rate": side_success_rate,
+                "net_r_sum": sum(side_vals),
+                "net_expectancy": (sum(side_vals) / side_taken) if side_taken > 0 else 0.0,
+                "net_pf": side_pf,
+            }
+
         log.info("")
         log.info("=" * 60)
         log.info("  SESSION SUMMARY")
         log.info("=" * 60)
         log.info(f"  Cycles: {self.cycle_count}")
-        log.info(f"  Trades: {summary['total_trades']} (W:{summary['wins']} L:{summary['losses']})")
-        log.info(f"  Win rate: {summary['win_rate']:.1%}")
-        log.info(f"  Avg R: {summary['avg_r']:+.2f}")
+        log.info(f"  Trades: {total_closed} (net W:{net_wins} L:{net_losses})")
+        log.info(
+            "  Net: win_rate=%s expectancy=%+0.3fR pf=%s",
+            f"{net_win_rate:.1%}", net_expectancy, _fmt_pf(net_pf)
+        )
+        long_stats = side_stats.get("LONG", {})
+        short_stats = side_stats.get("SHORT", {})
+        log.info(
+            "  LONG: taken=%s successful=%s (%s) netR=%+0.2f exp=%+0.3fR pf=%s",
+            int(long_stats.get("taken", 0)),
+            int(long_stats.get("success", 0)),
+            f"{float(long_stats.get('success_rate', 0.0)):.1%}",
+            float(long_stats.get("net_r_sum", 0.0)),
+            float(long_stats.get("net_expectancy", 0.0)),
+            _fmt_pf(float(long_stats.get("net_pf", 0.0))),
+        )
+        log.info(
+            "  SHORT: taken=%s successful=%s (%s) netR=%+0.2f exp=%+0.3fR pf=%s",
+            int(short_stats.get("taken", 0)),
+            int(short_stats.get("success", 0)),
+            f"{float(short_stats.get('success_rate', 0.0)):.1%}",
+            float(short_stats.get("net_r_sum", 0.0)),
+            float(short_stats.get("net_expectancy", 0.0)),
+            _fmt_pf(float(short_stats.get("net_pf", 0.0))),
+        )
+        log.info(f"  Gross (legacy): win_rate={summary['win_rate']:.1%} avg_r={summary['avg_r']:+.2f}")
         log.info(f"  Open: {summary['open_positions']} | Risk: {summary['total_risk_pct']:.1f}%")
         log.info("=" * 60)
