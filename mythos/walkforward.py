@@ -1511,6 +1511,66 @@ def _rank_time_bucket_side(
     return rows[: int(max(top_n, 1))]
 
 
+def _precision_selective_quality_score(
+    *,
+    edge: float,
+    confidence: float,
+    uncertainty: float,
+    conviction: float,
+    cfg: MythosConfig,
+) -> float:
+    edge_unit = float(max(getattr(cfg, "min_expected_r", 0.01), 1e-6))
+    edge_n = float(np.clip(max(edge, 0.0) / max(2.5 * edge_unit, 1e-6), 0.0, 1.0))
+    conf_n = float(np.clip(confidence, 0.0, 1.0))
+    unc_n = float(np.clip(uncertainty, 0.0, 2.0) / 2.0)
+    conv_n = float(np.clip(conviction, 0.0, 1.0))
+    w_edge = float(max(getattr(cfg, "precision_selective_edge_weight", 0.45), 0.0))
+    w_conf = float(max(getattr(cfg, "precision_selective_conf_weight", 0.35), 0.0))
+    w_unc = float(max(getattr(cfg, "precision_selective_uncertainty_weight", 0.20), 0.0))
+    w_conv = float(max(getattr(cfg, "precision_selective_conviction_weight", 0.25), 0.0))
+    denom = float(max(w_edge + w_conf + w_unc + w_conv, 1e-6))
+    raw = (w_edge * edge_n) + (w_conf * conf_n) + (w_conv * conv_n) - (w_unc * unc_n)
+    # map to roughly [-1, 1] for stable quantile gating
+    return float(np.clip((raw / denom) * 2.0 - 1.0, -1.0, 1.0))
+
+
+def _precision_selective_gate(
+    *,
+    quality: float,
+    candidate_scores: List[float],
+    recent_rr: List[float],
+    total_trades: int,
+    cfg: MythosConfig,
+) -> Dict[str, float]:
+    if not bool(getattr(cfg, "precision_selective_enable", False)):
+        return {"pass": 1.0, "ready": 0.0}
+    min_trades = int(max(getattr(cfg, "precision_selective_min_trades", 48), 0))
+    if int(total_trades) < min_trades:
+        return {"pass": 1.0, "ready": 0.0}
+    score_window = int(max(getattr(cfg, "precision_selective_score_window", 512), 32))
+    score_min_samples = int(max(getattr(cfg, "precision_selective_score_min_samples", 128), 16))
+    scores = list(candidate_scores[-score_window:]) if candidate_scores else []
+    if len(scores) < score_min_samples:
+        return {"pass": 1.0, "ready": 0.0}
+    rr = list(recent_rr[-score_window:]) if recent_rr else []
+    target_wr = float(np.clip(getattr(cfg, "precision_selective_target_win_rate", 0.52), 0.0, 1.0))
+    base_q = float(np.clip(getattr(cfg, "precision_selective_base_quantile", 0.70), 0.50, 0.999))
+    max_q = float(np.clip(getattr(cfg, "precision_selective_max_quantile", 0.95), base_q, 0.999))
+    adapt_gain = float(np.clip(getattr(cfg, "precision_selective_adapt_gain", 0.40), 0.0, 2.0))
+    recent_wr = float(np.mean(np.asarray(rr, dtype=np.float64) > 0.0)) if rr else target_wr
+    dynamic_q = float(np.clip(base_q + adapt_gain * (target_wr - recent_wr), base_q, max_q))
+    threshold = float(np.quantile(np.asarray(scores, dtype=np.float64), dynamic_q))
+    allowed = bool(float(quality) >= threshold)
+    return {
+        "pass": float(1.0 if allowed else 0.0),
+        "ready": 1.0,
+        "threshold": threshold,
+        "quality": float(quality),
+        "dynamic_quantile": dynamic_q,
+        "recent_win_rate": recent_wr,
+    }
+
+
 def _is_sure_signal(
     *,
     side: int,
@@ -2236,6 +2296,7 @@ def _run_fold(
         "low_confidence": 0,
         "edge_below_floor": 0,
         "streak_pause": 0,
+        "precision_selective_reject": 0,
         "counterfactual_reject": 0,
         "bayes_quality_reject": 0,
         "nonconformity_reject": 0,
@@ -2323,6 +2384,14 @@ def _run_fold(
     time_adaptive_side_switches = 0
     time_adaptive_edge_adjust_sum = 0.0
     time_adaptive_conf_adjust_sum = 0.0
+    precision_selective_scores: List[float] = []
+    precision_selective_recent_rr: List[float] = []
+    precision_selective_mode_bars = 0
+    precision_selective_ready_bars = 0
+    precision_selective_rejects = 0
+    precision_selective_threshold_sum = 0.0
+    precision_selective_quality_sum = 0.0
+    precision_selective_quantile_sum = 0.0
     last_trade_bar = -1
     opportunity_rescue_bars = 0
     opportunity_override_counterfactual = 0
@@ -2496,6 +2565,35 @@ def _run_fold(
         if side != 0 and conviction < min_conv:
             skip_counts["low_conviction"] += 1
             continue
+        if side != 0:
+            score_window = int(max(getattr(cfg, "precision_selective_score_window", 512), 32))
+            quality = _precision_selective_quality_score(
+                edge=edge,
+                confidence=confidence,
+                uncertainty=uncertainty,
+                conviction=conviction,
+                cfg=cfg,
+            )
+            precision_selective_scores.append(float(quality))
+            if len(precision_selective_scores) > score_window:
+                del precision_selective_scores[0 : len(precision_selective_scores) - score_window]
+            precision_gate = _precision_selective_gate(
+                quality=float(quality),
+                candidate_scores=precision_selective_scores,
+                recent_rr=precision_selective_recent_rr,
+                total_trades=len(trades),
+                cfg=cfg,
+            )
+            if float(precision_gate.get("ready", 0.0)) > 0.5:
+                precision_selective_mode_bars += 1
+                precision_selective_ready_bars += 1
+                precision_selective_threshold_sum += float(precision_gate.get("threshold", 0.0))
+                precision_selective_quality_sum += float(precision_gate.get("quality", quality))
+                precision_selective_quantile_sum += float(precision_gate.get("dynamic_quantile", 0.0))
+                if float(precision_gate.get("pass", 1.0)) < 0.5:
+                    precision_selective_rejects += 1
+                    skip_counts["precision_selective_reject"] += 1
+                    continue
         edge_floor = governor.adjusted_edge_floor(risk.state.equity_r)
         edge -= governor.side_penalty(side)
         drought_ratio = 0.0
@@ -2757,6 +2855,10 @@ def _run_fold(
         )
         trades.append(rr)
         gross_trades.append(rr_gross)
+        precision_selective_recent_rr.append(rr)
+        ps_window = int(max(getattr(cfg, "precision_selective_score_window", 512), 32))
+        if len(precision_selective_recent_rr) > ps_window:
+            del precision_selective_recent_rr[0 : len(precision_selective_recent_rr) - ps_window]
         last_trade_bar = int(i)
         if rr > 0.0:
             winner_nonconformity_scores.append(float(nonconf_score))
@@ -2952,6 +3054,19 @@ def _run_fold(
             float(time_adaptive_conf_adjust_sum / max(time_adaptive_mode_bars, 1)), 6
         ),
         "time_adaptive_enable": bool(getattr(cfg, "time_adaptive_enable", True)),
+        "precision_selective_enable": bool(getattr(cfg, "precision_selective_enable", False)),
+        "precision_selective_mode_bars": int(precision_selective_mode_bars),
+        "precision_selective_ready_bars": int(precision_selective_ready_bars),
+        "precision_selective_rejects": int(precision_selective_rejects),
+        "precision_selective_avg_threshold": round(
+            float(precision_selective_threshold_sum / max(precision_selective_ready_bars, 1)), 6
+        ),
+        "precision_selective_avg_quality": round(
+            float(precision_selective_quality_sum / max(precision_selective_ready_bars, 1)), 6
+        ),
+        "precision_selective_avg_quantile": round(
+            float(precision_selective_quantile_sum / max(precision_selective_ready_bars, 1)), 6
+        ),
         "time_bucket_day_side": day_report,
         "time_bucket_hour_side": hour_report,
         "time_bucket_best_short_hours": best_short_hours,
@@ -3072,7 +3187,7 @@ def run_mythos_walk_forward(
                     brain=model_state.get("adaptive"),
                 )
         log.info(
-            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d lev_boost=%d lev_blocked=%d bayes_rej=%d nonconf_rej=%d nonconf_ovr=%d intel_mode=%d intel_switch=%d intel_avg=%s time_mode=%d time_switch=%d time_edge_adj=%s opp_bars=%d opp_drought_max=%s opp_ovr(cf/bq/nc)=%d/%d/%d",
+            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d lev_boost=%d lev_blocked=%d bayes_rej=%d nonconf_rej=%d nonconf_ovr=%d intel_mode=%d intel_switch=%d intel_avg=%s time_mode=%d time_switch=%d time_edge_adj=%s prec_mode=%d prec_rej=%d prec_q=%s opp_bars=%d opp_drought_max=%s opp_ovr(cf/bq/nc)=%d/%d/%d",
             i,
             fold["total_trades"],
             fold["total_r"],
@@ -3094,6 +3209,9 @@ def run_mythos_walk_forward(
             fold.get("time_adaptive_mode_bars", 0),
             fold.get("time_adaptive_side_switches", 0),
             fold.get("time_adaptive_avg_edge_adjust", 0.0),
+            fold.get("precision_selective_mode_bars", 0),
+            fold.get("precision_selective_rejects", 0),
+            fold.get("precision_selective_avg_quantile", 0.0),
             fold.get("opportunity_rescue_bars", 0),
             fold.get("opportunity_max_drought_ratio", 0.0),
             fold.get("opportunity_override_counterfactual", 0),
@@ -3118,6 +3236,9 @@ def run_mythos_walk_forward(
         "low_confidence": int(sum(int(r.get("skip_reasons", {}).get("low_confidence", 0)) for r in reports)),
         "edge_below_floor": int(sum(int(r.get("skip_reasons", {}).get("edge_below_floor", 0)) for r in reports)),
         "streak_pause": int(sum(int(r.get("skip_reasons", {}).get("streak_pause", 0)) for r in reports)),
+        "precision_selective_reject": int(
+            sum(int(r.get("skip_reasons", {}).get("precision_selective_reject", 0)) for r in reports)
+        ),
         "counterfactual_reject": int(sum(int(r.get("skip_reasons", {}).get("counterfactual_reject", 0)) for r in reports)),
         "bayes_quality_reject": int(sum(int(r.get("skip_reasons", {}).get("bayes_quality_reject", 0)) for r in reports)),
         "nonconformity_reject": int(sum(int(r.get("skip_reasons", {}).get("nonconformity_reject", 0)) for r in reports)),
@@ -3195,6 +3316,30 @@ def run_mythos_walk_forward(
     )
     aggregate_time_edge_adj = float(weighted_time_edge_adj / max(total_time_adaptive_mode_bars, 1))
     aggregate_time_conf_adj = float(weighted_time_conf_adj / max(total_time_adaptive_mode_bars, 1))
+    total_precision_mode_bars = int(sum(int(r.get("precision_selective_mode_bars", 0)) for r in reports))
+    total_precision_ready_bars = int(sum(int(r.get("precision_selective_ready_bars", 0)) for r in reports))
+    total_precision_rejects = int(sum(int(r.get("precision_selective_rejects", 0)) for r in reports))
+    weighted_precision_threshold = float(
+        sum(
+            float(r.get("precision_selective_avg_threshold", 0.0)) * int(r.get("precision_selective_ready_bars", 0))
+            for r in reports
+        )
+    )
+    weighted_precision_quality = float(
+        sum(
+            float(r.get("precision_selective_avg_quality", 0.0)) * int(r.get("precision_selective_ready_bars", 0))
+            for r in reports
+        )
+    )
+    weighted_precision_quantile = float(
+        sum(
+            float(r.get("precision_selective_avg_quantile", 0.0)) * int(r.get("precision_selective_ready_bars", 0))
+            for r in reports
+        )
+    )
+    aggregate_precision_threshold = float(weighted_precision_threshold / max(total_precision_ready_bars, 1))
+    aggregate_precision_quality = float(weighted_precision_quality / max(total_precision_ready_bars, 1))
+    aggregate_precision_quantile = float(weighted_precision_quantile / max(total_precision_ready_bars, 1))
     total_opportunity_rescue_bars = int(sum(int(r.get("opportunity_rescue_bars", 0)) for r in reports))
     total_opportunity_override_counterfactual = int(
         sum(int(r.get("opportunity_override_counterfactual", 0)) for r in reports)
@@ -3367,6 +3512,17 @@ def run_mythos_walk_forward(
         "time_adaptive_side_switches": total_time_adaptive_side_switches,
         "time_adaptive_avg_edge_adjust": round(aggregate_time_edge_adj, 6),
         "time_adaptive_avg_conf_adjust": round(aggregate_time_conf_adj, 6),
+        "precision_selective_enable": bool(getattr(cfg, "precision_selective_enable", False)),
+        "precision_selective_mode_bars": total_precision_mode_bars,
+        "precision_selective_mode_rate": round(float(total_precision_mode_bars / max(total_trades, 1)), 4),
+        "precision_selective_ready_bars": total_precision_ready_bars,
+        "precision_selective_rejects": total_precision_rejects,
+        "precision_selective_reject_rate": round(
+            float(total_precision_rejects / max(total_precision_rejects + total_trades, 1)), 4
+        ),
+        "precision_selective_avg_threshold": round(aggregate_precision_threshold, 6),
+        "precision_selective_avg_quality": round(aggregate_precision_quality, 6),
+        "precision_selective_avg_quantile": round(aggregate_precision_quantile, 6),
         "time_bucket_day_side": aggregate_day_buckets,
         "time_bucket_hour_side": aggregate_hour_buckets,
         "time_bucket_best_short_hours": agg_best_short_hours,

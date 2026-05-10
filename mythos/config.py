@@ -118,6 +118,18 @@ class MythosConfig:
     time_adaptive_switch_conviction_guard: float = 0.62
     time_adaptive_switch_min_samples: int = 10
     time_adaptive_report_top_n: int = 6
+    precision_selective_enable: bool = False
+    precision_selective_min_trades: int = 48
+    precision_selective_score_window: int = 512
+    precision_selective_score_min_samples: int = 128
+    precision_selective_base_quantile: float = 0.70
+    precision_selective_max_quantile: float = 0.95
+    precision_selective_target_win_rate: float = 0.52
+    precision_selective_adapt_gain: float = 0.40
+    precision_selective_edge_weight: float = 0.45
+    precision_selective_conf_weight: float = 0.35
+    precision_selective_uncertainty_weight: float = 0.20
+    precision_selective_conviction_weight: float = 0.25
     opportunity_rescue_enable: bool = True
     opportunity_rescue_start_bars: int = 96
     opportunity_rescue_full_bars: int = 384
@@ -499,6 +511,42 @@ class MythosConfig:
             max(getattr(self, "time_adaptive_switch_min_samples", 10), 1)
         )
         self.time_adaptive_report_top_n = int(max(getattr(self, "time_adaptive_report_top_n", 6), 1))
+        self.precision_selective_enable = bool(getattr(self, "precision_selective_enable", False))
+        self.precision_selective_min_trades = int(
+            max(getattr(self, "precision_selective_min_trades", 48), 0)
+        )
+        self.precision_selective_score_window = int(
+            max(getattr(self, "precision_selective_score_window", 512), 32)
+        )
+        self.precision_selective_score_min_samples = int(
+            max(getattr(self, "precision_selective_score_min_samples", 128), 16)
+        )
+        self.precision_selective_base_quantile = float(
+            np.clip(getattr(self, "precision_selective_base_quantile", 0.70), 0.50, 0.999)
+        )
+        self.precision_selective_max_quantile = float(
+            np.clip(getattr(self, "precision_selective_max_quantile", 0.95), 0.50, 0.999)
+        )
+        if self.precision_selective_max_quantile < self.precision_selective_base_quantile:
+            self.precision_selective_max_quantile = self.precision_selective_base_quantile
+        self.precision_selective_target_win_rate = float(
+            np.clip(getattr(self, "precision_selective_target_win_rate", 0.52), 0.0, 1.0)
+        )
+        self.precision_selective_adapt_gain = float(
+            np.clip(getattr(self, "precision_selective_adapt_gain", 0.40), 0.0, 2.0)
+        )
+        self.precision_selective_edge_weight = float(
+            np.clip(getattr(self, "precision_selective_edge_weight", 0.45), 0.0, 5.0)
+        )
+        self.precision_selective_conf_weight = float(
+            np.clip(getattr(self, "precision_selective_conf_weight", 0.35), 0.0, 5.0)
+        )
+        self.precision_selective_uncertainty_weight = float(
+            np.clip(getattr(self, "precision_selective_uncertainty_weight", 0.20), 0.0, 5.0)
+        )
+        self.precision_selective_conviction_weight = float(
+            np.clip(getattr(self, "precision_selective_conviction_weight", 0.25), 0.0, 5.0)
+        )
         self.opportunity_rescue_enable = bool(getattr(self, "opportunity_rescue_enable", True))
         self.opportunity_rescue_start_bars = int(max(getattr(self, "opportunity_rescue_start_bars", 96), 1))
         self.opportunity_rescue_full_bars = int(

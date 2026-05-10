@@ -97,6 +97,7 @@ def _apply_mythos_profile_overrides(args) -> list:
         "mythos_intelligence_side_switch_enable": False,
         "mythos_time_adaptive_enable": False,
         "mythos_time_adaptive_switch_enable": False,
+        "mythos_precision_selective_enable": False,
         "mythos_counterfactual_target_reject_rate": 0.95,
         "mythos_counterfactual_reject_tolerance": 0.30,
         "mythos_counterfactual_adaptive_relax": 0.85,
@@ -180,6 +181,24 @@ def _mythos_strategy_candidates() -> list:
     return [
         {"name": "baseline", "overrides": {}},
         {
+            "name": "ultra_precision_selective",
+            "overrides": {
+                "precision_selective_enable": True,
+                "precision_selective_min_trades": 40,
+                "precision_selective_score_window": 640,
+                "precision_selective_score_min_samples": 120,
+                "precision_selective_base_quantile": 0.78,
+                "precision_selective_max_quantile": 0.94,
+                "precision_selective_target_win_rate": 0.56,
+                "precision_selective_adapt_gain": 0.55,
+                "min_confidence": 0.57,
+                "min_edge_threshold": 0.021,
+                "time_adaptive_switch_min_gap_r": 0.035,
+                "nonconformity_target_reject_rate": 0.44,
+                "counterfactual_target_reject_rate": 0.72,
+            },
+        },
+        {
             "name": "short_aggressive",
             "overrides": {
                 "side_rebalance_short_target": 0.46,
@@ -202,6 +221,12 @@ def _mythos_strategy_candidates() -> list:
                 "counterfactual_target_reject_rate": 0.62,
                 "time_adaptive_min_bucket_trades": 6,
                 "time_adaptive_switch_min_gap_r": 0.025,
+                "precision_selective_enable": True,
+                "precision_selective_min_trades": 40,
+                "precision_selective_score_min_samples": 96,
+                "precision_selective_base_quantile": 0.72,
+                "precision_selective_max_quantile": 0.90,
+                "precision_selective_target_win_rate": 0.54,
             },
         },
         {
@@ -213,16 +238,6 @@ def _mythos_strategy_candidates() -> list:
                 "time_adaptive_window": 320,
                 "time_adaptive_edge_scale": 0.012,
                 "time_adaptive_conf_scale": 0.06,
-            },
-        },
-        {
-            "name": "high_precision",
-            "overrides": {
-                "min_confidence": 0.57,
-                "min_edge_threshold": 0.022,
-                "nonconformity_target_reject_rate": 0.45,
-                "counterfactual_target_reject_rate": 0.74,
-                "time_adaptive_switch_min_gap_r": 0.045,
             },
         },
         {
@@ -5991,6 +6006,33 @@ Examples:
                         help="MYTHOS time intelligence: minimum per-side bucket samples required before side switching (default: 10)")
     parser.add_argument("--mythos-time-adaptive-report-top-n", type=int, default=6,
                         help="MYTHOS diagnostics: number of best/worst day/hour buckets to include in report (default: 6)")
+    parser.add_argument("--mythos-precision-selective-enable", dest="mythos_precision_selective_enable", action="store_true",
+                        help="MYTHOS precision mode: enable selective abstention gate to maximize decision precision (default: disabled)")
+    parser.add_argument("--mythos-no-precision-selective-enable", dest="mythos_precision_selective_enable", action="store_false",
+                        help="MYTHOS precision mode: disable selective abstention gate")
+    parser.set_defaults(mythos_precision_selective_enable=False)
+    parser.add_argument("--mythos-precision-selective-min-trades", type=int, default=48,
+                        help="MYTHOS precision mode: accepted trades needed before selective gate activates (default: 48)")
+    parser.add_argument("--mythos-precision-selective-score-window", type=int, default=512,
+                        help="MYTHOS precision mode: rolling candidate score window for selective quantile gating (default: 512)")
+    parser.add_argument("--mythos-precision-selective-score-min-samples", type=int, default=128,
+                        help="MYTHOS precision mode: minimum candidate scores before selective quantile gating is trusted (default: 128)")
+    parser.add_argument("--mythos-precision-selective-base-quantile", type=float, default=0.70,
+                        help="MYTHOS precision mode: baseline quality quantile required for execution (default: 0.70)")
+    parser.add_argument("--mythos-precision-selective-max-quantile", type=float, default=0.95,
+                        help="MYTHOS precision mode: maximum adaptive quality quantile under weak performance (default: 0.95)")
+    parser.add_argument("--mythos-precision-selective-target-win-rate", type=float, default=0.52,
+                        help="MYTHOS precision mode: target recent win-rate used to adapt quantile strictness (default: 0.52)")
+    parser.add_argument("--mythos-precision-selective-adapt-gain", type=float, default=0.40,
+                        help="MYTHOS precision mode: gain mapping win-rate gap to stricter quantile threshold (default: 0.40)")
+    parser.add_argument("--mythos-precision-selective-edge-weight", type=float, default=0.45,
+                        help="MYTHOS precision mode: quality-score weight for edge strength (default: 0.45)")
+    parser.add_argument("--mythos-precision-selective-conf-weight", type=float, default=0.35,
+                        help="MYTHOS precision mode: quality-score weight for confidence (default: 0.35)")
+    parser.add_argument("--mythos-precision-selective-uncertainty-weight", type=float, default=0.20,
+                        help="MYTHOS precision mode: quality-score penalty weight for uncertainty (default: 0.20)")
+    parser.add_argument("--mythos-precision-selective-conviction-weight", type=float, default=0.25,
+                        help="MYTHOS precision mode: quality-score weight for conviction (default: 0.25)")
     parser.add_argument("--mythos-meta-bootstrap-samples", type=int, default=1024,
                         help="MYTHOS v7: bootstrap samples from training analog memory to pre-warm meta learner (default: 1024)")
     parser.add_argument("--mythos-meta-bootstrap-epochs", type=int, default=2,
@@ -7179,6 +7221,18 @@ Examples:
                 time_adaptive_switch_conviction_guard=args.mythos_time_adaptive_switch_conviction_guard,
                 time_adaptive_switch_min_samples=args.mythos_time_adaptive_switch_min_samples,
                 time_adaptive_report_top_n=args.mythos_time_adaptive_report_top_n,
+                precision_selective_enable=args.mythos_precision_selective_enable,
+                precision_selective_min_trades=args.mythos_precision_selective_min_trades,
+                precision_selective_score_window=args.mythos_precision_selective_score_window,
+                precision_selective_score_min_samples=args.mythos_precision_selective_score_min_samples,
+                precision_selective_base_quantile=args.mythos_precision_selective_base_quantile,
+                precision_selective_max_quantile=args.mythos_precision_selective_max_quantile,
+                precision_selective_target_win_rate=args.mythos_precision_selective_target_win_rate,
+                precision_selective_adapt_gain=args.mythos_precision_selective_adapt_gain,
+                precision_selective_edge_weight=args.mythos_precision_selective_edge_weight,
+                precision_selective_conf_weight=args.mythos_precision_selective_conf_weight,
+                precision_selective_uncertainty_weight=args.mythos_precision_selective_uncertainty_weight,
+                precision_selective_conviction_weight=args.mythos_precision_selective_conviction_weight,
                 drawdown_edge_start_r=args.mythos_drawdown_edge_start_r,
                 drawdown_edge_step_r=args.mythos_drawdown_edge_step_r,
                 drawdown_edge_boost=args.mythos_drawdown_edge_boost,
@@ -7449,6 +7503,15 @@ Examples:
                 agg.get("time_adaptive_side_switches"),
                 agg.get("time_adaptive_avg_edge_adjust"),
                 agg.get("time_adaptive_avg_conf_adjust"),
+            )
+            log.info(
+                "[MYTHOS] Precision selective gate: enabled=%s mode_bars=%s rejects=%s reject_rate=%s avg_q=%s avg_threshold=%s",
+                agg.get("precision_selective_enable"),
+                agg.get("precision_selective_mode_bars"),
+                agg.get("precision_selective_rejects"),
+                agg.get("precision_selective_reject_rate"),
+                agg.get("precision_selective_avg_quantile"),
+                agg.get("precision_selective_avg_threshold"),
             )
             log.info(
                 "[MYTHOS] Time-bucket shorts best(hours)=%s worst(hours)=%s best(days)=%s worst(days)=%s",
