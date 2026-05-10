@@ -1718,6 +1718,63 @@ def _compute_atr(close: np.ndarray, high: np.ndarray, low: np.ndarray, period: i
     return atr
 
 
+def _resolve_adaptive_tp_sl(
+    *,
+    cfg: MythosConfig,
+    side: int,
+    edge: float,
+    confidence: float,
+    uncertainty: float,
+    trend_ema: float,
+    vol_16: float,
+    vol_64: float,
+) -> Tuple[float, float]:
+    base_tp = float(max(getattr(cfg, "tp_mult", 2.0), 0.10))
+    base_sl = float(max(getattr(cfg, "sl_mult", 1.5), 0.10))
+    if not bool(getattr(cfg, "adaptive_tp_sl_enable", True)):
+        return base_tp, base_sl
+    edge_unit = float(max(getattr(cfg, "min_expected_r", 0.01), 1e-6))
+    edge_score = float(np.tanh(float(edge) / max(2.0 * edge_unit, 1e-6)))
+    conf_score = float(np.clip((float(confidence) - 0.5) * 2.0, -1.0, 1.0))
+    unc_norm = float(np.clip(float(uncertainty), 0.0, 2.0) / 2.0)
+    vol_ratio = float(np.clip(float(vol_16) / max(float(vol_64), 1e-6), 0.25, 4.0))
+    vol_stress = float(max(vol_ratio - 1.0, 0.0))
+    trend_score = float(np.clip(np.tanh(abs(float(trend_ema)) * 4.0), 0.0, 1.0))
+    quality = float(np.clip(0.45 * conf_score + 0.45 * edge_score - 0.30 * unc_norm, -1.0, 1.0))
+
+    tp_gain = (
+        float(np.clip(getattr(cfg, "adaptive_tp_quality_gain", 0.35), 0.0, 2.0)) * quality
+        + float(np.clip(getattr(cfg, "adaptive_tp_trend_gain", 0.20), 0.0, 2.0)) * trend_score
+        - float(np.clip(getattr(cfg, "adaptive_tp_vol_penalty", 0.18), 0.0, 2.0)) * vol_stress
+    )
+    sl_gain = (
+        -float(np.clip(getattr(cfg, "adaptive_sl_quality_tighten", 0.25), 0.0, 2.0)) * max(quality, 0.0)
+        + float(np.clip(getattr(cfg, "adaptive_sl_uncertainty_widen", 0.30), 0.0, 2.0)) * unc_norm
+        + float(np.clip(getattr(cfg, "adaptive_sl_vol_widen", 0.20), 0.0, 2.0)) * vol_stress
+    )
+    if int(side) == -1:
+        tp_gain += float(np.clip(getattr(cfg, "adaptive_short_tp_bias", 0.05), -1.0, 1.0))
+        sl_gain += float(np.clip(getattr(cfg, "adaptive_short_sl_bias", 0.04), -1.0, 1.0))
+
+    tp_mult = float(base_tp * (1.0 + tp_gain))
+    sl_mult = float(base_sl * (1.0 + sl_gain))
+    tp_mult = float(
+        np.clip(
+            tp_mult,
+            float(np.clip(getattr(cfg, "adaptive_tp_min_mult", 1.2), 0.10, 20.0)),
+            float(max(getattr(cfg, "adaptive_tp_max_mult", 3.6), getattr(cfg, "adaptive_tp_min_mult", 1.2))),
+        )
+    )
+    sl_mult = float(
+        np.clip(
+            sl_mult,
+            float(np.clip(getattr(cfg, "adaptive_sl_min_mult", 0.8), 0.10, 20.0)),
+            float(max(getattr(cfg, "adaptive_sl_max_mult", 2.4), getattr(cfg, "adaptive_sl_min_mult", 0.8))),
+        )
+    )
+    return tp_mult, sl_mult
+
+
 def _barrier_outcome(
     close: np.ndarray,
     high: np.ndarray,
@@ -1811,22 +1868,37 @@ def _run_fold(
             atr_tr = _compute_atr(close_tr, high_tr, low_tr, period=14)
             for j in range(usable):
                 s = 1 if float(train_feat.iloc[j]["fwd_ret_4"]) >= 0.0 else -1
+                boot_edge = float(abs(train_feat.iloc[j]["fwd_ret_4"]))
+                boot_conf = float(
+                    np.clip(0.5 + 0.5 * np.tanh(abs(train_feat.iloc[j]["fwd_ret_4"]) / 0.01), 0.0, 1.0)
+                )
+                boot_unc = float(np.clip(train_feat.iloc[j]["vol_16"] * 2.0, 0.01, 2.0))
+                tp_mult_i, sl_mult_i = _resolve_adaptive_tp_sl(
+                    cfg=cfg,
+                    side=s,
+                    edge=boot_edge,
+                    confidence=boot_conf,
+                    uncertainty=boot_unc,
+                    trend_ema=float(train_feat.iloc[j].get("trend_ema", 0.0)),
+                    vol_16=float(train_feat.iloc[j].get("vol_16", 0.0)),
+                    vol_64=float(train_feat.iloc[j].get("vol_64", max(train_feat.iloc[j].get("vol_16", 0.0), 1e-6))),
+                )
                 rr = _barrier_outcome(
                     close=close_tr,
                     high=high_tr,
                     low=low_tr,
                     idx=j,
                     side=s,
-                    tp_mult=cfg.tp_mult,
-                    sl_mult=cfg.sl_mult,
+                    tp_mult=tp_mult_i,
+                    sl_mult=sl_mult_i,
                     horizon=cfg.horizon,
                     atr=atr_tr,
                 )
                 meta.update(
                     x=X_tr[j],
-                    edge=float(abs(train_feat.iloc[j]["fwd_ret_4"])),
-                    confidence=float(np.clip(0.5 + 0.5 * np.tanh(abs(train_feat.iloc[j]["fwd_ret_4"]) / 0.01), 0.0, 1.0)),
-                    uncertainty=float(np.clip(train_feat.iloc[j]["vol_16"] * 2.0, 0.01, 2.0)),
+                    edge=boot_edge,
+                    confidence=boot_conf,
+                    uncertainty=boot_unc,
                     regime=int(train_regime[j]),
                     side=int(s),
                     realized_r=float(rr),
@@ -1889,6 +1961,12 @@ def _run_fold(
     sure_recent_rr: List[float] = []
     sure_lev_recent_rr: List[float] = []
     sure_lev_recent_ctx: List[float] = []
+    used_tp_mults: List[float] = []
+    used_sl_mults: List[float] = []
+    long_tp_mults: List[float] = []
+    short_tp_mults: List[float] = []
+    long_sl_mults: List[float] = []
+    short_sl_mults: List[float] = []
     winner_nonconformity_scores: List[float] = []
     bayes_side_stats: Dict[int, Dict[str, float]] = {
         1: _bayes_bucket(
@@ -2187,17 +2265,35 @@ def _run_fold(
         if not risk.allow_trade(ts_ms=int(timestamps[i]), side=side, edge=edge, uncertainty=uncertainty):
             skip_counts["risk_reject"] += 1
             continue
+        tp_mult_i, sl_mult_i = _resolve_adaptive_tp_sl(
+            cfg=cfg,
+            side=side,
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            trend_ema=float(test_feat.iloc[i].get("trend_ema", 0.0)),
+            vol_16=float(test_feat.iloc[i].get("vol_16", 0.0)),
+            vol_64=float(test_feat.iloc[i].get("vol_64", max(test_feat.iloc[i].get("vol_16", 0.0), 1e-6))),
+        )
         realized = _barrier_outcome(
             close=close,
             high=high,
             low=low,
             idx=i,
             side=side,
-            tp_mult=cfg.tp_mult,
-            sl_mult=cfg.sl_mult,
+            tp_mult=tp_mult_i,
+            sl_mult=sl_mult_i,
             horizon=cfg.horizon,
             atr=atr,
         )
+        used_tp_mults.append(float(tp_mult_i))
+        used_sl_mults.append(float(sl_mult_i))
+        if int(side) == 1:
+            long_tp_mults.append(float(tp_mult_i))
+            long_sl_mults.append(float(sl_mult_i))
+        elif int(side) == -1:
+            short_tp_mults.append(float(tp_mult_i))
+            short_sl_mults.append(float(sl_mult_i))
         base_size = risk.position_size_multiplier(
             edge=edge,
             uncertainty=uncertainty,
@@ -2419,6 +2515,16 @@ def _run_fold(
         "opportunity_override_counterfactual": int(opportunity_override_counterfactual),
         "opportunity_override_bayes": int(opportunity_override_bayes),
         "opportunity_override_nonconformity": int(opportunity_override_nonconformity),
+        "tp_mult_avg": round(float(np.mean(np.asarray(used_tp_mults, dtype=np.float64))) if used_tp_mults else float(cfg.tp_mult), 4),
+        "tp_mult_min": round(float(np.min(np.asarray(used_tp_mults, dtype=np.float64))) if used_tp_mults else float(cfg.tp_mult), 4),
+        "tp_mult_max": round(float(np.max(np.asarray(used_tp_mults, dtype=np.float64))) if used_tp_mults else float(cfg.tp_mult), 4),
+        "sl_mult_avg": round(float(np.mean(np.asarray(used_sl_mults, dtype=np.float64))) if used_sl_mults else float(cfg.sl_mult), 4),
+        "sl_mult_min": round(float(np.min(np.asarray(used_sl_mults, dtype=np.float64))) if used_sl_mults else float(cfg.sl_mult), 4),
+        "sl_mult_max": round(float(np.max(np.asarray(used_sl_mults, dtype=np.float64))) if used_sl_mults else float(cfg.sl_mult), 4),
+        "long_tp_mult_avg": round(float(np.mean(np.asarray(long_tp_mults, dtype=np.float64))) if long_tp_mults else float(cfg.tp_mult), 4),
+        "short_tp_mult_avg": round(float(np.mean(np.asarray(short_tp_mults, dtype=np.float64))) if short_tp_mults else float(cfg.tp_mult), 4),
+        "long_sl_mult_avg": round(float(np.mean(np.asarray(long_sl_mults, dtype=np.float64))) if long_sl_mults else float(cfg.sl_mult), 4),
+        "short_sl_mult_avg": round(float(np.mean(np.asarray(short_sl_mults, dtype=np.float64))) if short_sl_mults else float(cfg.sl_mult), 4),
         "skip_reasons": {k: int(v) for k, v in skip_counts.items()},
         "long_trades": n_long,
         "short_trades": n_short,
@@ -2630,6 +2736,30 @@ def run_mythos_walk_forward(
     max_opportunity_drought_ratio = float(
         max([float(r.get("opportunity_max_drought_ratio", 0.0)) for r in reports], default=0.0)
     )
+    avg_tp_mult = float(
+        sum(float(r.get("tp_mult_avg", cfg.tp_mult)) * int(r.get("total_trades", 0)) for r in reports)
+        / max(total_trades, 1)
+    )
+    avg_sl_mult = float(
+        sum(float(r.get("sl_mult_avg", cfg.sl_mult)) * int(r.get("total_trades", 0)) for r in reports)
+        / max(total_trades, 1)
+    )
+    avg_long_tp_mult = float(
+        sum(float(r.get("long_tp_mult_avg", cfg.tp_mult)) * int(r.get("long_trades", 0)) for r in reports)
+        / max(total_long_trades, 1)
+    )
+    avg_short_tp_mult = float(
+        sum(float(r.get("short_tp_mult_avg", cfg.tp_mult)) * int(r.get("short_trades", 0)) for r in reports)
+        / max(total_short_trades, 1)
+    )
+    avg_long_sl_mult = float(
+        sum(float(r.get("long_sl_mult_avg", cfg.sl_mult)) * int(r.get("long_trades", 0)) for r in reports)
+        / max(total_long_trades, 1)
+    )
+    avg_short_sl_mult = float(
+        sum(float(r.get("short_sl_mult_avg", cfg.sl_mult)) * int(r.get("short_trades", 0)) for r in reports)
+        / max(total_short_trades, 1)
+    )
     cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
     bayes_quality_reject_rate = float(
         total_bayes_quality_rejects / max(total_bayes_quality_rejects + total_trades, 1)
@@ -2712,6 +2842,13 @@ def run_mythos_walk_forward(
         "opportunity_override_counterfactual": total_opportunity_override_counterfactual,
         "opportunity_override_bayes": total_opportunity_override_bayes,
         "opportunity_override_nonconformity": total_opportunity_override_nonconformity,
+        "adaptive_tp_sl_enable": bool(getattr(cfg, "adaptive_tp_sl_enable", True)),
+        "tp_mult_avg": round(avg_tp_mult, 4),
+        "sl_mult_avg": round(avg_sl_mult, 4),
+        "long_tp_mult_avg": round(avg_long_tp_mult, 4),
+        "short_tp_mult_avg": round(avg_short_tp_mult, 4),
+        "long_sl_mult_avg": round(avg_long_sl_mult, 4),
+        "short_sl_mult_avg": round(avg_short_sl_mult, 4),
         "skip_reasons": total_skip_reasons,
         "active_folds": act,
         "low_conf_folds": low,

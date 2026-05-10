@@ -93,6 +93,19 @@ class MythosConfig:
     side_aggression_boost: float = 0.006
     side_aggression_min_gap: float = 0.05
     side_aggression_underweight_gain: float = 0.60
+    adaptive_tp_sl_enable: bool = True
+    adaptive_tp_min_mult: float = 1.2
+    adaptive_tp_max_mult: float = 3.6
+    adaptive_sl_min_mult: float = 0.8
+    adaptive_sl_max_mult: float = 2.4
+    adaptive_tp_quality_gain: float = 0.35
+    adaptive_tp_trend_gain: float = 0.20
+    adaptive_tp_vol_penalty: float = 0.18
+    adaptive_sl_quality_tighten: float = 0.25
+    adaptive_sl_uncertainty_widen: float = 0.30
+    adaptive_sl_vol_widen: float = 0.20
+    adaptive_short_tp_bias: float = 0.05
+    adaptive_short_sl_bias: float = 0.04
     opportunity_rescue_enable: bool = True
     opportunity_rescue_start_bars: int = 96
     opportunity_rescue_full_bars: int = 384
@@ -406,6 +419,43 @@ class MythosConfig:
         )
         self.side_aggression_underweight_gain = float(
             np.clip(getattr(self, "side_aggression_underweight_gain", 0.60), 0.0, 3.0)
+        )
+        self.adaptive_tp_sl_enable = bool(getattr(self, "adaptive_tp_sl_enable", True))
+        self.adaptive_tp_min_mult = float(
+            np.clip(getattr(self, "adaptive_tp_min_mult", 1.2), 0.10, 20.0)
+        )
+        self.adaptive_tp_max_mult = float(
+            max(getattr(self, "adaptive_tp_max_mult", 3.6), self.adaptive_tp_min_mult + 1e-6)
+        )
+        self.adaptive_sl_min_mult = float(
+            np.clip(getattr(self, "adaptive_sl_min_mult", 0.8), 0.10, 20.0)
+        )
+        self.adaptive_sl_max_mult = float(
+            max(getattr(self, "adaptive_sl_max_mult", 2.4), self.adaptive_sl_min_mult + 1e-6)
+        )
+        self.adaptive_tp_quality_gain = float(
+            np.clip(getattr(self, "adaptive_tp_quality_gain", 0.35), 0.0, 2.0)
+        )
+        self.adaptive_tp_trend_gain = float(
+            np.clip(getattr(self, "adaptive_tp_trend_gain", 0.20), 0.0, 2.0)
+        )
+        self.adaptive_tp_vol_penalty = float(
+            np.clip(getattr(self, "adaptive_tp_vol_penalty", 0.18), 0.0, 2.0)
+        )
+        self.adaptive_sl_quality_tighten = float(
+            np.clip(getattr(self, "adaptive_sl_quality_tighten", 0.25), 0.0, 2.0)
+        )
+        self.adaptive_sl_uncertainty_widen = float(
+            np.clip(getattr(self, "adaptive_sl_uncertainty_widen", 0.30), 0.0, 2.0)
+        )
+        self.adaptive_sl_vol_widen = float(
+            np.clip(getattr(self, "adaptive_sl_vol_widen", 0.20), 0.0, 2.0)
+        )
+        self.adaptive_short_tp_bias = float(
+            np.clip(getattr(self, "adaptive_short_tp_bias", 0.05), -1.0, 1.0)
+        )
+        self.adaptive_short_sl_bias = float(
+            np.clip(getattr(self, "adaptive_short_sl_bias", 0.04), -1.0, 1.0)
         )
         self.opportunity_rescue_enable = bool(getattr(self, "opportunity_rescue_enable", True))
         self.opportunity_rescue_start_bars = int(max(getattr(self, "opportunity_rescue_start_bars", 96), 1))

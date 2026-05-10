@@ -5797,6 +5797,35 @@ Examples:
                         help="MYTHOS adaptive: additive edge boost when short side outperforms (default: 0.004)")
     parser.add_argument("--mythos-short-boost-confidence", type=float, default=0.03,
                         help="MYTHOS adaptive: confidence boost when short side outperforms (default: 0.03)")
+    parser.add_argument("--mythos-adaptive-tp-sl-enable", dest="mythos_adaptive_tp_sl_enable", action="store_true",
+                        help="MYTHOS adaptive exits: enable per-trade adaptive TP/SL multipliers (default: enabled)")
+    parser.add_argument("--mythos-no-adaptive-tp-sl-enable", dest="mythos_adaptive_tp_sl_enable", action="store_false",
+                        help="MYTHOS adaptive exits: disable adaptive TP/SL and use fixed --tp-mult/--sl-mult")
+    parser.set_defaults(mythos_adaptive_tp_sl_enable=True)
+    parser.add_argument("--mythos-adaptive-tp-min-mult", type=float, default=1.2,
+                        help="MYTHOS adaptive exits: minimum TP ATR multiplier after adaptation (default: 1.2)")
+    parser.add_argument("--mythos-adaptive-tp-max-mult", type=float, default=3.6,
+                        help="MYTHOS adaptive exits: maximum TP ATR multiplier after adaptation (default: 3.6)")
+    parser.add_argument("--mythos-adaptive-sl-min-mult", type=float, default=0.8,
+                        help="MYTHOS adaptive exits: minimum SL ATR multiplier after adaptation (default: 0.8)")
+    parser.add_argument("--mythos-adaptive-sl-max-mult", type=float, default=2.4,
+                        help="MYTHOS adaptive exits: maximum SL ATR multiplier after adaptation (default: 2.4)")
+    parser.add_argument("--mythos-adaptive-tp-quality-gain", type=float, default=0.35,
+                        help="MYTHOS adaptive exits: TP expansion gain from edge/conf quality score (default: 0.35)")
+    parser.add_argument("--mythos-adaptive-tp-trend-gain", type=float, default=0.20,
+                        help="MYTHOS adaptive exits: TP expansion gain from trend strength (default: 0.20)")
+    parser.add_argument("--mythos-adaptive-tp-vol-penalty", type=float, default=0.18,
+                        help="MYTHOS adaptive exits: TP contraction penalty under volatility stress (default: 0.18)")
+    parser.add_argument("--mythos-adaptive-sl-quality-tighten", type=float, default=0.25,
+                        help="MYTHOS adaptive exits: SL tightening gain on high-quality setups (default: 0.25)")
+    parser.add_argument("--mythos-adaptive-sl-uncertainty-widen", type=float, default=0.30,
+                        help="MYTHOS adaptive exits: SL widening gain under model uncertainty (default: 0.30)")
+    parser.add_argument("--mythos-adaptive-sl-vol-widen", type=float, default=0.20,
+                        help="MYTHOS adaptive exits: SL widening gain under volatility stress (default: 0.20)")
+    parser.add_argument("--mythos-adaptive-short-tp-bias", type=float, default=0.05,
+                        help="MYTHOS adaptive exits: additive TP gain bias for short setups (default: 0.05)")
+    parser.add_argument("--mythos-adaptive-short-sl-bias", type=float, default=0.04,
+                        help="MYTHOS adaptive exits: additive SL widening bias for short setups (default: 0.04)")
     parser.add_argument("--mythos-meta-bootstrap-samples", type=int, default=1024,
                         help="MYTHOS v7: bootstrap samples from training analog memory to pre-warm meta learner (default: 1024)")
     parser.add_argument("--mythos-meta-bootstrap-epochs", type=int, default=2,
@@ -6960,6 +6989,19 @@ Examples:
                 short_boost_threshold_r=args.mythos_short_boost_threshold_r,
                 short_boost_edge=args.mythos_short_boost_edge,
                 short_boost_confidence=args.mythos_short_boost_confidence,
+                adaptive_tp_sl_enable=args.mythos_adaptive_tp_sl_enable,
+                adaptive_tp_min_mult=args.mythos_adaptive_tp_min_mult,
+                adaptive_tp_max_mult=args.mythos_adaptive_tp_max_mult,
+                adaptive_sl_min_mult=args.mythos_adaptive_sl_min_mult,
+                adaptive_sl_max_mult=args.mythos_adaptive_sl_max_mult,
+                adaptive_tp_quality_gain=args.mythos_adaptive_tp_quality_gain,
+                adaptive_tp_trend_gain=args.mythos_adaptive_tp_trend_gain,
+                adaptive_tp_vol_penalty=args.mythos_adaptive_tp_vol_penalty,
+                adaptive_sl_quality_tighten=args.mythos_adaptive_sl_quality_tighten,
+                adaptive_sl_uncertainty_widen=args.mythos_adaptive_sl_uncertainty_widen,
+                adaptive_sl_vol_widen=args.mythos_adaptive_sl_vol_widen,
+                adaptive_short_tp_bias=args.mythos_adaptive_short_tp_bias,
+                adaptive_short_sl_bias=args.mythos_adaptive_short_sl_bias,
                 drawdown_edge_start_r=args.mythos_drawdown_edge_start_r,
                 drawdown_edge_step_r=args.mythos_drawdown_edge_step_r,
                 drawdown_edge_boost=args.mythos_drawdown_edge_boost,
@@ -7039,6 +7081,16 @@ Examples:
                 "[MYTHOS] Side stats: long trades=%s win=%s totalR=%s | short trades=%s win=%s totalR=%s",
                 agg.get("long_trades"), agg.get("long_win_rate"), agg.get("long_total_r"),
                 agg.get("short_trades"), agg.get("short_win_rate"), agg.get("short_total_r"),
+            )
+            log.info(
+                "[MYTHOS] Adaptive TP/SL: enabled=%s tp(avg/long/short)=%s/%s/%s sl(avg/long/short)=%s/%s/%s",
+                agg.get("adaptive_tp_sl_enable"),
+                agg.get("tp_mult_avg"),
+                agg.get("long_tp_mult_avg"),
+                agg.get("short_tp_mult_avg"),
+                agg.get("sl_mult_avg"),
+                agg.get("long_sl_mult_avg"),
+                agg.get("short_sl_mult_avg"),
             )
             log.info(
                 "[MYTHOS] High-conviction stats: trades=%s win=%s totalR=%s",
