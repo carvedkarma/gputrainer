@@ -93,6 +93,8 @@ def _apply_mythos_profile_overrides(args) -> list:
         "mythos_side_rebalance_enable": False,
         "mythos_intelligence_enable": False,
         "mythos_intelligence_side_switch_enable": False,
+        "mythos_time_adaptive_enable": False,
+        "mythos_time_adaptive_switch_enable": False,
         "mythos_counterfactual_target_reject_rate": 0.95,
         "mythos_counterfactual_reject_tolerance": 0.30,
         "mythos_counterfactual_adaptive_relax": 0.85,
@@ -5826,6 +5828,36 @@ Examples:
                         help="MYTHOS adaptive exits: additive TP gain bias for short setups (default: 0.05)")
     parser.add_argument("--mythos-adaptive-short-sl-bias", type=float, default=0.04,
                         help="MYTHOS adaptive exits: additive SL widening bias for short setups (default: 0.04)")
+    parser.add_argument("--mythos-time-adaptive-enable", dest="mythos_time_adaptive_enable", action="store_true",
+                        help="MYTHOS time intelligence: enable day/hour side-adaptive edge/confidence routing (default: enabled)")
+    parser.add_argument("--mythos-no-time-adaptive-enable", dest="mythos_time_adaptive_enable", action="store_false",
+                        help="MYTHOS time intelligence: disable day/hour side-adaptive routing")
+    parser.set_defaults(mythos_time_adaptive_enable=True)
+    parser.add_argument("--mythos-time-adaptive-switch-enable", dest="mythos_time_adaptive_switch_enable", action="store_true",
+                        help="MYTHOS time intelligence: allow side switch when opposite side has stronger day/hour expectancy (default: enabled)")
+    parser.add_argument("--mythos-no-time-adaptive-switch-enable", dest="mythos_time_adaptive_switch_enable", action="store_false",
+                        help="MYTHOS time intelligence: disable day/hour driven side switches")
+    parser.set_defaults(mythos_time_adaptive_switch_enable=True)
+    parser.add_argument("--mythos-time-adaptive-warmup-trades", type=int, default=36,
+                        help="MYTHOS time intelligence: accepted trades required before day/hour adaptation activates (default: 36)")
+    parser.add_argument("--mythos-time-adaptive-window", type=int, default=240,
+                        help="MYTHOS time intelligence: rolling trade memory for day/hour bucket quality (default: 240)")
+    parser.add_argument("--mythos-time-adaptive-min-bucket-trades", type=int, default=8,
+                        help="MYTHOS time intelligence: minimum bucket samples before day/hour quality is trusted (default: 8)")
+    parser.add_argument("--mythos-time-adaptive-edge-scale", type=float, default=0.010,
+                        help="MYTHOS time intelligence: scale converting bucket expectancy signal into edge adjustment (default: 0.010)")
+    parser.add_argument("--mythos-time-adaptive-conf-scale", type=float, default=0.05,
+                        help="MYTHOS time intelligence: scale converting bucket expectancy signal into confidence adjustment (default: 0.05)")
+    parser.add_argument("--mythos-time-adaptive-max-edge-adjust", type=float, default=0.018,
+                        help="MYTHOS time intelligence: cap on per-trade edge adjustment from day/hour adaptation (default: 0.018)")
+    parser.add_argument("--mythos-time-adaptive-switch-min-gap-r", type=float, default=0.04,
+                        help="MYTHOS time intelligence: minimum expectancy-R gap needed for day/hour side switch (default: 0.04)")
+    parser.add_argument("--mythos-time-adaptive-switch-conviction-guard", type=float, default=0.62,
+                        help="MYTHOS time intelligence: block day/hour side switch when conviction exceeds this threshold (default: 0.62)")
+    parser.add_argument("--mythos-time-adaptive-switch-min-samples", type=int, default=10,
+                        help="MYTHOS time intelligence: minimum per-side bucket samples required before side switching (default: 10)")
+    parser.add_argument("--mythos-time-adaptive-report-top-n", type=int, default=6,
+                        help="MYTHOS diagnostics: number of best/worst day/hour buckets to include in report (default: 6)")
     parser.add_argument("--mythos-meta-bootstrap-samples", type=int, default=1024,
                         help="MYTHOS v7: bootstrap samples from training analog memory to pre-warm meta learner (default: 1024)")
     parser.add_argument("--mythos-meta-bootstrap-epochs", type=int, default=2,
@@ -7002,6 +7034,18 @@ Examples:
                 adaptive_sl_vol_widen=args.mythos_adaptive_sl_vol_widen,
                 adaptive_short_tp_bias=args.mythos_adaptive_short_tp_bias,
                 adaptive_short_sl_bias=args.mythos_adaptive_short_sl_bias,
+                time_adaptive_enable=args.mythos_time_adaptive_enable,
+                time_adaptive_switch_enable=args.mythos_time_adaptive_switch_enable,
+                time_adaptive_warmup_trades=args.mythos_time_adaptive_warmup_trades,
+                time_adaptive_window=args.mythos_time_adaptive_window,
+                time_adaptive_min_bucket_trades=args.mythos_time_adaptive_min_bucket_trades,
+                time_adaptive_edge_scale=args.mythos_time_adaptive_edge_scale,
+                time_adaptive_conf_scale=args.mythos_time_adaptive_conf_scale,
+                time_adaptive_max_edge_adjust=args.mythos_time_adaptive_max_edge_adjust,
+                time_adaptive_switch_min_gap_r=args.mythos_time_adaptive_switch_min_gap_r,
+                time_adaptive_switch_conviction_guard=args.mythos_time_adaptive_switch_conviction_guard,
+                time_adaptive_switch_min_samples=args.mythos_time_adaptive_switch_min_samples,
+                time_adaptive_report_top_n=args.mythos_time_adaptive_report_top_n,
                 drawdown_edge_start_r=args.mythos_drawdown_edge_start_r,
                 drawdown_edge_step_r=args.mythos_drawdown_edge_step_r,
                 drawdown_edge_boost=args.mythos_drawdown_edge_boost,
@@ -7147,6 +7191,22 @@ Examples:
                 agg.get("intelligence_mode_rate"),
                 agg.get("intelligence_side_switches"),
                 agg.get("intelligence_avg_score"),
+            )
+            log.info(
+                "[MYTHOS] Time-adaptive engine: enabled=%s mode_bars=%s ready_bars=%s side_switches=%s avg_edge_adj=%s avg_conf_adj=%s",
+                agg.get("time_adaptive_enable"),
+                agg.get("time_adaptive_mode_bars"),
+                agg.get("time_adaptive_ready_bars"),
+                agg.get("time_adaptive_side_switches"),
+                agg.get("time_adaptive_avg_edge_adjust"),
+                agg.get("time_adaptive_avg_conf_adjust"),
+            )
+            log.info(
+                "[MYTHOS] Time-bucket shorts best(hours)=%s worst(hours)=%s best(days)=%s worst(days)=%s",
+                agg.get("time_bucket_best_short_hours", []),
+                agg.get("time_bucket_worst_short_hours", []),
+                agg.get("time_bucket_best_short_days", []),
+                agg.get("time_bucket_worst_short_days", []),
             )
             if agg.get("best_model_path"):
                 log.info(

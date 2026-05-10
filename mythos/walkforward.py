@@ -1194,6 +1194,323 @@ def _can_intelligence_switch_side(
     return bool(obs_rate <= max_rate)
 
 
+_DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _utc_day_hour_arrays(timestamps: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    ts = np.asarray(timestamps, dtype=np.int64)
+    if ts.size == 0:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+    # Support both seconds and milliseconds timestamps.
+    unit = "ms" if int(np.nanmax(np.abs(ts))) >= 10_000_000_000 else "s"
+    dt = pd.to_datetime(ts, unit=unit, utc=True, errors="coerce")
+    day = pd.Series(dt.dayofweek).fillna(0).astype(np.int64).to_numpy()
+    hour = pd.Series(dt.hour).fillna(0).astype(np.int64).to_numpy()
+    return day, hour
+
+
+def _time_adaptive_recent_stats(values: List[float], *, min_samples: int) -> Dict[str, float]:
+    n = int(len(values))
+    m = int(max(min_samples, 1))
+    if n < m:
+        return {"ready": 0.0, "trades": float(n), "expectancy": 0.0, "win_rate": 0.0}
+    arr = np.asarray(values, dtype=np.float64)
+    return {
+        "ready": 1.0,
+        "trades": float(n),
+        "expectancy": float(np.mean(arr)),
+        "win_rate": float(np.mean(arr > 0.0)),
+    }
+
+
+def _resolve_time_adaptive_side_stats(
+    *,
+    day_idx: int,
+    hour_idx: int,
+    side: int,
+    day_hour_rr: Dict[Tuple[int, int, int], List[float]],
+    day_rr: Dict[Tuple[int, int], List[float]],
+    hour_rr: Dict[Tuple[int, int], List[float]],
+    cfg: MythosConfig,
+) -> Dict[str, float]:
+    s = int(side)
+    if s not in (-1, 1):
+        return {"ready": 0.0, "trades": 0.0, "expectancy": 0.0, "win_rate": 0.0}
+    min_samples = int(max(getattr(cfg, "time_adaptive_min_bucket_trades", 8), 1))
+    weighted: List[Tuple[float, Dict[str, float]]] = []
+    components = (
+        (0.60, _time_adaptive_recent_stats(day_hour_rr.get((int(day_idx), int(hour_idx), s), []), min_samples=min_samples)),
+        (0.25, _time_adaptive_recent_stats(day_rr.get((int(day_idx), s), []), min_samples=min_samples)),
+        (0.15, _time_adaptive_recent_stats(hour_rr.get((int(hour_idx), s), []), min_samples=min_samples)),
+    )
+    for w, stats in components:
+        if float(stats.get("ready", 0.0)) > 0.5:
+            weighted.append((float(w), stats))
+    if not weighted:
+        return {"ready": 0.0, "trades": 0.0, "expectancy": 0.0, "win_rate": 0.0}
+    denom = float(max(sum(w for w, _ in weighted), 1e-6))
+    exp = float(sum(w * float(s0.get("expectancy", 0.0)) for w, s0 in weighted) / denom)
+    wr = float(sum(w * float(s0.get("win_rate", 0.0)) for w, s0 in weighted) / denom)
+    trades = float(sum(float(s0.get("trades", 0.0)) for _, s0 in weighted))
+    return {"ready": 1.0, "trades": trades, "expectancy": exp, "win_rate": wr}
+
+
+def _apply_time_adaptive_adjustment(
+    *,
+    side: int,
+    edge: float,
+    confidence: float,
+    conviction: float,
+    total_trades: int,
+    day_idx: int,
+    hour_idx: int,
+    day_hour_rr: Dict[Tuple[int, int, int], List[float]],
+    day_rr: Dict[Tuple[int, int], List[float]],
+    hour_rr: Dict[Tuple[int, int], List[float]],
+    cfg: MythosConfig,
+) -> Dict[str, float]:
+    s = int(side)
+    if not bool(getattr(cfg, "time_adaptive_enable", True)) or s not in (-1, 1):
+        return {
+            "side": float(s),
+            "edge": float(max(edge, 0.0)),
+            "confidence": float(np.clip(confidence, 0.0, 1.0)),
+            "edge_adjust": 0.0,
+            "conf_adjust": 0.0,
+            "switched": 0.0,
+            "ready": 0.0,
+            "expectancy": 0.0,
+        }
+    warmup = int(max(getattr(cfg, "time_adaptive_warmup_trades", 36), 0))
+    if int(total_trades) < warmup:
+        return {
+            "side": float(s),
+            "edge": float(max(edge, 0.0)),
+            "confidence": float(np.clip(confidence, 0.0, 1.0)),
+            "edge_adjust": 0.0,
+            "conf_adjust": 0.0,
+            "switched": 0.0,
+            "ready": 0.0,
+            "expectancy": 0.0,
+        }
+    own = _resolve_time_adaptive_side_stats(
+        day_idx=day_idx,
+        hour_idx=hour_idx,
+        side=s,
+        day_hour_rr=day_hour_rr,
+        day_rr=day_rr,
+        hour_rr=hour_rr,
+        cfg=cfg,
+    )
+    if float(own.get("ready", 0.0)) < 0.5:
+        return {
+            "side": float(s),
+            "edge": float(max(edge, 0.0)),
+            "confidence": float(np.clip(confidence, 0.0, 1.0)),
+            "edge_adjust": 0.0,
+            "conf_adjust": 0.0,
+            "switched": 0.0,
+            "ready": 0.0,
+            "expectancy": 0.0,
+        }
+    max_edge_adj = float(np.clip(getattr(cfg, "time_adaptive_max_edge_adjust", 0.018), 0.0, 0.50))
+    edge_scale = float(np.clip(getattr(cfg, "time_adaptive_edge_scale", 0.010), 0.0, 0.25))
+    conf_scale = float(np.clip(getattr(cfg, "time_adaptive_conf_scale", 0.05), 0.0, 1.0))
+    edge_unit = float(max(getattr(cfg, "min_expected_r", 0.01), 1e-6))
+    own_exp = float(own.get("expectancy", 0.0))
+    own_signal = float(np.tanh(own_exp / max(2.0 * edge_unit, 1e-6)))
+    edge_adj = float(np.clip(own_signal * edge_scale, -max_edge_adj, max_edge_adj))
+    conf_adj = float(own_signal * conf_scale)
+    switched = False
+
+    if bool(getattr(cfg, "time_adaptive_switch_enable", True)):
+        other = _resolve_time_adaptive_side_stats(
+            day_idx=day_idx,
+            hour_idx=hour_idx,
+            side=-s,
+            day_hour_rr=day_hour_rr,
+            day_rr=day_rr,
+            hour_rr=hour_rr,
+            cfg=cfg,
+        )
+        min_samples = int(max(getattr(cfg, "time_adaptive_switch_min_samples", 10), 1))
+        if (
+            float(other.get("ready", 0.0)) > 0.5
+            and int(other.get("trades", 0.0)) >= min_samples
+            and int(own.get("trades", 0.0)) >= min_samples
+        ):
+            other_exp = float(other.get("expectancy", 0.0))
+            gap_r = float(other_exp - own_exp)
+            min_gap_r = float(np.clip(getattr(cfg, "time_adaptive_switch_min_gap_r", 0.04), 0.0, 2.0))
+            conviction_guard = float(
+                np.clip(getattr(cfg, "time_adaptive_switch_conviction_guard", 0.62), 0.0, 1.0)
+            )
+            if float(conviction) < conviction_guard and gap_r >= min_gap_r:
+                s = -s
+                switched = True
+                switched_signal = float(np.tanh(other_exp / max(2.0 * edge_unit, 1e-6)))
+                edge_adj = float(np.clip(switched_signal * edge_scale, -max_edge_adj, max_edge_adj))
+                conf_adj = float(switched_signal * conf_scale + min(0.015, conf_scale * 0.35))
+                own_exp = other_exp
+
+    edge2 = float(max(edge + edge_adj, 0.0))
+    conf2 = float(np.clip(confidence + conf_adj, 0.0, 1.0))
+    return {
+        "side": float(s),
+        "edge": edge2,
+        "confidence": conf2,
+        "edge_adjust": edge_adj,
+        "conf_adjust": conf_adj,
+        "switched": float(1.0 if switched else 0.0),
+        "ready": 1.0,
+        "expectancy": own_exp,
+    }
+
+
+def _update_time_adaptive_memory(
+    *,
+    day_idx: int,
+    hour_idx: int,
+    side: int,
+    realized_r: float,
+    day_hour_rr: Dict[Tuple[int, int, int], List[float]],
+    day_rr: Dict[Tuple[int, int], List[float]],
+    hour_rr: Dict[Tuple[int, int], List[float]],
+    cfg: MythosConfig,
+) -> None:
+    s = int(side)
+    if s not in (-1, 1):
+        return
+    w = int(max(getattr(cfg, "time_adaptive_window", 240), 8))
+    keys = (
+        (day_hour_rr, (int(day_idx), int(hour_idx), s)),
+        (day_rr, (int(day_idx), s)),
+        (hour_rr, (int(hour_idx), s)),
+    )
+    for store, key in keys:
+        hist = store.setdefault(key, [])
+        hist.append(float(realized_r))
+        if len(hist) > w:
+            del hist[0 : len(hist) - w]
+
+
+def _new_time_bucket_report() -> Dict[str, Dict[str, float]]:
+    return {
+        "all": {"trades": 0.0, "wins": 0.0, "sum_r": 0.0},
+        "long": {"trades": 0.0, "wins": 0.0, "sum_r": 0.0},
+        "short": {"trades": 0.0, "wins": 0.0, "sum_r": 0.0},
+    }
+
+
+def _update_time_bucket_report(
+    stats: Dict[str, Dict[str, Dict[str, float]]],
+    *,
+    bucket_key: str,
+    side: int,
+    realized_r: float,
+) -> None:
+    s = int(side)
+    if s not in (-1, 1):
+        return
+    bucket = stats.setdefault(str(bucket_key), _new_time_bucket_report())
+    labels = ["all", "long" if s == 1 else "short"]
+    for label in labels:
+        node = bucket.setdefault(label, {"trades": 0.0, "wins": 0.0, "sum_r": 0.0})
+        node["trades"] = float(node.get("trades", 0.0) + 1.0)
+        node["wins"] = float(node.get("wins", 0.0) + (1.0 if float(realized_r) > 0.0 else 0.0))
+        node["sum_r"] = float(node.get("sum_r", 0.0) + float(realized_r))
+
+
+def _summarize_time_bucket_report(
+    stats: Dict[str, Dict[str, Dict[str, float]]],
+    *,
+    ordered_keys: Optional[List[str]] = None,
+) -> Dict[str, Dict[str, Dict[str, float]]]:
+    ordered = list(ordered_keys or [])
+    tail = sorted(k for k in stats.keys() if k not in set(ordered))
+    out: Dict[str, Dict[str, Dict[str, float]]] = {}
+    for key in ordered + tail:
+        if key not in stats:
+            continue
+        row = stats[key]
+        out[key] = {}
+        for label in ("all", "long", "short"):
+            node = row.get(label, {})
+            trades = int(round(float(node.get("trades", 0.0))))
+            wins = int(round(float(node.get("wins", 0.0))))
+            total_r = float(node.get("sum_r", 0.0))
+            win_rate = float(wins / max(trades, 1)) if trades else 0.0
+            expectancy = float(total_r / max(trades, 1)) if trades else 0.0
+            out[key][label] = {
+                "trades": trades,
+                "wins": wins,
+                "win_rate": round(win_rate, 4),
+                "expectancy_r": round(expectancy, 4),
+                "total_r": round(total_r, 4),
+            }
+    return out
+
+
+def _merge_time_bucket_reports(
+    reports: List[Dict[str, object]],
+    *,
+    field: str,
+    ordered_keys: Optional[List[str]] = None,
+) -> Dict[str, Dict[str, Dict[str, float]]]:
+    acc: Dict[str, Dict[str, Dict[str, float]]] = {}
+    for report in reports:
+        rows = report.get(field, {})
+        if not isinstance(rows, dict):
+            continue
+        for bucket_key, side_map in rows.items():
+            if not isinstance(side_map, dict):
+                continue
+            base = acc.setdefault(str(bucket_key), _new_time_bucket_report())
+            for label in ("all", "long", "short"):
+                node = side_map.get(label, {})
+                if not isinstance(node, dict):
+                    continue
+                base[label]["trades"] = float(base[label].get("trades", 0.0) + float(node.get("trades", 0.0)))
+                base[label]["wins"] = float(base[label].get("wins", 0.0) + float(node.get("wins", 0.0)))
+                base[label]["sum_r"] = float(base[label].get("sum_r", 0.0) + float(node.get("total_r", 0.0)))
+    return _summarize_time_bucket_report(acc, ordered_keys=ordered_keys)
+
+
+def _rank_time_bucket_side(
+    bucket_report: Dict[str, Dict[str, Dict[str, float]]],
+    *,
+    side_key: str,
+    min_trades: int,
+    top_n: int,
+    reverse: bool,
+) -> List[Dict[str, float]]:
+    rows: List[Dict[str, float]] = []
+    for bucket_key, payload in bucket_report.items():
+        node = payload.get(side_key, {})
+        trades = int(node.get("trades", 0))
+        if trades < int(max(min_trades, 1)):
+            continue
+        rows.append(
+            {
+                "bucket": str(bucket_key),
+                "trades": int(trades),
+                "wins": int(node.get("wins", 0)),
+                "win_rate": float(node.get("win_rate", 0.0)),
+                "expectancy_r": float(node.get("expectancy_r", 0.0)),
+                "total_r": float(node.get("total_r", 0.0)),
+            }
+        )
+    rows.sort(
+        key=lambda r: (
+            float(r.get("expectancy_r", 0.0)),
+            float(r.get("win_rate", 0.0)),
+            int(r.get("trades", 0)),
+        ),
+        reverse=bool(reverse),
+    )
+    return rows[: int(max(top_n, 1))]
+
+
 def _is_sure_signal(
     *,
     side: int,
@@ -1909,6 +2226,7 @@ def _run_fold(
     high = test_feat["high"].to_numpy(dtype=np.float64)
     low = test_feat["low"].to_numpy(dtype=np.float64)
     timestamps = test_feat["timestamp"].to_numpy(dtype=np.int64)
+    weekday_idx, hour_idx = _utc_day_hour_arrays(timestamps)
     atr = _compute_atr(close, high, low, period=14)
     X_te = test_feat[xcols].to_numpy(dtype=np.float64)
 
@@ -1982,6 +2300,11 @@ def _run_fold(
     intelligence_side_stats: Dict[int, Dict[str, float]] = {1: _intelligence_bucket(), -1: _intelligence_bucket()}
     intelligence_regime_side_stats: Dict[Tuple[int, int], Dict[str, float]] = {}
     intelligence_expert_stats: Dict[str, Dict[str, float]] = {}
+    time_adaptive_day_hour_rr: Dict[Tuple[int, int, int], List[float]] = {}
+    time_adaptive_day_rr: Dict[Tuple[int, int], List[float]] = {}
+    time_adaptive_hour_rr: Dict[Tuple[int, int], List[float]] = {}
+    time_bucket_day_raw: Dict[str, Dict[str, Dict[str, float]]] = {}
+    time_bucket_hour_raw: Dict[str, Dict[str, Dict[str, float]]] = {}
     side_quality_rr: Dict[int, List[float]] = {1: [], -1: []}
     legacy_stable_mode = bool(
         (not bool(getattr(cfg, "bayes_quality_enable", True)))
@@ -1995,6 +2318,11 @@ def _run_fold(
     intelligence_side_switches = 0
     intelligence_mode_bars = 0
     intelligence_last_switch_bar = -10_000_000
+    time_adaptive_mode_bars = 0
+    time_adaptive_ready_bars = 0
+    time_adaptive_side_switches = 0
+    time_adaptive_edge_adjust_sum = 0.0
+    time_adaptive_conf_adjust_sum = 0.0
     last_trade_bar = -1
     opportunity_rescue_bars = 0
     opportunity_override_counterfactual = 0
@@ -2123,6 +2451,34 @@ def _run_fold(
         if float(intel.get("switched", 0.0)) > 0.5:
             intelligence_side_switches += 1
             intelligence_last_switch_bar = int(i)
+        day_i = int(weekday_idx[i]) if i < len(weekday_idx) else 0
+        hour_i = int(hour_idx[i]) if i < len(hour_idx) else 0
+        time_adj = _apply_time_adaptive_adjustment(
+            side=side,
+            edge=edge,
+            confidence=confidence,
+            conviction=conviction,
+            total_trades=len(trades),
+            day_idx=day_i,
+            hour_idx=hour_i,
+            day_hour_rr=time_adaptive_day_hour_rr,
+            day_rr=time_adaptive_day_rr,
+            hour_rr=time_adaptive_hour_rr,
+            cfg=cfg,
+        )
+        side = int(round(float(time_adj.get("side", side))))
+        edge = float(time_adj.get("edge", edge))
+        confidence = float(np.clip(time_adj.get("confidence", confidence), 0.0, 1.0))
+        edge_adj = float(time_adj.get("edge_adjust", 0.0))
+        conf_adj = float(time_adj.get("conf_adjust", 0.0))
+        time_adaptive_edge_adjust_sum += edge_adj
+        time_adaptive_conf_adjust_sum += conf_adj
+        if float(time_adj.get("ready", 0.0)) > 0.5:
+            time_adaptive_ready_bars += 1
+        if abs(edge_adj) > 1e-9 or abs(conf_adj) > 1e-9 or float(time_adj.get("switched", 0.0)) > 0.5:
+            time_adaptive_mode_bars += 1
+        if float(time_adj.get("switched", 0.0)) > 0.5:
+            time_adaptive_side_switches += 1
         is_sure_signal = _is_sure_signal(
             side=side,
             edge=edge,
@@ -2441,6 +2797,30 @@ def _run_fold(
         else:
             n_short += 1
             short_trades.append(rr)
+        _update_time_adaptive_memory(
+            day_idx=day_i,
+            hour_idx=hour_i,
+            side=side,
+            realized_r=rr,
+            day_hour_rr=time_adaptive_day_hour_rr,
+            day_rr=time_adaptive_day_rr,
+            hour_rr=time_adaptive_hour_rr,
+            cfg=cfg,
+        )
+        day_key = _DAY_NAMES[int(np.clip(day_i, 0, len(_DAY_NAMES) - 1))]
+        hour_key = f"{int(np.clip(hour_i, 0, 23)):02d}"
+        _update_time_bucket_report(
+            time_bucket_day_raw,
+            bucket_key=day_key,
+            side=side,
+            realized_r=rr,
+        )
+        _update_time_bucket_report(
+            time_bucket_hour_raw,
+            bucket_key=hour_key,
+            side=side,
+            realized_r=rr,
+        )
         side_hist = side_quality_rr.setdefault(int(side), [])
         side_hist.append(rr)
         if len(side_hist) > 128:
@@ -2484,6 +2864,58 @@ def _run_fold(
         score_monotonic=expect > 0.0,
         side_balance=(min(n_long, n_short) / max(n_long + n_short, 1)),
     )
+    day_report = _summarize_time_bucket_report(
+        time_bucket_day_raw,
+        ordered_keys=list(_DAY_NAMES),
+    )
+    hour_report = _summarize_time_bucket_report(
+        time_bucket_hour_raw,
+        ordered_keys=[f"{h:02d}" for h in range(24)],
+    )
+    bucket_min_trades = int(max(getattr(cfg, "time_adaptive_min_bucket_trades", 8), 1))
+    bucket_top_n = int(max(getattr(cfg, "time_adaptive_report_top_n", 6), 1))
+    best_short_hours = _rank_time_bucket_side(
+        hour_report,
+        side_key="short",
+        min_trades=bucket_min_trades,
+        top_n=bucket_top_n,
+        reverse=True,
+    )
+    worst_short_hours = _rank_time_bucket_side(
+        hour_report,
+        side_key="short",
+        min_trades=bucket_min_trades,
+        top_n=bucket_top_n,
+        reverse=False,
+    )
+    best_long_hours = _rank_time_bucket_side(
+        hour_report,
+        side_key="long",
+        min_trades=bucket_min_trades,
+        top_n=bucket_top_n,
+        reverse=True,
+    )
+    worst_long_hours = _rank_time_bucket_side(
+        hour_report,
+        side_key="long",
+        min_trades=bucket_min_trades,
+        top_n=bucket_top_n,
+        reverse=False,
+    )
+    best_short_days = _rank_time_bucket_side(
+        day_report,
+        side_key="short",
+        min_trades=bucket_min_trades,
+        top_n=bucket_top_n,
+        reverse=True,
+    )
+    worst_short_days = _rank_time_bucket_side(
+        day_report,
+        side_key="short",
+        min_trades=bucket_min_trades,
+        top_n=bucket_top_n,
+        reverse=False,
+    )
     return {
         "total_trades": n,
         "total_r": round(total_r, 4),
@@ -2510,6 +2942,24 @@ def _run_fold(
         "intelligence_mode_bars": int(intelligence_mode_bars),
         "intelligence_side_switches": int(intelligence_side_switches),
         "intelligence_avg_score": round(float(intelligence_score_sum / max(intelligence_mode_bars, 1)), 6),
+        "time_adaptive_mode_bars": int(time_adaptive_mode_bars),
+        "time_adaptive_ready_bars": int(time_adaptive_ready_bars),
+        "time_adaptive_side_switches": int(time_adaptive_side_switches),
+        "time_adaptive_avg_edge_adjust": round(
+            float(time_adaptive_edge_adjust_sum / max(time_adaptive_mode_bars, 1)), 6
+        ),
+        "time_adaptive_avg_conf_adjust": round(
+            float(time_adaptive_conf_adjust_sum / max(time_adaptive_mode_bars, 1)), 6
+        ),
+        "time_adaptive_enable": bool(getattr(cfg, "time_adaptive_enable", True)),
+        "time_bucket_day_side": day_report,
+        "time_bucket_hour_side": hour_report,
+        "time_bucket_best_short_hours": best_short_hours,
+        "time_bucket_worst_short_hours": worst_short_hours,
+        "time_bucket_best_long_hours": best_long_hours,
+        "time_bucket_worst_long_hours": worst_long_hours,
+        "time_bucket_best_short_days": best_short_days,
+        "time_bucket_worst_short_days": worst_short_days,
         "opportunity_rescue_bars": int(opportunity_rescue_bars),
         "opportunity_max_drought_ratio": round(float(opportunity_max_drought_ratio), 6),
         "opportunity_override_counterfactual": int(opportunity_override_counterfactual),
@@ -2622,7 +3072,7 @@ def run_mythos_walk_forward(
                     brain=model_state.get("adaptive"),
                 )
         log.info(
-            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d lev_boost=%d lev_blocked=%d bayes_rej=%d nonconf_rej=%d nonconf_ovr=%d intel_mode=%d intel_switch=%d intel_avg=%s opp_bars=%d opp_drought_max=%s opp_ovr(cf/bq/nc)=%d/%d/%d",
+            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d lev_boost=%d lev_blocked=%d bayes_rej=%d nonconf_rej=%d nonconf_ovr=%d intel_mode=%d intel_switch=%d intel_avg=%s time_mode=%d time_switch=%d time_edge_adj=%s opp_bars=%d opp_drought_max=%s opp_ovr(cf/bq/nc)=%d/%d/%d",
             i,
             fold["total_trades"],
             fold["total_r"],
@@ -2641,6 +3091,9 @@ def run_mythos_walk_forward(
             fold.get("intelligence_mode_bars", 0),
             fold.get("intelligence_side_switches", 0),
             fold.get("intelligence_avg_score", 0.0),
+            fold.get("time_adaptive_mode_bars", 0),
+            fold.get("time_adaptive_side_switches", 0),
+            fold.get("time_adaptive_avg_edge_adjust", 0.0),
             fold.get("opportunity_rescue_bars", 0),
             fold.get("opportunity_max_drought_ratio", 0.0),
             fold.get("opportunity_override_counterfactual", 0),
@@ -2725,6 +3178,23 @@ def run_mythos_walk_forward(
         sum(float(r.get("intelligence_avg_score", 0.0)) * int(r.get("intelligence_mode_bars", 0)) for r in reports)
     )
     aggregate_intelligence_avg_score = float(weighted_intelligence_score_num / max(total_intelligence_mode_bars, 1))
+    total_time_adaptive_mode_bars = int(sum(int(r.get("time_adaptive_mode_bars", 0)) for r in reports))
+    total_time_adaptive_ready_bars = int(sum(int(r.get("time_adaptive_ready_bars", 0)) for r in reports))
+    total_time_adaptive_side_switches = int(sum(int(r.get("time_adaptive_side_switches", 0)) for r in reports))
+    weighted_time_edge_adj = float(
+        sum(
+            float(r.get("time_adaptive_avg_edge_adjust", 0.0)) * int(r.get("time_adaptive_mode_bars", 0))
+            for r in reports
+        )
+    )
+    weighted_time_conf_adj = float(
+        sum(
+            float(r.get("time_adaptive_avg_conf_adjust", 0.0)) * int(r.get("time_adaptive_mode_bars", 0))
+            for r in reports
+        )
+    )
+    aggregate_time_edge_adj = float(weighted_time_edge_adj / max(total_time_adaptive_mode_bars, 1))
+    aggregate_time_conf_adj = float(weighted_time_conf_adj / max(total_time_adaptive_mode_bars, 1))
     total_opportunity_rescue_bars = int(sum(int(r.get("opportunity_rescue_bars", 0)) for r in reports))
     total_opportunity_override_counterfactual = int(
         sum(int(r.get("opportunity_override_counterfactual", 0)) for r in reports)
@@ -2759,6 +3229,60 @@ def run_mythos_walk_forward(
     avg_short_sl_mult = float(
         sum(float(r.get("short_sl_mult_avg", cfg.sl_mult)) * int(r.get("short_trades", 0)) for r in reports)
         / max(total_short_trades, 1)
+    )
+    aggregate_day_buckets = _merge_time_bucket_reports(
+        reports,
+        field="time_bucket_day_side",
+        ordered_keys=list(_DAY_NAMES),
+    )
+    aggregate_hour_buckets = _merge_time_bucket_reports(
+        reports,
+        field="time_bucket_hour_side",
+        ordered_keys=[f"{h:02d}" for h in range(24)],
+    )
+    bucket_min_trades = int(max(getattr(cfg, "time_adaptive_min_bucket_trades", 8), 1))
+    bucket_top_n = int(max(getattr(cfg, "time_adaptive_report_top_n", 6), 1))
+    agg_best_short_hours = _rank_time_bucket_side(
+        aggregate_hour_buckets,
+        side_key="short",
+        min_trades=bucket_min_trades,
+        top_n=bucket_top_n,
+        reverse=True,
+    )
+    agg_worst_short_hours = _rank_time_bucket_side(
+        aggregate_hour_buckets,
+        side_key="short",
+        min_trades=bucket_min_trades,
+        top_n=bucket_top_n,
+        reverse=False,
+    )
+    agg_best_long_hours = _rank_time_bucket_side(
+        aggregate_hour_buckets,
+        side_key="long",
+        min_trades=bucket_min_trades,
+        top_n=bucket_top_n,
+        reverse=True,
+    )
+    agg_worst_long_hours = _rank_time_bucket_side(
+        aggregate_hour_buckets,
+        side_key="long",
+        min_trades=bucket_min_trades,
+        top_n=bucket_top_n,
+        reverse=False,
+    )
+    agg_best_short_days = _rank_time_bucket_side(
+        aggregate_day_buckets,
+        side_key="short",
+        min_trades=bucket_min_trades,
+        top_n=bucket_top_n,
+        reverse=True,
+    )
+    agg_worst_short_days = _rank_time_bucket_side(
+        aggregate_day_buckets,
+        side_key="short",
+        min_trades=bucket_min_trades,
+        top_n=bucket_top_n,
+        reverse=False,
     )
     cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
     bayes_quality_reject_rate = float(
@@ -2836,6 +3360,21 @@ def run_mythos_walk_forward(
         "intelligence_mode_rate": round(float(total_intelligence_mode_bars / max(total_trades, 1)), 4),
         "intelligence_side_switches": total_intelligence_side_switches,
         "intelligence_avg_score": round(aggregate_intelligence_avg_score, 6),
+        "time_adaptive_enable": bool(getattr(cfg, "time_adaptive_enable", True)),
+        "time_adaptive_mode_bars": total_time_adaptive_mode_bars,
+        "time_adaptive_mode_rate": round(float(total_time_adaptive_mode_bars / max(total_trades, 1)), 4),
+        "time_adaptive_ready_bars": total_time_adaptive_ready_bars,
+        "time_adaptive_side_switches": total_time_adaptive_side_switches,
+        "time_adaptive_avg_edge_adjust": round(aggregate_time_edge_adj, 6),
+        "time_adaptive_avg_conf_adjust": round(aggregate_time_conf_adj, 6),
+        "time_bucket_day_side": aggregate_day_buckets,
+        "time_bucket_hour_side": aggregate_hour_buckets,
+        "time_bucket_best_short_hours": agg_best_short_hours,
+        "time_bucket_worst_short_hours": agg_worst_short_hours,
+        "time_bucket_best_long_hours": agg_best_long_hours,
+        "time_bucket_worst_long_hours": agg_worst_long_hours,
+        "time_bucket_best_short_days": agg_best_short_days,
+        "time_bucket_worst_short_days": agg_worst_short_days,
         "opportunity_rescue_bars": total_opportunity_rescue_bars,
         "opportunity_rescue_rate": round(float(total_opportunity_rescue_bars / max(total_trades, 1)), 4),
         "opportunity_max_drought_ratio": round(max_opportunity_drought_ratio, 6),

@@ -106,6 +106,18 @@ class MythosConfig:
     adaptive_sl_vol_widen: float = 0.20
     adaptive_short_tp_bias: float = 0.05
     adaptive_short_sl_bias: float = 0.04
+    time_adaptive_enable: bool = True
+    time_adaptive_switch_enable: bool = True
+    time_adaptive_warmup_trades: int = 36
+    time_adaptive_window: int = 240
+    time_adaptive_min_bucket_trades: int = 8
+    time_adaptive_edge_scale: float = 0.010
+    time_adaptive_conf_scale: float = 0.05
+    time_adaptive_max_edge_adjust: float = 0.018
+    time_adaptive_switch_min_gap_r: float = 0.04
+    time_adaptive_switch_conviction_guard: float = 0.62
+    time_adaptive_switch_min_samples: int = 10
+    time_adaptive_report_top_n: int = 6
     opportunity_rescue_enable: bool = True
     opportunity_rescue_start_bars: int = 96
     opportunity_rescue_full_bars: int = 384
@@ -457,6 +469,36 @@ class MythosConfig:
         self.adaptive_short_sl_bias = float(
             np.clip(getattr(self, "adaptive_short_sl_bias", 0.04), -1.0, 1.0)
         )
+        self.time_adaptive_enable = bool(getattr(self, "time_adaptive_enable", True))
+        self.time_adaptive_switch_enable = bool(
+            getattr(self, "time_adaptive_switch_enable", True)
+        )
+        self.time_adaptive_warmup_trades = int(
+            max(getattr(self, "time_adaptive_warmup_trades", 36), 0)
+        )
+        self.time_adaptive_window = int(max(getattr(self, "time_adaptive_window", 240), 8))
+        self.time_adaptive_min_bucket_trades = int(
+            max(getattr(self, "time_adaptive_min_bucket_trades", 8), 1)
+        )
+        self.time_adaptive_edge_scale = float(
+            np.clip(getattr(self, "time_adaptive_edge_scale", 0.010), 0.0, 0.25)
+        )
+        self.time_adaptive_conf_scale = float(
+            np.clip(getattr(self, "time_adaptive_conf_scale", 0.05), 0.0, 1.0)
+        )
+        self.time_adaptive_max_edge_adjust = float(
+            np.clip(getattr(self, "time_adaptive_max_edge_adjust", 0.018), 0.0, 0.50)
+        )
+        self.time_adaptive_switch_min_gap_r = float(
+            np.clip(getattr(self, "time_adaptive_switch_min_gap_r", 0.04), 0.0, 2.0)
+        )
+        self.time_adaptive_switch_conviction_guard = float(
+            np.clip(getattr(self, "time_adaptive_switch_conviction_guard", 0.62), 0.0, 1.0)
+        )
+        self.time_adaptive_switch_min_samples = int(
+            max(getattr(self, "time_adaptive_switch_min_samples", 10), 1)
+        )
+        self.time_adaptive_report_top_n = int(max(getattr(self, "time_adaptive_report_top_n", 6), 1))
         self.opportunity_rescue_enable = bool(getattr(self, "opportunity_rescue_enable", True))
         self.opportunity_rescue_start_bars = int(max(getattr(self, "opportunity_rescue_start_bars", 96), 1))
         self.opportunity_rescue_full_bars = int(
