@@ -273,6 +273,9 @@ class V5ForwardTestConfig:
     ema200_soft_mult: Optional[float] = None
     per_side_threshold: bool = False
     gate_mode: str = "ref_magnitude"   # choices: ref_magnitude | percentile_top15
+    opportunity_rescue: bool = True
+    opportunity_min_candidates_per_day: float = 1.0
+    opportunity_rescue_floor_mult: float = 0.70
     specialist_mode: str = "none"      # "none" | "short" | "long" — dual-specialist training
     # --- Signal quality: LONG specialist head-agreement gates (Task #69) ---
     min_mu_r_long: float = -1e9        # hard gate: block LONG specialist trades where mu_R < this (0.0 = agree-only)
@@ -2922,6 +2925,13 @@ def run_v5_forward_test(
             config.kill_hysteresis_r,
             getattr(config, 'per_symbol_soft_kill', False),
         )
+        log.info(
+            "[V5_FWD] Effective config — intelligence rescue: "
+            "enabled=%s  min_candidates_day=%.2f  floor_mult=%.2f",
+            getattr(config, 'opportunity_rescue', True),
+            getattr(config, 'opportunity_min_candidates_per_day', 1.0),
+            getattr(config, 'opportunity_rescue_floor_mult', 0.70),
+        )
     except Exception as _cfg_err:
         log.debug("[V5_FWD] Shared config not loaded: %s", _cfg_err)
 
@@ -3378,6 +3388,69 @@ def run_v5_forward_test(
     else:
         selected = scores_work >= ddt_base_threshold
     sel_indices = np.where(selected)[0]
+    opportunity_rescue_applied = False
+    opportunity_rescue_before = int(len(sel_indices))
+    opportunity_rescue_target = 0
+    opportunity_rescue_threshold = float(effective_threshold)
+    if bool(getattr(config, 'opportunity_rescue', True)):
+        if test_timestamps is not None and len(test_timestamps) > 1:
+            eval_days = max(
+                float(test_timestamps[-1] - test_timestamps[0]) / (1000.0 * 60.0 * 60.0 * 24.0),
+                float(test_bars) / 96.0,
+            )
+        else:
+            eval_days = max(float(test_bars) / 96.0, 1e-6)
+        min_candidates_per_day = float(max(getattr(config, 'opportunity_min_candidates_per_day', 1.0), 0.0))
+        opportunity_rescue_target = int(np.ceil(eval_days * min_candidates_per_day))
+        finite_scores_for_rescue = scores_work[np.isfinite(scores_work)]
+        if (
+            opportunity_rescue_target > 0
+            and opportunity_rescue_before < opportunity_rescue_target
+            and len(finite_scores_for_rescue) > 0
+        ):
+            sorted_scores = np.sort(finite_scores_for_rescue)[::-1]
+            target_rank = int(np.clip(opportunity_rescue_target - 1, 0, len(sorted_scores) - 1))
+            rescue_threshold = float(sorted_scores[target_rank])
+            floor_mult = float(np.clip(getattr(config, 'opportunity_rescue_floor_mult', 0.70), 0.05, 1.0))
+            if per_bar_threshold is None:
+                rescue_floor = float(effective_threshold) * floor_mult
+                if config.min_threshold is not None:
+                    rescue_floor = max(rescue_floor, float(config.min_threshold) * floor_mult)
+                rescue_threshold = max(rescue_threshold, rescue_floor)
+                if rescue_threshold < float(effective_threshold):
+                    ddt_base_threshold = rescue_threshold
+                    effective_threshold = rescue_threshold
+                    selected = scores_work >= ddt_base_threshold
+                    sel_indices = np.where(selected)[0]
+                    opportunity_rescue_applied = True
+                    opportunity_rescue_threshold = float(ddt_base_threshold)
+            else:
+                relaxed_thresholds = per_bar_threshold.copy()
+                finite_thr_mask = np.isfinite(relaxed_thresholds)
+                if np.any(finite_thr_mask):
+                    relaxed_thresholds[finite_thr_mask] = np.maximum(
+                        relaxed_thresholds[finite_thr_mask] * floor_mult,
+                        rescue_threshold,
+                    )
+                    relaxed_selected = scores_work >= relaxed_thresholds
+                    relaxed_indices = np.where(relaxed_selected)[0]
+                    if len(relaxed_indices) > opportunity_rescue_before:
+                        per_bar_threshold = relaxed_thresholds
+                        selected = relaxed_selected
+                        sel_indices = relaxed_indices
+                        opportunity_rescue_applied = True
+                        opportunity_rescue_threshold = float(np.nanmedian(relaxed_thresholds[finite_thr_mask]))
+            if opportunity_rescue_applied:
+                log.info(
+                    "[V5_INTEL_RESCUE] candidate drought detected: target=%d/day=%.2f days=%.2f "
+                    "before=%d after=%d threshold≈%.6f",
+                    opportunity_rescue_target,
+                    min_candidates_per_day,
+                    eval_days,
+                    opportunity_rescue_before,
+                    len(sel_indices),
+                    opportunity_rescue_threshold,
+                )
     # Track bars that passed score threshold before edge_first pruning (for candidate_logger attribution).
     _score_pass_set: set = set(sel_indices.tolist())
 
@@ -4527,6 +4600,14 @@ def run_v5_forward_test(
         _df_pct_cal_indices = np.where(np.isfinite(scores_work))[0]
         report['pct_calibration'] = _compute_percentile_calibration(
             _df_pct_cal_indices, scores_work, sides, safe_r, test_bars)
+        report['opportunity_rescue'] = {
+            'enabled': bool(getattr(config, 'opportunity_rescue', True)),
+            'applied': bool(opportunity_rescue_applied),
+            'target_candidates': int(opportunity_rescue_target),
+            'before_candidates': int(opportunity_rescue_before),
+            'after_candidates': int(len(sel_indices)),
+            'rescue_threshold': float(opportunity_rescue_threshold),
+        }
         _print_forward_report(report)
         return report
 
@@ -4588,6 +4669,14 @@ def run_v5_forward_test(
     )
     # gate_pass_rate: quality-mask pass rate (preserved for backward compatibility)
     report['gate_pass_rate'] = _qual_gate_pass_rate
+    report['opportunity_rescue'] = {
+        'enabled': bool(getattr(config, 'opportunity_rescue', True)),
+        'applied': bool(opportunity_rescue_applied),
+        'target_candidates': int(opportunity_rescue_target),
+        'before_candidates': int(opportunity_rescue_before),
+        'after_candidates': int(len(sel_indices)),
+        'rescue_threshold': float(opportunity_rescue_threshold),
+    }
 
     side_quality = {}
     if len(taken_valid) > 0 and arrays is not None:

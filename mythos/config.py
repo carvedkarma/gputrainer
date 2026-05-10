@@ -93,6 +93,17 @@ class MythosConfig:
     side_aggression_boost: float = 0.006
     side_aggression_min_gap: float = 0.05
     side_aggression_underweight_gain: float = 0.60
+    opportunity_rescue_enable: bool = True
+    opportunity_rescue_start_bars: int = 96
+    opportunity_rescue_full_bars: int = 384
+    opportunity_rescue_edge_relax: float = 0.010
+    opportunity_rescue_conf_relax: float = 0.08
+    opportunity_rescue_min_edge: float = 0.004
+    opportunity_rescue_min_confidence: float = 0.47
+    opportunity_rescue_override_start: float = 0.55
+    opportunity_rescue_override_conviction: float = 0.70
+    opportunity_rescue_override_edge_buffer: float = 0.002
+    opportunity_rescue_override_conf_buffer: float = 0.02
     precision_min_confidence: float = 0.0
     precision_min_edge: float = 0.0
     precision_min_conviction: float = 0.52
@@ -395,6 +406,35 @@ class MythosConfig:
         )
         self.side_aggression_underweight_gain = float(
             np.clip(getattr(self, "side_aggression_underweight_gain", 0.60), 0.0, 3.0)
+        )
+        self.opportunity_rescue_enable = bool(getattr(self, "opportunity_rescue_enable", True))
+        self.opportunity_rescue_start_bars = int(max(getattr(self, "opportunity_rescue_start_bars", 96), 1))
+        self.opportunity_rescue_full_bars = int(
+            max(getattr(self, "opportunity_rescue_full_bars", 384), self.opportunity_rescue_start_bars + 1)
+        )
+        self.opportunity_rescue_edge_relax = float(
+            np.clip(getattr(self, "opportunity_rescue_edge_relax", 0.010), 0.0, 0.25)
+        )
+        self.opportunity_rescue_conf_relax = float(
+            np.clip(getattr(self, "opportunity_rescue_conf_relax", 0.08), 0.0, 0.50)
+        )
+        self.opportunity_rescue_min_edge = float(
+            max(getattr(self, "opportunity_rescue_min_edge", 0.004), 0.0)
+        )
+        self.opportunity_rescue_min_confidence = float(
+            np.clip(getattr(self, "opportunity_rescue_min_confidence", 0.47), 0.0, 1.0)
+        )
+        self.opportunity_rescue_override_start = float(
+            np.clip(getattr(self, "opportunity_rescue_override_start", 0.55), 0.0, 1.0)
+        )
+        self.opportunity_rescue_override_conviction = float(
+            np.clip(getattr(self, "opportunity_rescue_override_conviction", 0.70), 0.0, 1.0)
+        )
+        self.opportunity_rescue_override_edge_buffer = float(
+            max(getattr(self, "opportunity_rescue_override_edge_buffer", 0.002), 0.0)
+        )
+        self.opportunity_rescue_override_conf_buffer = float(
+            np.clip(getattr(self, "opportunity_rescue_override_conf_buffer", 0.02), 0.0, 1.0)
         )
         self.precision_min_confidence = float(
             np.clip(getattr(self, "precision_min_confidence", 0.0), 0.0, 1.0)

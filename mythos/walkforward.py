@@ -1917,6 +1917,12 @@ def _run_fold(
     intelligence_side_switches = 0
     intelligence_mode_bars = 0
     intelligence_last_switch_bar = -10_000_000
+    last_trade_bar = -1
+    opportunity_rescue_bars = 0
+    opportunity_override_counterfactual = 0
+    opportunity_override_bayes = 0
+    opportunity_override_nonconformity = 0
+    opportunity_max_drought_ratio = 0.0
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
         x = X_te[i]
@@ -2058,16 +2064,52 @@ def _run_fold(
             continue
         edge_floor = governor.adjusted_edge_floor(risk.state.equity_r)
         edge -= governor.side_penalty(side)
-        if confidence < cfg.min_confidence:
+        drought_ratio = 0.0
+        dynamic_conf_floor = float(cfg.min_confidence)
+        dynamic_edge_floor = float(edge_floor)
+        opportunity_enabled = bool(getattr(cfg, "opportunity_rescue_enable", True))
+        if opportunity_enabled:
+            drought_bars = int(i - last_trade_bar) if last_trade_bar >= 0 else int(i + 1)
+            drought_start = int(max(getattr(cfg, "opportunity_rescue_start_bars", 96), 1))
+            drought_full = int(
+                max(getattr(cfg, "opportunity_rescue_full_bars", 384), drought_start + 1)
+            )
+            if drought_bars > drought_start:
+                drought_ratio = float(
+                    np.clip((drought_bars - drought_start) / max(drought_full - drought_start, 1), 0.0, 1.0)
+                )
+                opportunity_rescue_bars += 1
+                opportunity_max_drought_ratio = max(opportunity_max_drought_ratio, drought_ratio)
+                conf_relax = float(np.clip(getattr(cfg, "opportunity_rescue_conf_relax", 0.08), 0.0, 0.50))
+                edge_relax = float(max(getattr(cfg, "opportunity_rescue_edge_relax", 0.010), 0.0))
+                min_conf_floor = float(
+                    np.clip(getattr(cfg, "opportunity_rescue_min_confidence", 0.47), 0.0, 1.0)
+                )
+                min_edge_floor = float(max(getattr(cfg, "opportunity_rescue_min_edge", 0.004), 0.0))
+                dynamic_conf_floor = max(float(cfg.min_confidence) - conf_relax * drought_ratio, min_conf_floor)
+                dynamic_edge_floor = max(float(edge_floor) - edge_relax * drought_ratio, min_edge_floor)
+        if confidence < dynamic_conf_floor:
             skip_counts["low_confidence"] += 1
             continue
-        if edge < edge_floor:
+        if edge < dynamic_edge_floor:
             skip_counts["edge_below_floor"] += 1
             continue
         if not governor.allow_by_streak(i, side=side):
             skip_counts["streak_pause"] += 1
             continue
-        if not _adaptive_counterfactual_pass(
+        can_override_reject = (
+            drought_ratio >= float(np.clip(getattr(cfg, "opportunity_rescue_override_start", 0.55), 0.0, 1.0))
+            and conviction >= float(np.clip(getattr(cfg, "opportunity_rescue_override_conviction", 0.70), 0.0, 1.0))
+            and edge >= (
+                dynamic_edge_floor + float(max(getattr(cfg, "opportunity_rescue_override_edge_buffer", 0.002), 0.0))
+            )
+            and confidence >= min(
+                dynamic_conf_floor
+                + float(np.clip(getattr(cfg, "opportunity_rescue_override_conf_buffer", 0.02), 0.0, 1.0)),
+                1.0,
+            )
+        )
+        cf_pass = _adaptive_counterfactual_pass(
             analog_mem=analog_mem,
             x=x,
             side=side,
@@ -2076,9 +2118,18 @@ def _run_fold(
             cfg=cfg,
             accepted_trades=len(trades),
             cf_rejects=cf_rejects,
-        ):
-            cf_rejects += 1
-            skip_counts["counterfactual_reject"] += 1
+        )
+        if not cf_pass:
+            if can_override_reject:
+                opportunity_override_counterfactual += 1
+                edge = float(max(edge - 0.0015 * drought_ratio, 0.0))
+                confidence = float(np.clip(confidence - 0.01 * drought_ratio, 0.0, 1.0))
+            else:
+                cf_rejects += 1
+                skip_counts["counterfactual_reject"] += 1
+                continue
+        if edge < dynamic_edge_floor or confidence < dynamic_conf_floor:
+            skip_counts["edge_below_floor"] += 1
             continue
         bayes_gate = _bayes_quality_gate(
             side=side,
@@ -2094,9 +2145,14 @@ def _run_fold(
         if float(bayes_gate.get("ready", 0.0)) > 0.5:
             bayes_quality_ready_checks += 1
             if float(bayes_gate.get("pass", 1.0)) < 0.5:
-                bayes_quality_rejects += 1
-                skip_counts["bayes_quality_reject"] += 1
-                continue
+                if can_override_reject:
+                    opportunity_override_bayes += 1
+                    edge = float(max(edge - 0.001 * drought_ratio, 0.0))
+                    confidence = float(np.clip(confidence - 0.006 * drought_ratio, 0.0, 1.0))
+                else:
+                    bayes_quality_rejects += 1
+                    skip_counts["bayes_quality_reject"] += 1
+                    continue
         nonconf_score = _nonconformity_score(
             edge=edge,
             confidence=confidence,
@@ -2118,9 +2174,14 @@ def _run_fold(
         if float(nonconf_gate.get("ready", 0.0)) > 0.5:
             nonconformity_ready_checks += 1
             if float(nonconf_gate.get("pass", 1.0)) < 0.5:
-                nonconformity_rejects += 1
-                skip_counts["nonconformity_reject"] += 1
-                continue
+                if can_override_reject:
+                    opportunity_override_nonconformity += 1
+                    edge = float(max(edge - 0.001 * drought_ratio, 0.0))
+                    confidence = float(np.clip(confidence - 0.006 * drought_ratio, 0.0, 1.0))
+                else:
+                    nonconformity_rejects += 1
+                    skip_counts["nonconformity_reject"] += 1
+                    continue
             if float(nonconf_gate.get("override", 0.0)) > 0.5:
                 nonconformity_overrides += 1
         if not risk.allow_trade(ts_ms=int(timestamps[i]), side=side, edge=edge, uncertainty=uncertainty):
@@ -2244,6 +2305,7 @@ def _run_fold(
         )
         trades.append(rr)
         gross_trades.append(rr_gross)
+        last_trade_bar = int(i)
         if rr > 0.0:
             winner_nonconformity_scores.append(float(nonconf_score))
             nc_window = int(max(getattr(cfg, "nonconformity_window", 160), 8))
@@ -2352,6 +2414,11 @@ def _run_fold(
         "intelligence_mode_bars": int(intelligence_mode_bars),
         "intelligence_side_switches": int(intelligence_side_switches),
         "intelligence_avg_score": round(float(intelligence_score_sum / max(intelligence_mode_bars, 1)), 6),
+        "opportunity_rescue_bars": int(opportunity_rescue_bars),
+        "opportunity_max_drought_ratio": round(float(opportunity_max_drought_ratio), 6),
+        "opportunity_override_counterfactual": int(opportunity_override_counterfactual),
+        "opportunity_override_bayes": int(opportunity_override_bayes),
+        "opportunity_override_nonconformity": int(opportunity_override_nonconformity),
         "skip_reasons": {k: int(v) for k, v in skip_counts.items()},
         "long_trades": n_long,
         "short_trades": n_short,
@@ -2449,7 +2516,7 @@ def run_mythos_walk_forward(
                     brain=model_state.get("adaptive"),
                 )
         log.info(
-            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d lev_boost=%d lev_blocked=%d bayes_rej=%d nonconf_rej=%d nonconf_ovr=%d intel_mode=%d intel_switch=%d intel_avg=%s",
+            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d lev_boost=%d lev_blocked=%d bayes_rej=%d nonconf_rej=%d nonconf_ovr=%d intel_mode=%d intel_switch=%d intel_avg=%s opp_bars=%d opp_drought_max=%s opp_ovr(cf/bq/nc)=%d/%d/%d",
             i,
             fold["total_trades"],
             fold["total_r"],
@@ -2468,6 +2535,11 @@ def run_mythos_walk_forward(
             fold.get("intelligence_mode_bars", 0),
             fold.get("intelligence_side_switches", 0),
             fold.get("intelligence_avg_score", 0.0),
+            fold.get("opportunity_rescue_bars", 0),
+            fold.get("opportunity_max_drought_ratio", 0.0),
+            fold.get("opportunity_override_counterfactual", 0),
+            fold.get("opportunity_override_bayes", 0),
+            fold.get("opportunity_override_nonconformity", 0),
         )
 
     total_trades = int(sum(r["total_trades"] for r in reports))
@@ -2547,6 +2619,17 @@ def run_mythos_walk_forward(
         sum(float(r.get("intelligence_avg_score", 0.0)) * int(r.get("intelligence_mode_bars", 0)) for r in reports)
     )
     aggregate_intelligence_avg_score = float(weighted_intelligence_score_num / max(total_intelligence_mode_bars, 1))
+    total_opportunity_rescue_bars = int(sum(int(r.get("opportunity_rescue_bars", 0)) for r in reports))
+    total_opportunity_override_counterfactual = int(
+        sum(int(r.get("opportunity_override_counterfactual", 0)) for r in reports)
+    )
+    total_opportunity_override_bayes = int(sum(int(r.get("opportunity_override_bayes", 0)) for r in reports))
+    total_opportunity_override_nonconformity = int(
+        sum(int(r.get("opportunity_override_nonconformity", 0)) for r in reports)
+    )
+    max_opportunity_drought_ratio = float(
+        max([float(r.get("opportunity_max_drought_ratio", 0.0)) for r in reports], default=0.0)
+    )
     cf_reject_rate = float(total_cf_rejects / max(total_cf_rejects + total_trades, 1))
     bayes_quality_reject_rate = float(
         total_bayes_quality_rejects / max(total_bayes_quality_rejects + total_trades, 1)
@@ -2623,6 +2706,12 @@ def run_mythos_walk_forward(
         "intelligence_mode_rate": round(float(total_intelligence_mode_bars / max(total_trades, 1)), 4),
         "intelligence_side_switches": total_intelligence_side_switches,
         "intelligence_avg_score": round(aggregate_intelligence_avg_score, 6),
+        "opportunity_rescue_bars": total_opportunity_rescue_bars,
+        "opportunity_rescue_rate": round(float(total_opportunity_rescue_bars / max(total_trades, 1)), 4),
+        "opportunity_max_drought_ratio": round(max_opportunity_drought_ratio, 6),
+        "opportunity_override_counterfactual": total_opportunity_override_counterfactual,
+        "opportunity_override_bayes": total_opportunity_override_bayes,
+        "opportunity_override_nonconformity": total_opportunity_override_nonconformity,
         "skip_reasons": total_skip_reasons,
         "active_folds": act,
         "low_conf_folds": low,
