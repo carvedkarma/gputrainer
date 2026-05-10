@@ -45,6 +45,7 @@ Bear-market folds: expect balanced LONG/SHORT split (not 100% LONG)
 """
 
 import argparse
+from dataclasses import asdict
 import os
 import sys
 import time
@@ -7243,7 +7244,9 @@ Examples:
                 strategy_specs = _mythos_strategy_candidates()
                 max_candidates = int(max(args.mythos_strategy_search_max_candidates, 1))
                 strategy_specs = strategy_specs[:max_candidates]
-                base_cfg = dict(vars(mythos_cfg))
+                # Use dataclass fields only; runtime aliases injected in __post_init__
+                # are not valid constructor kwargs for MythosConfig.
+                base_cfg = asdict(mythos_cfg)
                 best_strategy_name = "baseline"
                 best_strategy_score = float("-inf")
                 best_strategy_report = None
