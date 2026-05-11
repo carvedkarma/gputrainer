@@ -130,6 +130,16 @@ class MythosConfig:
     precision_selective_conf_weight: float = 0.35
     precision_selective_uncertainty_weight: float = 0.20
     precision_selective_conviction_weight: float = 0.25
+    robust_validation_enable: bool = True
+    robust_validation_min_folds: int = 5
+    robust_validation_metric: str = "expectancy_r"
+    cpcv_test_fraction: float = 0.40
+    cpcv_max_paths: int = 256
+    cpcv_random_seed: int = 42
+    robust_validation_trial_count: int = 8
+    robust_validation_sr_benchmark: float = 0.0
+    robust_validation_spa_bootstrap_samples: int = 400
+    robust_validation_report_top_paths: int = 5
     opportunity_rescue_enable: bool = True
     opportunity_rescue_start_bars: int = 96
     opportunity_rescue_full_bars: int = 384
@@ -546,6 +556,31 @@ class MythosConfig:
         )
         self.precision_selective_conviction_weight = float(
             np.clip(getattr(self, "precision_selective_conviction_weight", 0.25), 0.0, 5.0)
+        )
+        self.robust_validation_enable = bool(getattr(self, "robust_validation_enable", True))
+        self.robust_validation_min_folds = int(
+            max(getattr(self, "robust_validation_min_folds", 5), 3)
+        )
+        metric = str(getattr(self, "robust_validation_metric", "expectancy_r")).strip().lower()
+        if metric not in {"total_r", "expectancy_r", "win_rate", "robust_score"}:
+            metric = "expectancy_r"
+        self.robust_validation_metric = metric
+        self.cpcv_test_fraction = float(
+            np.clip(getattr(self, "cpcv_test_fraction", 0.40), 0.10, 0.90)
+        )
+        self.cpcv_max_paths = int(max(getattr(self, "cpcv_max_paths", 256), 1))
+        self.cpcv_random_seed = int(max(getattr(self, "cpcv_random_seed", 42), 0))
+        self.robust_validation_trial_count = int(
+            max(getattr(self, "robust_validation_trial_count", 8), 1)
+        )
+        self.robust_validation_sr_benchmark = float(
+            getattr(self, "robust_validation_sr_benchmark", 0.0)
+        )
+        self.robust_validation_spa_bootstrap_samples = int(
+            np.clip(getattr(self, "robust_validation_spa_bootstrap_samples", 400), 32, 5000)
+        )
+        self.robust_validation_report_top_paths = int(
+            max(getattr(self, "robust_validation_report_top_paths", 5), 1)
         )
         self.opportunity_rescue_enable = bool(getattr(self, "opportunity_rescue_enable", True))
         self.opportunity_rescue_start_bars = int(max(getattr(self, "opportunity_rescue_start_bars", 96), 1))

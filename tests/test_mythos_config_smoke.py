@@ -170,3 +170,24 @@ def test_intelligence_knobs_are_normalized():
     assert cfg.intelligence_side_switch_cooldown_bars == 0
     assert cfg.intelligence_side_switch_max_rate == 1.0
     assert cfg.intelligence_side_switch_min_samples == 1
+
+
+def test_robust_validation_knobs_are_normalized():
+    cfg = MythosConfig(
+        robust_validation_min_folds=1,
+        robust_validation_metric="unknown_metric",
+        cpcv_test_fraction=2.0,
+        cpcv_max_paths=0,
+        cpcv_random_seed=-1,
+        robust_validation_trial_count=0,
+        robust_validation_spa_bootstrap_samples=1,
+        robust_validation_report_top_paths=0,
+    )
+    assert cfg.robust_validation_min_folds == 3
+    assert cfg.robust_validation_metric == "expectancy_r"
+    assert cfg.cpcv_test_fraction == 0.9
+    assert cfg.cpcv_max_paths == 1
+    assert cfg.cpcv_random_seed == 0
+    assert cfg.robust_validation_trial_count == 1
+    assert cfg.robust_validation_spa_bootstrap_samples == 32
+    assert cfg.robust_validation_report_top_paths == 1

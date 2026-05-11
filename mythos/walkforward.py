@@ -4,7 +4,8 @@ import json
 import logging
 from dataclasses import asdict
 from datetime import datetime
-from math import isfinite
+from itertools import combinations
+from math import comb, erf, isfinite, sqrt
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -2009,6 +2010,280 @@ def _select_fold_metric(fold: Dict[str, object], metric: str) -> float:
     return float(fold.get("total_r", 0.0))
 
 
+def _normal_cdf(x: float) -> float:
+    return float(0.5 * (1.0 + erf(float(x) / sqrt(2.0))))
+
+
+def _robust_metric_neutral_value(metric: str) -> float:
+    if str(metric).lower() == "win_rate":
+        return 0.5
+    return 0.0
+
+
+def _score_fold_slice(
+    folds: List[Dict[str, object]],
+    indices: List[int],
+    metric: str,
+) -> float:
+    if not indices:
+        return 0.0
+    metric = str(metric or "total_r").lower()
+    values = np.asarray(
+        [_select_fold_metric(folds[i], metric) for i in indices],
+        dtype=np.float64,
+    )
+    if metric == "total_r":
+        return float(np.sum(values))
+    weights = np.asarray(
+        [max(float(folds[i].get("total_trades", 0)), 1.0) for i in indices],
+        dtype=np.float64,
+    )
+    denom = float(np.sum(weights))
+    if denom <= 0.0:
+        return float(np.mean(values))
+    return float(np.sum(values * weights) / denom)
+
+
+def _build_cpcv_splits(
+    *,
+    n_folds: int,
+    test_size: int,
+    max_paths: int,
+    seed: int,
+) -> List[Tuple[List[int], List[int]]]:
+    if n_folds < 2:
+        return []
+    test_size = int(np.clip(test_size, 1, n_folds - 1))
+    max_paths = int(max(max_paths, 1))
+    all_idx = list(range(n_folds))
+    total_paths = int(comb(n_folds, test_size))
+    rng = np.random.default_rng(int(seed))
+    if total_paths <= max_paths:
+        chosen = list(combinations(all_idx, test_size))
+    elif total_paths <= max_paths * 4:
+        combos = list(combinations(all_idx, test_size))
+        pick = rng.choice(len(combos), size=max_paths, replace=False)
+        chosen = [combos[int(i)] for i in sorted(pick.tolist())]
+    else:
+        uniq: set[Tuple[int, ...]] = set()
+        attempts = 0
+        max_attempts = max_paths * 64
+        while len(uniq) < max_paths and attempts < max_attempts:
+            sample = tuple(sorted(int(i) for i in rng.choice(n_folds, size=test_size, replace=False)))
+            uniq.add(sample)
+            attempts += 1
+        chosen = sorted(uniq)
+    splits: List[Tuple[List[int], List[int]]] = []
+    for test_idx in chosen:
+        test_set = set(int(i) for i in test_idx)
+        train_idx = [i for i in all_idx if i not in test_set]
+        test_list = [int(i) for i in test_idx]
+        if train_idx and test_list:
+            splits.append((train_idx, test_list))
+    return splits
+
+
+def _sharpe_robust_diagnostics(
+    values: np.ndarray,
+    *,
+    benchmark_sr: float,
+    trial_count: int,
+) -> Dict[str, float]:
+    arr = np.asarray(values, dtype=np.float64)
+    n = int(arr.size)
+    out = {
+        "sample_size": float(n),
+        "mean": 0.0,
+        "std": 0.0,
+        "sharpe": 0.0,
+        "psr": 0.0,
+        "dsr": 0.0,
+        "sharpe_deflator": 0.0,
+    }
+    if n < 2:
+        return out
+    mean = float(np.mean(arr))
+    std = float(np.std(arr, ddof=1))
+    out["mean"] = mean
+    out["std"] = std
+    if std <= 1e-12:
+        out["sharpe"] = 0.0
+        if mean > 0.0 and float(benchmark_sr) <= 0.0:
+            out["psr"] = 1.0
+            out["dsr"] = 1.0
+        return out
+    sharpe = float((mean / std) * sqrt(float(n)))
+    out["sharpe"] = sharpe
+    centered = arr - mean
+    z = centered / max(std, 1e-12)
+    skew = float(np.mean(z ** 3))
+    kurt = float(np.mean(z ** 4))
+    denom_term = float(1.0 - skew * sharpe + ((kurt - 1.0) / 4.0) * (sharpe ** 2))
+    denom_term = float(max(denom_term, 1e-9))
+    zscore = float((sharpe - float(benchmark_sr)) * sqrt(max(n - 1, 1)) / sqrt(denom_term))
+    psr = _normal_cdf(zscore)
+    n_trials = int(max(trial_count, 1))
+    deflator = float(sqrt(max(2.0 * np.log(float(n_trials)) / max(n - 1, 1), 0.0))) if n_trials > 1 else 0.0
+    zscore_deflated = float((sharpe - deflator - float(benchmark_sr)) * sqrt(max(n - 1, 1)) / sqrt(denom_term))
+    dsr = _normal_cdf(zscore_deflated)
+    out.update(
+        {
+            "psr": float(np.clip(psr, 0.0, 1.0)),
+            "dsr": float(np.clip(dsr, 0.0, 1.0)),
+            "sharpe_deflator": deflator,
+        }
+    )
+    return out
+
+
+def _spa_single_model(
+    values: np.ndarray,
+    *,
+    bootstrap_samples: int,
+    seed: int,
+) -> Dict[str, float]:
+    arr = np.asarray(values, dtype=np.float64)
+    n = int(arr.size)
+    out = {"t_stat": 0.0, "p_value": 1.0, "bootstrap_samples": float(int(max(bootstrap_samples, 0)))}
+    if n < 3:
+        return out
+    mu = float(np.mean(arr))
+    sigma = float(np.std(arr, ddof=1))
+    if sigma <= 1e-12:
+        out["t_stat"] = float(max(mu, 0.0))
+        out["p_value"] = 0.0 if mu > 0.0 else 1.0
+        return out
+    t_obs = float(max(sqrt(float(n)) * mu / sigma, 0.0))
+    centered = arr - mu
+    reps = int(max(bootstrap_samples, 32))
+    rng = np.random.default_rng(int(seed))
+    ge_count = 0
+    for _ in range(reps):
+        idx = rng.integers(0, n, size=n)
+        sample = centered[idx]
+        s = float(np.std(sample, ddof=1))
+        if s <= 1e-12:
+            t_boot = 0.0
+        else:
+            t_boot = float(max(sqrt(float(n)) * float(np.mean(sample)) / s, 0.0))
+        if t_boot >= t_obs:
+            ge_count += 1
+    p_value = float(ge_count / max(reps, 1))
+    out["t_stat"] = t_obs
+    out["p_value"] = float(np.clip(p_value, 0.0, 1.0))
+    out["bootstrap_samples"] = float(reps)
+    return out
+
+
+def _robust_validation_report(
+    *,
+    folds: List[Dict[str, object]],
+    cfg: MythosConfig,
+) -> Dict[str, object]:
+    enabled = bool(getattr(cfg, "robust_validation_enable", True))
+    metric = str(getattr(cfg, "robust_validation_metric", "expectancy_r")).lower()
+    report: Dict[str, object] = {
+        "enabled": enabled,
+        "ready": False,
+        "metric": metric,
+        "n_folds": int(len(folds)),
+    }
+    if not enabled:
+        report["reason"] = "disabled"
+        return report
+    min_folds = int(max(getattr(cfg, "robust_validation_min_folds", 5), 3))
+    if len(folds) < min_folds:
+        report["reason"] = f"insufficient_folds({len(folds)}<{min_folds})"
+        return report
+    test_fraction = float(np.clip(getattr(cfg, "cpcv_test_fraction", 0.40), 0.10, 0.90))
+    test_size = int(np.clip(round(len(folds) * test_fraction), 1, len(folds) - 1))
+    max_paths = int(max(getattr(cfg, "cpcv_max_paths", 256), 1))
+    seed = int(max(getattr(cfg, "cpcv_random_seed", 42), 0))
+    splits = _build_cpcv_splits(
+        n_folds=len(folds),
+        test_size=test_size,
+        max_paths=max_paths,
+        seed=seed,
+    )
+    if not splits:
+        report["reason"] = "no_valid_cpcv_splits"
+        return report
+
+    neutral = float(_robust_metric_neutral_value(metric))
+    rows: List[Dict[str, object]] = []
+    train_scores: List[float] = []
+    test_scores: List[float] = []
+    for train_idx, test_idx in splits:
+        train_score = _score_fold_slice(folds, train_idx, metric)
+        test_score = _score_fold_slice(folds, test_idx, metric)
+        test_total_r = float(sum(float(folds[i].get("total_r", 0.0)) for i in test_idx))
+        test_trades = int(sum(int(folds[i].get("total_trades", 0)) for i in test_idx))
+        train_scores.append(train_score)
+        test_scores.append(test_score)
+        rows.append(
+            {
+                "train_folds": [int(i + 1) for i in train_idx],
+                "test_folds": [int(i + 1) for i in test_idx],
+                "train_score": round(float(train_score), 6),
+                "test_score": round(float(test_score), 6),
+                "test_total_r": round(test_total_r, 4),
+                "test_trades": test_trades,
+            }
+        )
+    tr = np.asarray(train_scores, dtype=np.float64)
+    te = np.asarray(test_scores, dtype=np.float64)
+    sign_flip = np.logical_and(tr > neutral, te <= neutral)
+    overfit_prob = float(np.mean(sign_flip)) if sign_flip.size else 0.0
+    oos_underperform_prob = float(np.mean(te <= neutral)) if te.size else 0.0
+    path_mean = float(np.mean(te)) if te.size else 0.0
+    path_median = float(np.median(te)) if te.size else 0.0
+    path_p10 = float(np.quantile(te, 0.10)) if te.size else 0.0
+    path_p90 = float(np.quantile(te, 0.90)) if te.size else 0.0
+
+    sharpe_diag = _sharpe_robust_diagnostics(
+        te,
+        benchmark_sr=float(getattr(cfg, "robust_validation_sr_benchmark", 0.0)),
+        trial_count=int(max(getattr(cfg, "robust_validation_trial_count", 8), 1)),
+    )
+    spa_diag = _spa_single_model(
+        te,
+        bootstrap_samples=int(max(getattr(cfg, "robust_validation_spa_bootstrap_samples", 400), 32)),
+        seed=seed + 17,
+    )
+    top_n = int(max(getattr(cfg, "robust_validation_report_top_paths", 5), 1))
+    sorted_rows = sorted(rows, key=lambda x: float(x.get("test_score", 0.0)), reverse=True)
+    top_paths = sorted_rows[:top_n]
+    worst_paths = list(reversed(sorted_rows[-top_n:])) if sorted_rows else []
+    significance_95 = bool(
+        float(spa_diag.get("p_value", 1.0)) < 0.05 and float(sharpe_diag.get("dsr", 0.0)) > 0.50
+    )
+    report.update(
+        {
+            "ready": True,
+            "neutral_score": round(neutral, 6),
+            "test_fraction": round(test_fraction, 4),
+            "test_fold_size": int(test_size),
+            "paths_evaluated": int(len(rows)),
+            "pbo_overfit_probability": round(overfit_prob, 6),
+            "pbo_oos_underperform_probability": round(oos_underperform_prob, 6),
+            "cpcv_path_score_mean": round(path_mean, 6),
+            "cpcv_path_score_median": round(path_median, 6),
+            "cpcv_path_score_p10": round(path_p10, 6),
+            "cpcv_path_score_p90": round(path_p90, 6),
+            "sharpe": round(float(sharpe_diag.get("sharpe", 0.0)), 6),
+            "psr": round(float(sharpe_diag.get("psr", 0.0)), 6),
+            "dsr": round(float(sharpe_diag.get("dsr", 0.0)), 6),
+            "sharpe_deflator": round(float(sharpe_diag.get("sharpe_deflator", 0.0)), 6),
+            "spa_t_stat": round(float(spa_diag.get("t_stat", 0.0)), 6),
+            "spa_p_value": round(float(spa_diag.get("p_value", 1.0)), 6),
+            "significant_edge_95": significance_95,
+            "top_paths": top_paths,
+            "worst_paths": worst_paths,
+        }
+    )
+    return report
+
+
 def _save_model_artifact(
     output_dir: Path,
     symbol: str,
@@ -3436,6 +3711,12 @@ def run_mythos_walk_forward(
     nonconformity_reject_rate = float(
         total_nonconformity_rejects / max(total_nonconformity_rejects + total_trades, 1)
     )
+    robust_validation = _robust_validation_report(folds=reports, cfg=cfg)
+    robust_ready = bool(robust_validation.get("ready", False))
+    robust_pbo = float(robust_validation.get("pbo_overfit_probability", 0.0))
+    robust_dsr = float(robust_validation.get("dsr", 0.0))
+    robust_psr = float(robust_validation.get("psr", 0.0))
+    robust_spa_p = float(robust_validation.get("spa_p_value", 1.0))
     act = sum(1 for r in reports if r["status"] == "ACTIVE")
     low = sum(1 for r in reports if r["status"] == "LOW_CONF")
     dead = sum(1 for r in reports if r["status"] == "DEAD")
@@ -3537,6 +3818,17 @@ def run_mythos_walk_forward(
         "opportunity_override_counterfactual": total_opportunity_override_counterfactual,
         "opportunity_override_bayes": total_opportunity_override_bayes,
         "opportunity_override_nonconformity": total_opportunity_override_nonconformity,
+        "robust_validation_enable": bool(getattr(cfg, "robust_validation_enable", True)),
+        "robust_validation_ready": robust_ready,
+        "robust_validation_paths": int(robust_validation.get("paths_evaluated", 0) or 0),
+        "robust_validation_pbo": round(robust_pbo, 6),
+        "robust_validation_dsr": round(robust_dsr, 6),
+        "robust_validation_psr": round(robust_psr, 6),
+        "robust_validation_spa_p_value": round(robust_spa_p, 6),
+        "robust_validation_significant_edge_95": bool(
+            robust_validation.get("significant_edge_95", False)
+        ),
+        "robust_validation": robust_validation,
         "adaptive_tp_sl_enable": bool(getattr(cfg, "adaptive_tp_sl_enable", True)),
         "tp_mult_avg": round(avg_tp_mult, 4),
         "sl_mult_avg": round(avg_sl_mult, 4),

@@ -267,6 +267,12 @@ def _mythos_strategy_score(report: dict) -> tuple:
     win_rate = _safe_float(agg.get("win_rate", 0.0), 0.0)
     dd_abs = abs(_safe_float(agg.get("avg_max_drawdown_r", 0.0), 0.0))
     robust = _safe_float(agg.get("avg_robust_score", 0.0), 0.0)
+    robust_ready = bool(agg.get("robust_validation_ready", False))
+    robust_pbo = _safe_float(agg.get("robust_validation_pbo", 0.0), 0.0)
+    robust_dsr = _safe_float(agg.get("robust_validation_dsr", 0.0), 0.0)
+    robust_psr = _safe_float(agg.get("robust_validation_psr", 0.0), 0.0)
+    robust_spa_p = _safe_float(agg.get("robust_validation_spa_p_value", 1.0), 1.0)
+    robust_sig95 = bool(agg.get("robust_validation_significant_edge_95", False))
     total_trades = max(int(_safe_float(agg.get("total_trades", 0), 0.0)), 1)
     short_trades = max(int(_safe_float(agg.get("short_trades", 0), 0.0)), 0)
     short_share = float(short_trades / max(total_trades, 1))
@@ -284,6 +290,12 @@ def _mythos_strategy_score(report: dict) -> tuple:
         + 16.0 * positive_fold_ratio
         + 10.0 * max(short_share - 0.20, 0.0)
         + 0.12 * robust
+        + 18.0 * robust_dsr
+        + 8.0 * robust_psr
+        - 12.0 * robust_pbo
+        - 6.0 * max(robust_spa_p - 0.05, 0.0)
+        + (3.0 if robust_ready else 0.0)
+        + (4.0 if robust_sig95 else 0.0)
     )
     parts = {
         "total_r": round(total_r, 4),
@@ -295,6 +307,12 @@ def _mythos_strategy_score(report: dict) -> tuple:
         "positive_fold_ratio": round(positive_fold_ratio, 4),
         "short_share": round(short_share, 4),
         "avg_robust_score": round(robust, 6),
+        "robust_validation_ready": robust_ready,
+        "robust_validation_pbo": round(robust_pbo, 6),
+        "robust_validation_dsr": round(robust_dsr, 6),
+        "robust_validation_psr": round(robust_psr, 6),
+        "robust_validation_spa_p_value": round(robust_spa_p, 6),
+        "robust_validation_significant_edge_95": robust_sig95,
     }
     return float(score), parts
 
@@ -6033,6 +6051,30 @@ Examples:
                         help="MYTHOS precision mode: quality-score penalty weight for uncertainty (default: 0.20)")
     parser.add_argument("--mythos-precision-selective-conviction-weight", type=float, default=0.25,
                         help="MYTHOS precision mode: quality-score weight for conviction (default: 0.25)")
+    parser.add_argument("--mythos-robust-validation-enable", dest="mythos_robust_validation_enable", action="store_true",
+                        help="MYTHOS robust validation: enable CPCV/PBO/DSR/SPA diagnostics in walk-forward reports (default: enabled)")
+    parser.add_argument("--mythos-no-robust-validation-enable", dest="mythos_robust_validation_enable", action="store_false",
+                        help="MYTHOS robust validation: disable CPCV/PBO/DSR/SPA diagnostics")
+    parser.set_defaults(mythos_robust_validation_enable=True)
+    parser.add_argument("--mythos-robust-validation-min-folds", type=int, default=5,
+                        help="MYTHOS robust validation: minimum folds required before CPCV diagnostics activate (default: 5)")
+    parser.add_argument("--mythos-robust-validation-metric", type=str, default="expectancy_r",
+                        choices=["total_r", "expectancy_r", "win_rate", "robust_score"],
+                        help="MYTHOS robust validation: fold metric evaluated across CPCV paths (default: expectancy_r)")
+    parser.add_argument("--mythos-cpcv-test-fraction", type=float, default=0.40,
+                        help="MYTHOS robust validation: fraction of folds used as OOS set per CPCV path (default: 0.40)")
+    parser.add_argument("--mythos-cpcv-max-paths", type=int, default=256,
+                        help="MYTHOS robust validation: maximum CPCV paths evaluated per run (default: 256)")
+    parser.add_argument("--mythos-cpcv-random-seed", type=int, default=42,
+                        help="MYTHOS robust validation: RNG seed for CPCV path sampling when combinations are large (default: 42)")
+    parser.add_argument("--mythos-robust-validation-trial-count", type=int, default=8,
+                        help="MYTHOS robust validation: effective number of trials used for DSR deflation (default: 8)")
+    parser.add_argument("--mythos-robust-validation-sr-benchmark", type=float, default=0.0,
+                        help="MYTHOS robust validation: Sharpe benchmark threshold used by PSR/DSR (default: 0.0)")
+    parser.add_argument("--mythos-robust-validation-spa-bootstrap-samples", type=int, default=400,
+                        help="MYTHOS robust validation: bootstrap samples for SPA-style p-value estimation (default: 400)")
+    parser.add_argument("--mythos-robust-validation-report-top-paths", type=int, default=5,
+                        help="MYTHOS robust validation: number of best/worst CPCV paths to include in report (default: 5)")
     parser.add_argument("--mythos-meta-bootstrap-samples", type=int, default=1024,
                         help="MYTHOS v7: bootstrap samples from training analog memory to pre-warm meta learner (default: 1024)")
     parser.add_argument("--mythos-meta-bootstrap-epochs", type=int, default=2,
@@ -7233,6 +7275,16 @@ Examples:
                 precision_selective_conf_weight=args.mythos_precision_selective_conf_weight,
                 precision_selective_uncertainty_weight=args.mythos_precision_selective_uncertainty_weight,
                 precision_selective_conviction_weight=args.mythos_precision_selective_conviction_weight,
+                robust_validation_enable=args.mythos_robust_validation_enable,
+                robust_validation_min_folds=args.mythos_robust_validation_min_folds,
+                robust_validation_metric=args.mythos_robust_validation_metric,
+                cpcv_test_fraction=args.mythos_cpcv_test_fraction,
+                cpcv_max_paths=args.mythos_cpcv_max_paths,
+                cpcv_random_seed=args.mythos_cpcv_random_seed,
+                robust_validation_trial_count=args.mythos_robust_validation_trial_count,
+                robust_validation_sr_benchmark=args.mythos_robust_validation_sr_benchmark,
+                robust_validation_spa_bootstrap_samples=args.mythos_robust_validation_spa_bootstrap_samples,
+                robust_validation_report_top_paths=args.mythos_robust_validation_report_top_paths,
                 drawdown_edge_start_r=args.mythos_drawdown_edge_start_r,
                 drawdown_edge_step_r=args.mythos_drawdown_edge_step_r,
                 drawdown_edge_boost=args.mythos_drawdown_edge_boost,
@@ -7301,6 +7353,10 @@ Examples:
                 # Use dataclass fields only; runtime aliases injected in __post_init__
                 # are not valid constructor kwargs for MythosConfig.
                 base_cfg = asdict(mythos_cfg)
+                base_cfg["robust_validation_trial_count"] = max(
+                    int(base_cfg.get("robust_validation_trial_count", 1)),
+                    len(strategy_specs),
+                )
                 best_strategy_name = "baseline"
                 best_strategy_score = float("-inf")
                 best_strategy_report = None
@@ -7512,6 +7568,17 @@ Examples:
                 agg.get("precision_selective_reject_rate"),
                 agg.get("precision_selective_avg_quantile"),
                 agg.get("precision_selective_avg_threshold"),
+            )
+            log.info(
+                "[MYTHOS] Robust validation: enabled=%s ready=%s paths=%s pbo=%s dsr=%s psr=%s spa_p=%s signif95=%s",
+                agg.get("robust_validation_enable"),
+                agg.get("robust_validation_ready"),
+                agg.get("robust_validation_paths"),
+                agg.get("robust_validation_pbo"),
+                agg.get("robust_validation_dsr"),
+                agg.get("robust_validation_psr"),
+                agg.get("robust_validation_spa_p_value"),
+                agg.get("robust_validation_significant_edge_95"),
             )
             log.info(
                 "[MYTHOS] Time-bucket shorts best(hours)=%s worst(hours)=%s best(days)=%s worst(days)=%s",

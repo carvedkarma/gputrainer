@@ -29,6 +29,7 @@ from mythos.walkforward import (
     _side_policy_ok,
     _update_bayes_quality_state,
     _update_intelligence_state,
+    _robust_validation_report,
 )
 
 
@@ -172,6 +173,36 @@ def test_execution_governor_adaptive_side_penalty_nudges_dominant_side():
     short_pen = gov.side_penalty(-1)
     assert long_pen > 0.0
     assert short_pen <= 0.0
+
+
+def test_robust_validation_report_produces_cpcv_metrics():
+    cfg = MythosConfig(
+        robust_validation_enable=True,
+        robust_validation_min_folds=4,
+        robust_validation_metric="expectancy_r",
+        cpcv_test_fraction=0.5,
+        cpcv_max_paths=32,
+        robust_validation_trial_count=6,
+        robust_validation_spa_bootstrap_samples=64,
+        robust_validation_report_top_paths=3,
+    )
+    folds = [
+        {"fold": 1, "total_trades": 40, "expectancy_r": 0.08, "total_r": 3.2, "win_rate": 0.58, "robust_score": 8.0},
+        {"fold": 2, "total_trades": 44, "expectancy_r": -0.03, "total_r": -1.32, "win_rate": 0.47, "robust_score": -2.0},
+        {"fold": 3, "total_trades": 36, "expectancy_r": 0.05, "total_r": 1.8, "win_rate": 0.55, "robust_score": 5.2},
+        {"fold": 4, "total_trades": 38, "expectancy_r": 0.01, "total_r": 0.38, "win_rate": 0.52, "robust_score": 1.4},
+        {"fold": 5, "total_trades": 42, "expectancy_r": -0.02, "total_r": -0.84, "win_rate": 0.49, "robust_score": -0.8},
+    ]
+    report = _robust_validation_report(folds=folds, cfg=cfg)
+    assert report["enabled"] is True
+    assert report["ready"] is True
+    assert int(report["paths_evaluated"]) > 0
+    assert 0.0 <= float(report["pbo_overfit_probability"]) <= 1.0
+    assert 0.0 <= float(report["psr"]) <= 1.0
+    assert 0.0 <= float(report["dsr"]) <= 1.0
+    assert 0.0 <= float(report["spa_p_value"]) <= 1.0
+    assert len(report["top_paths"]) <= 3
+    assert len(report["worst_paths"]) <= 3
 
 
 def test_execution_governor_side_fail_is_soft_by_default():
