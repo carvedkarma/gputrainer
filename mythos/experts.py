@@ -344,12 +344,16 @@ def build_experts(random_state: int | None = None, cfg: Optional[MythosConfig] =
             ExpertCls("trend_long", side=1, cfg=cfg),
             ExpertCls("trend_short", side=-1, cfg=cfg),
             ExpertCls("mean_revert", side=1, cfg=cfg),
+            ExpertCls("mean_revert_short", side=-1, cfg=cfg),
             ExpertCls("breakout", side=1, cfg=cfg),
+            ExpertCls("breakout_short", side=-1, cfg=cfg),
         ]
     return [
         ExpertCls("trend_long", side=1),
         ExpertCls("trend_short", side=-1),
         ExpertCls("mean_revert", side=1),
+        ExpertCls("mean_revert_short", side=-1),
         ExpertCls("breakout", side=1),
+        ExpertCls("breakout_short", side=-1),
     ]
 

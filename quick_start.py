@@ -264,6 +264,11 @@ def _mythos_strategy_candidates(search_objective: str = "balanced") -> list:
                 "short_boost_edge": 0.010,
                 "short_boost_confidence": 0.060,
                 "short_boost_threshold_r": 0.020,
+                "meta_learner_min_side_prob": 0.47,
+                "meta_learner_ready_prob_floor": 0.40,
+                "meta_learner_ready_prob_ceiling": 0.60,
+                "intelligence_side_switch_min_samples": 28,
+                "intelligence_side_switch_min_gap": 0.18,
                 "nonconformity_target_reject_rate": 0.30,
                 "nonconformity_reject_tolerance": 0.22,
                 "nonconformity_adaptive_relax": 0.30,
@@ -291,6 +296,11 @@ def _mythos_strategy_candidates(search_objective: str = "balanced") -> list:
                 "short_boost_threshold_r": 0.015,
                 "adaptive_short_tp_bias": 0.14,
                 "adaptive_short_sl_bias": 0.01,
+                "meta_learner_min_side_prob": 0.46,
+                "meta_learner_ready_prob_floor": 0.40,
+                "meta_learner_ready_prob_ceiling": 0.60,
+                "intelligence_side_switch_min_samples": 24,
+                "intelligence_side_switch_min_gap": 0.16,
                 "nonconformity_target_reject_rate": 0.26,
                 "nonconformity_reject_tolerance": 0.24,
                 "nonconformity_adaptive_relax": 0.36,
@@ -347,6 +357,8 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
     time_switches = _safe_float(agg.get("time_adaptive_side_switches", 0.0), 0.0)
     switch_count = max(intel_switches + time_switches, 0.0)
     trade_scale = math.sqrt(max(total_trades, 1))
+    aggressive_short_floor_penalty = 0.0
+    balanced_short_floor_penalty = 0.0
     objective = str(objective or "balanced").strip().lower()
     if objective == "precision":
         score = (
@@ -369,6 +381,7 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
             + (4.0 if robust_sig95 else 0.0)
         )
     elif objective == "aggressive":
+        aggressive_short_floor_penalty = 85.0 * max(0.30 - short_share, 0.0)
         score = (
             1.00 * total_r
             + 90.0 * expectancy
@@ -385,8 +398,10 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
             + 10.0 * robust_dsr
             - 6.0 * robust_pbo
             + (2.0 if robust_ready else 0.0)
+            - aggressive_short_floor_penalty
         )
     else:
+        balanced_short_floor_penalty = 28.0 * max(0.20 - short_share, 0.0)
         score = (
             1.00 * total_r
             + 115.0 * expectancy
@@ -407,6 +422,7 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
             - 6.0 * max(robust_spa_p - 0.05, 0.0)
             + (3.0 if robust_ready else 0.0)
             + (4.0 if robust_sig95 else 0.0)
+            - balanced_short_floor_penalty
         )
     parts = {
         "objective": objective,
@@ -422,6 +438,8 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
         "nonconformity_reject_rate": round(nonconf_reject, 6),
         "precision_selective_reject_rate": round(precision_reject, 6),
         "side_switches": round(switch_count, 4),
+        "aggressive_short_floor_penalty": round(aggressive_short_floor_penalty, 6),
+        "balanced_short_floor_penalty": round(balanced_short_floor_penalty, 6),
         "avg_robust_score": round(robust, 6),
         "robust_validation_ready": robust_ready,
         "robust_validation_pbo": round(robust_pbo, 6),
