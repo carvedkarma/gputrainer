@@ -80,11 +80,17 @@ class RiskConstitution:
         side: int = 0,
         edge: float = 0.0,
         uncertainty: float = 1.0,
+        edge_floor: float | None = None,
     ) -> bool:
         _ = uncertainty
         if int(side) == 0:
             return False
-        if float(edge) < float(self.cfg.min_edge_threshold):
+        # Signal-quality floors are already enforced in walkforward before risk checks.
+        # Keep a conservative fallback based on expected-R floor only.
+        risk_edge_floor = float(max(getattr(self.cfg, "abstain_edge_floor", self.cfg.min_expected_r), 0.0))
+        if edge_floor is not None:
+            risk_edge_floor = float(max(min(risk_edge_floor, float(edge_floor)), 0.0))
+        if float(edge) < risk_edge_floor:
             return False
         bar_index = self._to_bar_index(ts_ms=ts_ms, bar_index=bar_index)
         self._update_calendar(bar_index)

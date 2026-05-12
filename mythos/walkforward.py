@@ -1122,15 +1122,26 @@ def _apply_intelligence_adjustment(
             cfg=cfg,
         )
         min_side_samples = int(max(getattr(cfg, "intelligence_side_switch_min_samples", 48), 1))
+        total_side = int(max(int(long_trade_count) + int(short_trade_count), 0))
+        short_share = float(int(short_trade_count) / max(total_side, 1)) if total_side > 0 else 0.5
+        switch_into_underweight = bool(
+            (other == -1 and short_share < 0.36) or (other == 1 and short_share > 0.64)
+        )
+        if switch_into_underweight and total_side >= 24:
+            min_side_samples = int(max(12, round(min_side_samples * 0.60)))
+            min_gap = float(max(min_gap * 0.70, 0.0))
+            conv_guard = float(min(conv_guard + 0.08, 0.92))
         own_n = int(max(own_bucket.get("n", 0.0), 0.0))
         other_n = int(max(other_bucket.get("n", 0.0), 0.0))
         own_reg_n = int(max(own_reg_bucket.get("n", 0.0), 0.0))
         other_reg_n = int(max(other_reg_bucket.get("n", 0.0), 0.0))
+        own_min_samples = max(min_side_samples // 2, 8) if switch_into_underweight else min_side_samples
+        reg_min_samples = max(min_side_samples // 3, 6) if switch_into_underweight else max(8, min_side_samples // 2)
         has_depth = bool(
-            own_n >= min_side_samples
+            own_n >= own_min_samples
             and other_n >= min_side_samples
-            and own_reg_n >= max(8, min_side_samples // 2)
-            and other_reg_n >= max(8, min_side_samples // 2)
+            and own_reg_n >= reg_min_samples
+            and other_reg_n >= reg_min_samples
         )
         own_exp = float(own_bucket.get("exp_ema", 0.0))
         other_exp = float(other_bucket.get("exp_ema", 0.0))
@@ -1141,11 +1152,11 @@ def _apply_intelligence_adjustment(
             other_exp > own_exp + 0.35 * min_unit and other_reg_exp > own_reg_exp + 0.20 * min_unit
         )
         unstable = bool(float(flip_pressure) > 0.5 or float(change_mode) > 0.5 or float(instability) >= 1.05)
-        total_side = int(max(int(long_trade_count) + int(short_trade_count), 0))
         if total_side >= 40 and other == 1:
             long_share = float(int(long_trade_count) / max(total_side, 1))
             # Resist switching into already-dominant longs unless opposite evidence is overwhelming.
             min_gap += float(np.clip(max(long_share - 0.58, 0.0) * 1.5, 0.0, 0.35))
+        analog_switch_limit = float(min_adv * (1.8 if switch_into_underweight else 1.0))
         # Switch only when live conviction is weak, state is stable, and opposite-side quality is decisively better.
         if (
             can_switch
@@ -1154,7 +1165,7 @@ def _apply_intelligence_adjustment(
             and not unstable
             and float(conviction) < conv_guard
             and gap >= min_gap
-            and float(analog_edge) < min_adv
+            and float(analog_edge) < analog_switch_limit
         ):
             s = other
             switched = True
@@ -1233,11 +1244,13 @@ def _resolve_time_adaptive_side_stats(
     day_rr: Dict[Tuple[int, int], List[float]],
     hour_rr: Dict[Tuple[int, int], List[float]],
     cfg: MythosConfig,
+    min_samples_override: Optional[int] = None,
 ) -> Dict[str, float]:
     s = int(side)
     if s not in (-1, 1):
         return {"ready": 0.0, "trades": 0.0, "expectancy": 0.0, "win_rate": 0.0}
-    min_samples = int(max(getattr(cfg, "time_adaptive_min_bucket_trades", 8), 1))
+    base_min_samples = int(max(getattr(cfg, "time_adaptive_min_bucket_trades", 8), 1))
+    min_samples = int(max(min_samples_override if min_samples_override is not None else base_min_samples, 1))
     weighted: List[Tuple[float, Dict[str, float]]] = []
     components = (
         (0.60, _time_adaptive_recent_stats(day_hour_rr.get((int(day_idx), int(hour_idx), s), []), min_samples=min_samples)),
@@ -1269,6 +1282,8 @@ def _apply_time_adaptive_adjustment(
     day_rr: Dict[Tuple[int, int], List[float]],
     hour_rr: Dict[Tuple[int, int], List[float]],
     cfg: MythosConfig,
+    long_trade_count: int = 0,
+    short_trade_count: int = 0,
 ) -> Dict[str, float]:
     s = int(side)
     if not bool(getattr(cfg, "time_adaptive_enable", True)) or s not in (-1, 1):
@@ -1294,6 +1309,10 @@ def _apply_time_adaptive_adjustment(
             "ready": 0.0,
             "expectancy": 0.0,
         }
+    total_side = int(max(int(long_trade_count) + int(short_trade_count), 0))
+    short_share = float(int(short_trade_count) / max(total_side, 1)) if total_side > 0 else 0.5
+    underweight_side = -1 if short_share < 0.36 else (1 if short_share > 0.64 else 0)
+    bucket_min = int(max(getattr(cfg, "time_adaptive_min_bucket_trades", 8), 1))
     own = _resolve_time_adaptive_side_stats(
         day_idx=day_idx,
         hour_idx=hour_idx,
@@ -1302,6 +1321,7 @@ def _apply_time_adaptive_adjustment(
         day_rr=day_rr,
         hour_rr=hour_rr,
         cfg=cfg,
+        min_samples_override=bucket_min,
     )
     if float(own.get("ready", 0.0)) < 0.5:
         return {
@@ -1325,6 +1345,10 @@ def _apply_time_adaptive_adjustment(
     switched = False
 
     if bool(getattr(cfg, "time_adaptive_switch_enable", True)):
+        switch_into_underweight = bool(underweight_side in (-1, 1) and int(-s) == int(underweight_side))
+        other_bucket_min = bucket_min
+        if switch_into_underweight and total_side >= 24:
+            other_bucket_min = int(max(3, round(bucket_min * 0.60)))
         other = _resolve_time_adaptive_side_stats(
             day_idx=day_idx,
             hour_idx=hour_idx,
@@ -1333,12 +1357,15 @@ def _apply_time_adaptive_adjustment(
             day_rr=day_rr,
             hour_rr=hour_rr,
             cfg=cfg,
+            min_samples_override=other_bucket_min,
         )
         min_samples = int(max(getattr(cfg, "time_adaptive_switch_min_samples", 10), 1))
+        if switch_into_underweight and total_side >= 24:
+            min_samples = int(max(6, round(min_samples * 0.60)))
         if (
             float(other.get("ready", 0.0)) > 0.5
             and int(other.get("trades", 0.0)) >= min_samples
-            and int(own.get("trades", 0.0)) >= min_samples
+            and int(own.get("trades", 0.0)) >= max(min_samples // 2, 4)
         ):
             other_exp = float(other.get("expectancy", 0.0))
             gap_r = float(other_exp - own_exp)
@@ -1346,6 +1373,9 @@ def _apply_time_adaptive_adjustment(
             conviction_guard = float(
                 np.clip(getattr(cfg, "time_adaptive_switch_conviction_guard", 0.62), 0.0, 1.0)
             )
+            if switch_into_underweight and total_side >= 24:
+                min_gap_r = float(max(min_gap_r * 0.65, 0.0))
+                conviction_guard = float(min(conviction_guard + 0.10, 0.92))
             if float(conviction) < conviction_guard and gap_r >= min_gap_r:
                 s = -s
                 switched = True
@@ -2473,6 +2503,7 @@ def _run_fold(
     if len(train_feat) < 500 or len(test_feat) < 200:
         return {
             "total_trades": 0,
+            "decision_bars": 0,
             "total_r": 0.0,
             "expectancy_r": 0.0,
             "win_rate": 0.0,
@@ -2487,6 +2518,7 @@ def _run_fold(
             "promotion": {"promote": False, "reasons": ["insufficient_data"], "checks": {}},
             "max_drawdown_r": 0.0,
             "robust_score": 0.0,
+            "meta_soft_blocks": 0,
             "_model_state": None,
         }
 
@@ -2579,6 +2611,7 @@ def _run_fold(
         "meta_reject": 0,
         "low_conviction": 0,
     }
+    meta_soft_blocks = 0
     cf_rejects = 0
     n_long = 0
     n_short = 0
@@ -2745,13 +2778,17 @@ def _run_fold(
         )
         if abs(meta_p - 0.5) > 1e-9:
             meta_mode_bars += 1
-        if side != 0 and meta_ready and meta_p < meta_min_side_prob:
-            skip_counts["meta_reject"] += 1
-            continue
+        meta_soft_block = bool(side != 0 and meta_ready and meta_p < meta_min_side_prob)
+        meta_shortfall = float(max(meta_min_side_prob - meta_p, 0.0)) if meta_soft_block else 0.0
         signed = float((meta_p - 0.5) * 2.0)
         edge = float(edge * (1.0 + meta_gain * signed))
         confidence = float(np.clip(confidence + meta_conf_gain * signed, 0.0, 1.0))
         uncertainty = float(np.clip(uncertainty * (1.0 + meta_unc_pen * max(0.5 - meta_p, 0.0)), 0.005, 2.0))
+        if meta_soft_block:
+            meta_soft_blocks += 1
+            edge = float(max(edge * (1.0 - min(1.2 * meta_shortfall, 0.65)), 0.0))
+            confidence = float(np.clip(confidence - min(0.75 * meta_shortfall, 0.20), 0.0, 1.0))
+            uncertainty = float(np.clip(uncertainty * (1.0 + min(2.0 * meta_shortfall, 0.80)), 0.005, 2.0))
         conviction = _conviction_score(
             edge=edge,
             confidence=confidence,
@@ -2809,10 +2846,19 @@ def _run_fold(
             day_rr=time_adaptive_day_rr,
             hour_rr=time_adaptive_hour_rr,
             cfg=cfg,
+            long_trade_count=len(long_trades),
+            short_trade_count=len(short_trades),
         )
         side = int(round(float(time_adj.get("side", side))))
         edge = float(time_adj.get("edge", edge))
         confidence = float(np.clip(time_adj.get("confidence", confidence), 0.0, 1.0))
+        conviction = _conviction_score(
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            meta_p=meta_p,
+            cfg=cfg,
+        )
         edge_adj = float(time_adj.get("edge_adjust", 0.0))
         conf_adj = float(time_adj.get("conf_adjust", 0.0))
         time_adaptive_edge_adjust_sum += edge_adj
@@ -2871,6 +2917,13 @@ def _run_fold(
                     continue
         edge_floor = governor.adjusted_edge_floor(risk.state.equity_r)
         edge -= governor.side_penalty(side)
+        conviction = _conviction_score(
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            meta_p=meta_p,
+            cfg=cfg,
+        )
         drought_ratio = 0.0
         dynamic_conf_floor = float(cfg.min_confidence)
         dynamic_edge_floor = float(edge_floor)
@@ -2895,6 +2948,16 @@ def _run_fold(
                 min_edge_floor = float(max(getattr(cfg, "opportunity_rescue_min_edge", 0.004), 0.0))
                 dynamic_conf_floor = max(float(cfg.min_confidence) - conf_relax * drought_ratio, min_conf_floor)
                 dynamic_edge_floor = max(float(edge_floor) - edge_relax * drought_ratio, min_edge_floor)
+        if meta_soft_block:
+            meta_hard_conf_floor = min(dynamic_conf_floor + 0.04, 1.0)
+            meta_hard_edge_floor = dynamic_edge_floor + 0.0015
+            if (
+                confidence < meta_hard_conf_floor
+                and edge < meta_hard_edge_floor
+                and conviction < min(min_conv + 0.08, 1.0)
+            ):
+                skip_counts["meta_reject"] += 1
+                continue
         if confidence < dynamic_conf_floor:
             skip_counts["low_confidence"] += 1
             continue
@@ -2991,7 +3054,13 @@ def _run_fold(
                     continue
             if float(nonconf_gate.get("override", 0.0)) > 0.5:
                 nonconformity_overrides += 1
-        if not risk.allow_trade(ts_ms=int(timestamps[i]), side=side, edge=edge, uncertainty=uncertainty):
+        if not risk.allow_trade(
+            ts_ms=int(timestamps[i]),
+            side=side,
+            edge=edge,
+            uncertainty=uncertainty,
+            edge_floor=dynamic_edge_floor,
+        ):
             skip_counts["risk_reject"] += 1
             continue
         tp_mult_i, sl_mult_i = _resolve_adaptive_tp_sl(
@@ -3208,6 +3277,7 @@ def _run_fold(
             if rr > 0.0:
                 high_conv_wins += 1
 
+    decision_bars = int(max(len(test_feat) - cfg.horizon, 0))
     n = len(trades)
     wins = int(np.sum(np.array(trades) > 0.0)) if n else 0
     losses = int(np.sum(np.array(trades) < 0.0)) if n else 0
@@ -3295,6 +3365,7 @@ def _run_fold(
     )
     return {
         "total_trades": n,
+        "decision_bars": decision_bars,
         "total_r": round(total_r, 4),
         "expectancy_r": round(expect, 4),
         "win_rate": round(wr, 4),
@@ -3309,6 +3380,7 @@ def _run_fold(
         "flip_pressure_bars": int(flip_pressure_bars),
         "transition_mode_bars": int(transition_mode_bars),
         "meta_mode_bars": int(meta_mode_bars),
+        "meta_soft_blocks": int(meta_soft_blocks),
         "counterfactual_rejects": int(cf_rejects),
         "bayes_quality_rejects": int(bayes_quality_rejects),
         "nonconformity_rejects": int(nonconformity_rejects),
@@ -3462,7 +3534,7 @@ def run_mythos_walk_forward(
                     brain=model_state.get("adaptive"),
                 )
         log.info(
-            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d lev_boost=%d lev_blocked=%d bayes_rej=%d nonconf_rej=%d nonconf_ovr=%d intel_mode=%d intel_switch=%d intel_avg=%s time_mode=%d time_switch=%d time_edge_adj=%s prec_mode=%d prec_rej=%d prec_q=%s opp_bars=%d opp_drought_max=%s opp_ovr(cf/bq/nc)=%d/%d/%d",
+            "[MYTHOS][FOLD %d] trades=%d totalR=%+.2f status=%s long/short=%d/%d sure=%d sure_win=%s sure_lev=%d sure_lev_hits=%d lev_boost=%d lev_blocked=%d bayes_rej=%d nonconf_rej=%d nonconf_ovr=%d meta_soft=%d intel_mode=%d intel_switch=%d intel_avg=%s time_mode=%d time_switch=%d time_edge_adj=%s prec_mode=%d prec_rej=%d prec_q=%s opp_bars=%d opp_drought_max=%s opp_ovr(cf/bq/nc)=%d/%d/%d",
             i,
             fold["total_trades"],
             fold["total_r"],
@@ -3478,6 +3550,7 @@ def run_mythos_walk_forward(
             fold.get("bayes_quality_rejects", 0),
             fold.get("nonconformity_rejects", 0),
             fold.get("nonconformity_overrides", 0),
+            fold.get("meta_soft_blocks", 0),
             fold.get("intelligence_mode_bars", 0),
             fold.get("intelligence_side_switches", 0),
             fold.get("intelligence_avg_score", 0.0),
@@ -3521,9 +3594,12 @@ def run_mythos_walk_forward(
         "meta_reject": int(sum(int(r.get("skip_reasons", {}).get("meta_reject", 0)) for r in reports)),
         "low_conviction": int(sum(int(r.get("skip_reasons", {}).get("low_conviction", 0)) for r in reports)),
     }
-    change_mode_rate = float(total_change_mode_bars / max(total_trades, 1))
+    total_decision_bars = int(sum(int(r.get("decision_bars", 0)) for r in reports))
+    mode_denom = max(total_decision_bars, 1)
+    change_mode_rate = float(total_change_mode_bars / mode_denom)
     total_transition_mode_bars = int(sum(r.get("transition_mode_bars", 0) for r in reports))
     total_meta_mode_bars = int(sum(r.get("meta_mode_bars", 0) for r in reports))
+    total_meta_soft_blocks = int(sum(r.get("meta_soft_blocks", 0) for r in reports))
     total_long_trades = int(sum(r.get("long_trades", 0) for r in reports))
     total_short_trades = int(sum(r.get("short_trades", 0) for r in reports))
     total_long_wins = int(
@@ -3724,6 +3800,7 @@ def run_mythos_walk_forward(
         "symbol": sym,
         "folds": len(reports),
         "n_folds": len(reports),
+        "decision_bars": total_decision_bars,
         "total_trades": total_trades,
         "wins": total_wins,
         "losses": total_losses,
@@ -3738,9 +3815,11 @@ def run_mythos_walk_forward(
         "change_mode_bars": total_change_mode_bars,
         "change_mode_rate": round(change_mode_rate, 4),
         "transition_mode_bars": total_transition_mode_bars,
-        "transition_mode_rate": round(float(total_transition_mode_bars / max(total_trades, 1)), 4),
+        "transition_mode_rate": round(float(total_transition_mode_bars / mode_denom), 4),
         "meta_mode_bars": total_meta_mode_bars,
-        "meta_mode_rate": round(float(total_meta_mode_bars / max(total_trades, 1)), 4),
+        "meta_mode_rate": round(float(total_meta_mode_bars / mode_denom), 4),
+        "meta_soft_blocks": total_meta_soft_blocks,
+        "meta_soft_block_rate": round(float(total_meta_soft_blocks / mode_denom), 4),
         "long_trades": total_long_trades,
         "short_trades": total_short_trades,
         "long_win_rate": round(float(total_long_wins / max(total_long_trades, 1)), 4),
@@ -3771,7 +3850,7 @@ def run_mythos_walk_forward(
         "leverage_boost_approved": total_lev_boost_approved,
         "leverage_blocked_candidates": total_lev_blocked,
         "flip_pressure_bars": total_flip_pressure_bars,
-        "flip_pressure_rate": round(float(total_flip_pressure_bars / max(total_trades, 1)), 4),
+        "flip_pressure_rate": round(float(total_flip_pressure_bars / mode_denom), 4),
         "counterfactual_rejects": total_cf_rejects,
         "counterfactual_reject_rate": round(cf_reject_rate, 4),
         "bayes_quality_rejects": total_bayes_quality_rejects,
@@ -3783,19 +3862,19 @@ def run_mythos_walk_forward(
         "nonconformity_ready_checks": total_nonconformity_ready_checks,
         "nonconformity_winner_ref_count": total_nonconformity_winner_ref_count,
         "intelligence_mode_bars": total_intelligence_mode_bars,
-        "intelligence_mode_rate": round(float(total_intelligence_mode_bars / max(total_trades, 1)), 4),
+        "intelligence_mode_rate": round(float(total_intelligence_mode_bars / mode_denom), 4),
         "intelligence_side_switches": total_intelligence_side_switches,
         "intelligence_avg_score": round(aggregate_intelligence_avg_score, 6),
         "time_adaptive_enable": bool(getattr(cfg, "time_adaptive_enable", True)),
         "time_adaptive_mode_bars": total_time_adaptive_mode_bars,
-        "time_adaptive_mode_rate": round(float(total_time_adaptive_mode_bars / max(total_trades, 1)), 4),
+        "time_adaptive_mode_rate": round(float(total_time_adaptive_mode_bars / mode_denom), 4),
         "time_adaptive_ready_bars": total_time_adaptive_ready_bars,
         "time_adaptive_side_switches": total_time_adaptive_side_switches,
         "time_adaptive_avg_edge_adjust": round(aggregate_time_edge_adj, 6),
         "time_adaptive_avg_conf_adjust": round(aggregate_time_conf_adj, 6),
         "precision_selective_enable": bool(getattr(cfg, "precision_selective_enable", False)),
         "precision_selective_mode_bars": total_precision_mode_bars,
-        "precision_selective_mode_rate": round(float(total_precision_mode_bars / max(total_trades, 1)), 4),
+        "precision_selective_mode_rate": round(float(total_precision_mode_bars / mode_denom), 4),
         "precision_selective_ready_bars": total_precision_ready_bars,
         "precision_selective_rejects": total_precision_rejects,
         "precision_selective_reject_rate": round(
@@ -3813,7 +3892,7 @@ def run_mythos_walk_forward(
         "time_bucket_best_short_days": agg_best_short_days,
         "time_bucket_worst_short_days": agg_worst_short_days,
         "opportunity_rescue_bars": total_opportunity_rescue_bars,
-        "opportunity_rescue_rate": round(float(total_opportunity_rescue_bars / max(total_trades, 1)), 4),
+        "opportunity_rescue_rate": round(float(total_opportunity_rescue_bars / mode_denom), 4),
         "opportunity_max_drought_ratio": round(max_opportunity_drought_ratio, 6),
         "opportunity_override_counterfactual": total_opportunity_override_counterfactual,
         "opportunity_override_bayes": total_opportunity_override_bayes,
