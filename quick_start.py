@@ -176,9 +176,9 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(default)
 
 
-def _mythos_strategy_candidates() -> list:
+def _mythos_strategy_candidates(search_objective: str = "balanced") -> list:
     # Candidate policies intentionally cover different long/short behaviors.
-    return [
+    base = [
         {"name": "baseline", "overrides": {}},
         {
             "name": "ultra_precision_selective",
@@ -251,9 +251,69 @@ def _mythos_strategy_candidates() -> list:
             },
         },
     ]
+    aggressive = [
+        {
+            "name": "aggressive_flow",
+            "overrides": {
+                "precision_selective_enable": False,
+                "min_confidence": 0.50,
+                "min_edge_threshold": 0.012,
+                "min_expected_r": 0.006,
+                "max_trades_per_day": 18,
+                "side_rebalance_short_target": 0.48,
+                "short_boost_edge": 0.010,
+                "short_boost_confidence": 0.060,
+                "short_boost_threshold_r": 0.020,
+                "nonconformity_target_reject_rate": 0.30,
+                "nonconformity_reject_tolerance": 0.22,
+                "nonconformity_adaptive_relax": 0.30,
+                "counterfactual_target_reject_rate": 0.35,
+                "counterfactual_reject_tolerance": 0.20,
+                "counterfactual_adaptive_relax": 0.60,
+                "time_adaptive_min_bucket_trades": 5,
+                "time_adaptive_switch_min_gap_r": 0.015,
+                "time_adaptive_switch_conviction_guard": 0.70,
+                "time_adaptive_edge_scale": 0.015,
+                "time_adaptive_conf_scale": 0.080,
+            },
+        },
+        {
+            "name": "aggressive_short_router",
+            "overrides": {
+                "precision_selective_enable": False,
+                "min_confidence": 0.50,
+                "min_edge_threshold": 0.011,
+                "min_expected_r": 0.006,
+                "max_trades_per_day": 20,
+                "side_rebalance_short_target": 0.52,
+                "short_boost_edge": 0.012,
+                "short_boost_confidence": 0.070,
+                "short_boost_threshold_r": 0.015,
+                "adaptive_short_tp_bias": 0.14,
+                "adaptive_short_sl_bias": 0.01,
+                "nonconformity_target_reject_rate": 0.26,
+                "nonconformity_reject_tolerance": 0.24,
+                "nonconformity_adaptive_relax": 0.36,
+                "counterfactual_target_reject_rate": 0.30,
+                "counterfactual_reject_tolerance": 0.24,
+                "counterfactual_adaptive_relax": 0.70,
+                "time_adaptive_min_bucket_trades": 4,
+                "time_adaptive_switch_min_gap_r": 0.012,
+                "time_adaptive_switch_conviction_guard": 0.72,
+                "time_adaptive_edge_scale": 0.017,
+                "time_adaptive_conf_scale": 0.090,
+            },
+        },
+    ]
+    objective = str(search_objective or "balanced").strip().lower()
+    if objective == "aggressive":
+        return aggressive + base
+    if objective == "precision":
+        return [base[1], base[3], base[4], base[0], base[2], base[5]] + aggressive
+    return [base[4], base[3], base[0], base[1], base[2], base[5]] + aggressive
 
 
-def _mythos_strategy_score(report: dict) -> tuple:
+def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
     agg = report.get("aggregate", {}) if isinstance(report, dict) else {}
     folds = report.get("folds", []) if isinstance(report, dict) else []
     fold_rs = [_safe_float(f.get("total_r", 0.0), 0.0) for f in folds if isinstance(f, dict)]
@@ -280,24 +340,76 @@ def _mythos_strategy_score(report: dict) -> tuple:
     if not math.isfinite(pf):
         pf = 3.0
 
-    score = (
-        1.00 * total_r
-        + 130.0 * expectancy
-        + 0.55 * short_r
-        + 10.0 * (win_rate - 0.5)
-        + 6.0 * (pf - 1.0)
-        - 0.75 * dd_abs
-        + 16.0 * positive_fold_ratio
-        + 10.0 * max(short_share - 0.20, 0.0)
-        + 0.12 * robust
-        + 18.0 * robust_dsr
-        + 8.0 * robust_psr
-        - 12.0 * robust_pbo
-        - 6.0 * max(robust_spa_p - 0.05, 0.0)
-        + (3.0 if robust_ready else 0.0)
-        + (4.0 if robust_sig95 else 0.0)
-    )
+    cf_reject = _safe_float(agg.get("counterfactual_reject_rate", 0.0), 0.0)
+    nonconf_reject = _safe_float(agg.get("nonconformity_reject_rate", 0.0), 0.0)
+    precision_reject = _safe_float(agg.get("precision_selective_reject_rate", 0.0), 0.0)
+    intel_switches = _safe_float(agg.get("intelligence_side_switches", 0.0), 0.0)
+    time_switches = _safe_float(agg.get("time_adaptive_side_switches", 0.0), 0.0)
+    switch_count = max(intel_switches + time_switches, 0.0)
+    trade_scale = math.sqrt(max(total_trades, 1))
+    objective = str(objective or "balanced").strip().lower()
+    if objective == "precision":
+        score = (
+            1.00 * total_r
+            + 130.0 * expectancy
+            + 0.50 * short_r
+            + 16.0 * (win_rate - 0.5)
+            + 10.0 * (pf - 1.0)
+            - 0.90 * dd_abs
+            + 18.0 * positive_fold_ratio
+            + 6.0 * max(short_share - 0.20, 0.0)
+            + 0.14 * robust
+            + 24.0 * robust_dsr
+            + 10.0 * robust_psr
+            - 14.0 * robust_pbo
+            - 8.0 * max(robust_spa_p - 0.05, 0.0)
+            - 6.0 * precision_reject
+            - 3.0 * cf_reject
+            + (3.0 if robust_ready else 0.0)
+            + (4.0 if robust_sig95 else 0.0)
+        )
+    elif objective == "aggressive":
+        score = (
+            1.00 * total_r
+            + 90.0 * expectancy
+            + 0.55 * short_r
+            + 10.0 * (pf - 1.0)
+            - 0.65 * dd_abs
+            + 12.0 * positive_fold_ratio
+            + 0.45 * trade_scale
+            + 28.0 * max(short_share - 0.30, 0.0)
+            + 1.10 * switch_count
+            - 7.0 * cf_reject
+            - 5.0 * nonconf_reject
+            - 3.0 * precision_reject
+            + 10.0 * robust_dsr
+            - 6.0 * robust_pbo
+            + (2.0 if robust_ready else 0.0)
+        )
+    else:
+        score = (
+            1.00 * total_r
+            + 115.0 * expectancy
+            + 0.50 * short_r
+            + 12.0 * (win_rate - 0.5)
+            + 8.0 * (pf - 1.0)
+            - 0.80 * dd_abs
+            + 16.0 * positive_fold_ratio
+            + 0.25 * trade_scale
+            + 12.0 * max(short_share - 0.22, 0.0)
+            + 0.60 * switch_count
+            - 5.0 * cf_reject
+            - 3.0 * nonconf_reject
+            - 2.0 * precision_reject
+            + 14.0 * robust_dsr
+            + 6.0 * robust_psr
+            - 10.0 * robust_pbo
+            - 6.0 * max(robust_spa_p - 0.05, 0.0)
+            + (3.0 if robust_ready else 0.0)
+            + (4.0 if robust_sig95 else 0.0)
+        )
     parts = {
+        "objective": objective,
         "total_r": round(total_r, 4),
         "expectancy_r": round(expectancy, 4),
         "short_total_r": round(short_r, 4),
@@ -306,6 +418,10 @@ def _mythos_strategy_score(report: dict) -> tuple:
         "avg_max_drawdown_r_abs": round(dd_abs, 4),
         "positive_fold_ratio": round(positive_fold_ratio, 4),
         "short_share": round(short_share, 4),
+        "counterfactual_reject_rate": round(cf_reject, 6),
+        "nonconformity_reject_rate": round(nonconf_reject, 6),
+        "precision_selective_reject_rate": round(precision_reject, 6),
+        "side_switches": round(switch_count, 4),
         "avg_robust_score": round(robust, 6),
         "robust_validation_ready": robust_ready,
         "robust_validation_pbo": round(robust_pbo, 6),
@@ -5536,8 +5652,11 @@ Examples:
     parser.add_argument("--mythos-no-strategy-search", dest="mythos_strategy_search", action="store_false",
                         help="MYTHOS optimizer: disable multi-strategy search")
     parser.set_defaults(mythos_strategy_search=False)
-    parser.add_argument("--mythos-strategy-search-max-candidates", type=int, default=6,
-                        help="MYTHOS optimizer: number of built-in strategy candidates to evaluate (default: 6)")
+    parser.add_argument("--mythos-search-objective", type=str, default="balanced",
+                        choices=["balanced", "precision", "aggressive"],
+                        help="MYTHOS optimizer objective profile: balanced, precision-first, or aggression/participation-first (default: balanced)")
+    parser.add_argument("--mythos-strategy-search-max-candidates", type=int, default=10,
+                        help="MYTHOS optimizer: number of built-in strategy candidates to evaluate (default: 10)")
     parser.add_argument("--mythos-strategy-search-report-path", type=str, default="checkpoints/mythos_strategy_search.json",
                         help="MYTHOS optimizer: summary leaderboard path for strategy search (default: checkpoints/mythos_strategy_search.json)")
     parser.add_argument("--mythos-save-best-model", action="store_true", default=True,
@@ -7347,7 +7466,8 @@ Examples:
                 base_report_path = Path(args.mythos_report_path)
                 search_report_path = Path(args.mythos_strategy_search_report_path)
                 search_report_path.parent.mkdir(parents=True, exist_ok=True)
-                strategy_specs = _mythos_strategy_candidates()
+                search_objective = str(getattr(args, "mythos_search_objective", "balanced")).strip().lower()
+                strategy_specs = _mythos_strategy_candidates(search_objective=search_objective)
                 max_candidates = int(max(args.mythos_strategy_search_max_candidates, 1))
                 strategy_specs = strategy_specs[:max_candidates]
                 # Use dataclass fields only; runtime aliases injected in __post_init__
@@ -7363,7 +7483,8 @@ Examples:
                 best_strategy_path = None
                 leaderboard = []
                 log.info(
-                    "[MYTHOS][SEARCH] Running %d strategy candidates",
+                    "[MYTHOS][SEARCH] objective=%s candidates=%d",
+                    search_objective,
                     len(strategy_specs),
                 )
                 for idx, spec in enumerate(strategy_specs, start=1):
@@ -7391,11 +7512,15 @@ Examples:
                         output_path=trial_path,
                     )
                     trial_agg = trial_report.get("aggregate", {})
-                    score, components = _mythos_strategy_score(trial_report)
+                    score, components = _mythos_strategy_score(
+                        trial_report,
+                        objective=search_objective,
+                    )
                     leaderboard.append(
                         {
                             "strategy": strat_name,
                             "score": round(score, 6),
+                            "objective": search_objective,
                             "overrides": overrides,
                             "report_path": str(trial_path),
                             "metrics": components,
@@ -7427,6 +7552,7 @@ Examples:
                 leaderboard.sort(key=lambda x: float(x.get("score", float("-inf"))), reverse=True)
                 search_payload = {
                     "mode": "mythos_strategy_search",
+                    "objective": search_objective,
                     "symbol": symbols_list[0] if symbols_list else "UNKNOWN",
                     "candidates_tested": len(strategy_specs),
                     "best_strategy": best_strategy_name,
@@ -7450,6 +7576,7 @@ Examples:
                     mythos_report = best_strategy_report
                     mythos_report["strategy_search"] = {
                         "enabled": True,
+                        "objective": search_objective,
                         "best_strategy": best_strategy_name,
                         "best_score": round(best_strategy_score, 6),
                         "search_report_path": str(search_report_path),
