@@ -315,7 +315,76 @@ def _mythos_strategy_candidates(search_objective: str = "balanced") -> list:
             },
         },
     ]
+    ultra = [
+        {
+            "name": "ultra_precision_aggressive_hybrid",
+            "overrides": {
+                "precision_selective_enable": True,
+                "precision_selective_min_trades": 36,
+                "precision_selective_score_window": 576,
+                "precision_selective_score_min_samples": 96,
+                "precision_selective_base_quantile": 0.72,
+                "precision_selective_max_quantile": 0.90,
+                "precision_selective_target_win_rate": 0.545,
+                "precision_selective_adapt_gain": 0.48,
+                "min_confidence": 0.54,
+                "min_edge_threshold": 0.016,
+                "min_expected_r": 0.008,
+                "max_trades_per_day": 14,
+                "side_rebalance_short_target": 0.36,
+                "meta_learner_min_side_prob": 0.48,
+                "meta_learner_ready_prob_floor": 0.41,
+                "meta_learner_ready_prob_ceiling": 0.59,
+                "intelligence_side_switch_min_samples": 32,
+                "intelligence_side_switch_min_gap": 0.20,
+                "nonconformity_target_reject_rate": 0.38,
+                "nonconformity_reject_tolerance": 0.18,
+                "counterfactual_target_reject_rate": 0.52,
+                "counterfactual_reject_tolerance": 0.16,
+                "counterfactual_adaptive_relax": 0.50,
+                "time_adaptive_min_bucket_trades": 5,
+                "time_adaptive_switch_min_gap_r": 0.020,
+                "time_adaptive_switch_conviction_guard": 0.68,
+            },
+        },
+        {
+            "name": "ultra_precision_short_balance",
+            "overrides": {
+                "precision_selective_enable": True,
+                "precision_selective_min_trades": 36,
+                "precision_selective_score_window": 544,
+                "precision_selective_score_min_samples": 88,
+                "precision_selective_base_quantile": 0.70,
+                "precision_selective_max_quantile": 0.88,
+                "precision_selective_target_win_rate": 0.54,
+                "precision_selective_adapt_gain": 0.44,
+                "min_confidence": 0.53,
+                "min_edge_threshold": 0.015,
+                "min_expected_r": 0.007,
+                "max_trades_per_day": 16,
+                "side_rebalance_short_target": 0.40,
+                "short_boost_edge": 0.0075,
+                "short_boost_confidence": 0.045,
+                "short_boost_threshold_r": 0.030,
+                "meta_learner_min_side_prob": 0.475,
+                "meta_learner_ready_prob_floor": 0.40,
+                "meta_learner_ready_prob_ceiling": 0.60,
+                "intelligence_side_switch_min_samples": 30,
+                "intelligence_side_switch_min_gap": 0.19,
+                "nonconformity_target_reject_rate": 0.36,
+                "nonconformity_reject_tolerance": 0.20,
+                "counterfactual_target_reject_rate": 0.48,
+                "counterfactual_reject_tolerance": 0.18,
+                "counterfactual_adaptive_relax": 0.54,
+                "time_adaptive_min_bucket_trades": 4,
+                "time_adaptive_switch_min_gap_r": 0.018,
+                "time_adaptive_switch_conviction_guard": 0.67,
+            },
+        },
+    ]
     objective = str(search_objective or "balanced").strip().lower()
+    if objective == "ultra":
+        return [ultra[0], base[1], ultra[1], aggressive[0], base[3], base[0], aggressive[1], base[2], base[4], base[5]]
     if objective == "aggressive":
         return aggressive + base
     if objective == "precision":
@@ -359,6 +428,10 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
     trade_scale = math.sqrt(max(total_trades, 1))
     aggressive_short_floor_penalty = 0.0
     balanced_short_floor_penalty = 0.0
+    ultra_short_floor_penalty = 0.0
+    ultra_switch_floor_penalty = 0.0
+    ultra_expectancy_floor_penalty = 0.0
+    ultra_pf_floor_penalty = 0.0
     objective = str(objective or "balanced").strip().lower()
     if objective == "precision":
         score = (
@@ -400,6 +473,36 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
             + (2.0 if robust_ready else 0.0)
             - aggressive_short_floor_penalty
         )
+    elif objective == "ultra":
+        ultra_short_floor_penalty = 120.0 * max(0.22 - short_share, 0.0)
+        ultra_switch_floor_penalty = 0.08 * max(40.0 - switch_count, 0.0)
+        ultra_expectancy_floor_penalty = 220.0 * max(0.18 - expectancy, 0.0)
+        ultra_pf_floor_penalty = 45.0 * max(1.25 - pf, 0.0)
+        score = (
+            1.00 * total_r
+            + 140.0 * expectancy
+            + 0.55 * short_r
+            + 14.0 * (win_rate - 0.5)
+            + 12.0 * (pf - 1.0)
+            - 0.75 * dd_abs
+            + 20.0 * positive_fold_ratio
+            + 0.35 * trade_scale
+            + 22.0 * max(short_share - 0.22, 0.0)
+            + 0.90 * switch_count
+            - 5.0 * cf_reject
+            - 5.0 * nonconf_reject
+            - 2.0 * max(precision_reject - 0.90, 0.0)
+            + 16.0 * robust_dsr
+            + 8.0 * robust_psr
+            - 12.0 * robust_pbo
+            - 8.0 * max(robust_spa_p - 0.05, 0.0)
+            + (4.0 if robust_ready else 0.0)
+            + (5.0 if robust_sig95 else 0.0)
+            - ultra_short_floor_penalty
+            - ultra_switch_floor_penalty
+            - ultra_expectancy_floor_penalty
+            - ultra_pf_floor_penalty
+        )
     else:
         balanced_short_floor_penalty = 28.0 * max(0.20 - short_share, 0.0)
         score = (
@@ -440,6 +543,10 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
         "side_switches": round(switch_count, 4),
         "aggressive_short_floor_penalty": round(aggressive_short_floor_penalty, 6),
         "balanced_short_floor_penalty": round(balanced_short_floor_penalty, 6),
+        "ultra_short_floor_penalty": round(ultra_short_floor_penalty, 6),
+        "ultra_switch_floor_penalty": round(ultra_switch_floor_penalty, 6),
+        "ultra_expectancy_floor_penalty": round(ultra_expectancy_floor_penalty, 6),
+        "ultra_pf_floor_penalty": round(ultra_pf_floor_penalty, 6),
         "avg_robust_score": round(robust, 6),
         "robust_validation_ready": robust_ready,
         "robust_validation_pbo": round(robust_pbo, 6),
@@ -449,6 +556,34 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
         "robust_validation_significant_edge_95": robust_sig95,
     }
     return float(score), parts
+
+
+def _mythos_strategy_eligibility(metrics: dict, objective: str = "balanced") -> tuple[bool, list[str]]:
+    if not isinstance(metrics, dict):
+        return False, ["metrics_missing"]
+    objective = str(objective or "balanced").strip().lower()
+    if objective != "ultra":
+        return True, []
+    reasons: list[str] = []
+    if _safe_float(metrics.get("expectancy_r", 0.0), 0.0) < 0.18:
+        reasons.append("expectancy_r<0.18")
+    if _safe_float(metrics.get("profit_factor", 0.0), 0.0) < 1.25:
+        reasons.append("profit_factor<1.25")
+    if _safe_float(metrics.get("win_rate", 0.0), 0.0) < 0.42:
+        reasons.append("win_rate<0.42")
+    if _safe_float(metrics.get("positive_fold_ratio", 0.0), 0.0) < 0.75:
+        reasons.append("positive_fold_ratio<0.75")
+    if _safe_float(metrics.get("short_share", 0.0), 0.0) < 0.18:
+        reasons.append("short_share<0.18")
+    if _safe_float(metrics.get("side_switches", 0.0), 0.0) < 40.0:
+        reasons.append("side_switches<40")
+    if _safe_float(metrics.get("nonconformity_reject_rate", 1.0), 1.0) > 0.68:
+        reasons.append("nonconformity_reject_rate>0.68")
+    if _safe_float(metrics.get("counterfactual_reject_rate", 1.0), 1.0) > 0.70:
+        reasons.append("counterfactual_reject_rate>0.70")
+    if _safe_float(metrics.get("avg_max_drawdown_r_abs", float("inf")), float("inf")) > 28.0:
+        reasons.append("avg_max_drawdown_r_abs>28")
+    return len(reasons) == 0, reasons
 
 
 def check_gpu():
@@ -5671,8 +5806,8 @@ Examples:
                         help="MYTHOS optimizer: disable multi-strategy search")
     parser.set_defaults(mythos_strategy_search=False)
     parser.add_argument("--mythos-search-objective", type=str, default="balanced",
-                        choices=["balanced", "precision", "aggressive"],
-                        help="MYTHOS optimizer objective profile: balanced, precision-first, or aggression/participation-first (default: balanced)")
+                        choices=["balanced", "precision", "aggressive", "ultra"],
+                        help="MYTHOS optimizer objective profile: balanced, precision-first, aggression/participation-first, or ultra final-stage blend (default: balanced)")
     parser.add_argument("--mythos-strategy-search-max-candidates", type=int, default=10,
                         help="MYTHOS optimizer: number of built-in strategy candidates to evaluate (default: 10)")
     parser.add_argument("--mythos-strategy-search-report-path", type=str, default="checkpoints/mythos_strategy_search.json",
@@ -7499,6 +7634,7 @@ Examples:
                 best_strategy_score = float("-inf")
                 best_strategy_report = None
                 best_strategy_path = None
+                ultra_eligible_candidates = 0
                 leaderboard = []
                 log.info(
                     "[MYTHOS][SEARCH] objective=%s candidates=%d",
@@ -7534,10 +7670,23 @@ Examples:
                         trial_report,
                         objective=search_objective,
                     )
+                    eligible, eligibility_reasons = _mythos_strategy_eligibility(
+                        components,
+                        objective=search_objective,
+                    )
+                    if eligible:
+                        ultra_eligible_candidates += 1
+                    selection_score = float(score if eligible else score - 5000.0)
+                    components["eligible"] = bool(eligible)
+                    components["eligibility_reasons"] = list(eligibility_reasons)
+                    components["selection_score"] = round(selection_score, 6)
                     leaderboard.append(
                         {
                             "strategy": strat_name,
                             "score": round(score, 6),
+                            "selection_score": round(selection_score, 6),
+                            "eligible": bool(eligible),
+                            "eligibility_reasons": list(eligibility_reasons),
                             "objective": search_objective,
                             "overrides": overrides,
                             "report_path": str(trial_path),
@@ -7553,26 +7702,36 @@ Examples:
                         }
                     )
                     log.info(
-                        "[MYTHOS][SEARCH] strategy=%s score=%.4f totalR=%s shortR=%s win=%s pf=%s",
+                        "[MYTHOS][SEARCH] strategy=%s score=%.4f selection=%.4f eligible=%s totalR=%s shortR=%s win=%s pf=%s",
                         strat_name,
                         score,
+                        selection_score,
+                        eligible,
                         trial_agg.get("total_r"),
                         trial_agg.get("short_total_r"),
                         trial_agg.get("win_rate"),
                         trial_agg.get("profit_factor"),
                     )
-                    if score > best_strategy_score:
-                        best_strategy_score = score
+                    if selection_score > best_strategy_score:
+                        best_strategy_score = selection_score
                         best_strategy_name = strat_name
                         best_strategy_report = trial_report
                         best_strategy_path = trial_path
 
-                leaderboard.sort(key=lambda x: float(x.get("score", float("-inf"))), reverse=True)
+                leaderboard.sort(
+                    key=lambda x: float(x.get("selection_score", x.get("score", float("-inf")))),
+                    reverse=True,
+                )
+                if search_objective == "ultra" and ultra_eligible_candidates == 0:
+                    log.warning(
+                        "[MYTHOS][SEARCH] objective=ultra found no fully eligible candidates; selected best fallback by penalized score"
+                    )
                 search_payload = {
                     "mode": "mythos_strategy_search",
                     "objective": search_objective,
                     "symbol": symbols_list[0] if symbols_list else "UNKNOWN",
                     "candidates_tested": len(strategy_specs),
+                    "eligible_candidates": int(ultra_eligible_candidates),
                     "best_strategy": best_strategy_name,
                     "best_score": round(best_strategy_score, 6),
                     "best_report_path": str(best_strategy_path) if best_strategy_path else None,
