@@ -1066,6 +1066,7 @@ def _apply_intelligence_adjustment(
     change_mode: float = 0.0,
     long_trade_count: int = 0,
     short_trade_count: int = 0,
+    stress_mode: bool = False,
 ) -> Dict[str, float]:
     s = int(side)
     if not bool(getattr(cfg, "intelligence_enable", True)) or s not in (-1, 1):
@@ -1121,6 +1122,9 @@ def _apply_intelligence_adjustment(
             last_switch_bar=int(last_switch_bar),
             cfg=cfg,
         )
+        if (not can_switch) and bool(stress_mode):
+            stress_warmup = int(max(round(max(getattr(cfg, "intelligence_side_switch_warmup_trades", 40), 1) * 0.4), 12))
+            can_switch = bool(intelligence_mode_bars >= stress_warmup)
         min_side_samples = int(max(getattr(cfg, "intelligence_side_switch_min_samples", 48), 1))
         total_side = int(max(int(long_trade_count) + int(short_trade_count), 0))
         short_share = float(int(short_trade_count) / max(total_side, 1)) if total_side > 0 else 0.5
@@ -1131,6 +1135,10 @@ def _apply_intelligence_adjustment(
             min_side_samples = int(max(12, round(min_side_samples * 0.60)))
             min_gap = float(max(min_gap * 0.70, 0.0))
             conv_guard = float(min(conv_guard + 0.08, 0.92))
+        if bool(stress_mode) and total_side >= 20:
+            min_side_samples = int(max(10, round(min_side_samples * 0.65)))
+            min_gap = float(max(min_gap * 0.75, 0.0))
+            conv_guard = float(min(conv_guard + 0.10, 0.95))
         own_n = int(max(own_bucket.get("n", 0.0), 0.0))
         other_n = int(max(other_bucket.get("n", 0.0), 0.0))
         own_reg_n = int(max(own_reg_bucket.get("n", 0.0), 0.0))
@@ -1172,6 +1180,22 @@ def _apply_intelligence_adjustment(
             edge2 = float(max(edge2 + 0.15 * min(max_adj, pos_scale * min(gap, 1.0)), 0.0))
             conf2 = float(np.clip(conf2 + 0.015, 0.0, 1.0))
             unc2 = float(np.clip(unc2 * 1.03, 0.005, 2.0))
+        elif (
+            can_switch
+            and bool(stress_mode)
+            and float(conviction) < min(conv_guard + 0.12, 0.97)
+            and float(other_exp - own_exp) >= (0.15 * min_unit)
+            and other_n >= max(8, own_n // 2)
+            and other_reg_n >= max(6, own_reg_n // 2)
+            and float(analog_edge) < (analog_switch_limit * 1.25)
+        ):
+            # Month-shield fallback: in stressed windows allow a guarded side flip
+            # with relaxed depth requirements to avoid getting stuck on a weak side.
+            s = other
+            switched = True
+            edge2 = float(max(edge2 + 0.10 * min(max_adj, pos_scale * min(max(gap, 0.0), 1.0)), 0.0))
+            conf2 = float(np.clip(conf2 + 0.010, 0.0, 1.0))
+            unc2 = float(np.clip(unc2 * 1.02, 0.005, 2.0))
 
     return {
         "side": float(s),
@@ -1284,6 +1308,7 @@ def _apply_time_adaptive_adjustment(
     cfg: MythosConfig,
     long_trade_count: int = 0,
     short_trade_count: int = 0,
+    stress_mode: bool = False,
 ) -> Dict[str, float]:
     s = int(side)
     if not bool(getattr(cfg, "time_adaptive_enable", True)) or s not in (-1, 1):
@@ -1298,6 +1323,8 @@ def _apply_time_adaptive_adjustment(
             "expectancy": 0.0,
         }
     warmup = int(max(getattr(cfg, "time_adaptive_warmup_trades", 36), 0))
+    if bool(stress_mode):
+        warmup = int(max(round(warmup * 0.55), 18))
     if int(total_trades) < warmup:
         return {
             "side": float(s),
@@ -1313,6 +1340,8 @@ def _apply_time_adaptive_adjustment(
     short_share = float(int(short_trade_count) / max(total_side, 1)) if total_side > 0 else 0.5
     underweight_side = -1 if short_share < 0.36 else (1 if short_share > 0.64 else 0)
     bucket_min = int(max(getattr(cfg, "time_adaptive_min_bucket_trades", 8), 1))
+    if bool(stress_mode):
+        bucket_min = int(max(round(bucket_min * 0.70), 4))
     own = _resolve_time_adaptive_side_stats(
         day_idx=day_idx,
         hour_idx=hour_idx,
@@ -1362,6 +1391,8 @@ def _apply_time_adaptive_adjustment(
         min_samples = int(max(getattr(cfg, "time_adaptive_switch_min_samples", 10), 1))
         if switch_into_underweight and total_side >= 24:
             min_samples = int(max(6, round(min_samples * 0.60)))
+        if bool(stress_mode):
+            min_samples = int(max(4, round(min_samples * 0.65)))
         if (
             float(other.get("ready", 0.0)) > 0.5
             and int(other.get("trades", 0.0)) >= min_samples
@@ -1376,6 +1407,9 @@ def _apply_time_adaptive_adjustment(
             if switch_into_underweight and total_side >= 24:
                 min_gap_r = float(max(min_gap_r * 0.65, 0.0))
                 conviction_guard = float(min(conviction_guard + 0.10, 0.92))
+            if bool(stress_mode):
+                min_gap_r = float(max(min_gap_r * 0.75, 0.0))
+                conviction_guard = float(min(conviction_guard + 0.08, 0.95))
             if float(conviction) < conviction_guard and gap_r >= min_gap_r:
                 s = -s
                 switched = True
@@ -1572,24 +1606,34 @@ def _precision_selective_gate(
     recent_rr: List[float],
     total_trades: int,
     cfg: MythosConfig,
+    stress_mode: bool = False,
 ) -> Dict[str, float]:
     if not bool(getattr(cfg, "precision_selective_enable", False)):
         return {"pass": 1.0, "ready": 0.0}
     min_trades = int(max(getattr(cfg, "precision_selective_min_trades", 48), 0))
-    if int(total_trades) < min_trades:
-        return {"pass": 1.0, "ready": 0.0}
     score_window = int(max(getattr(cfg, "precision_selective_score_window", 512), 32))
     score_min_samples = int(max(getattr(cfg, "precision_selective_score_min_samples", 128), 16))
+    rr = list(recent_rr[-score_window:]) if recent_rr else []
+    if bool(stress_mode):
+        min_trades = int(max(round(min_trades * 0.65), 18))
+        score_min_samples = int(max(round(score_min_samples * 0.70), 48))
+    if int(total_trades) < min_trades:
+        return {"pass": 1.0, "ready": 0.0}
     scores = list(candidate_scores[-score_window:]) if candidate_scores else []
     if len(scores) < score_min_samples:
         return {"pass": 1.0, "ready": 0.0}
-    rr = list(recent_rr[-score_window:]) if recent_rr else []
     target_wr = float(np.clip(getattr(cfg, "precision_selective_target_win_rate", 0.52), 0.0, 1.0))
     base_q = float(np.clip(getattr(cfg, "precision_selective_base_quantile", 0.70), 0.50, 0.999))
     max_q = float(np.clip(getattr(cfg, "precision_selective_max_quantile", 0.95), base_q, 0.999))
     adapt_gain = float(np.clip(getattr(cfg, "precision_selective_adapt_gain", 0.40), 0.0, 2.0))
     recent_wr = float(np.mean(np.asarray(rr, dtype=np.float64) > 0.0)) if rr else target_wr
     dynamic_q = float(np.clip(base_q + adapt_gain * (target_wr - recent_wr), base_q, max_q))
+    if bool(stress_mode):
+        # When local quality is degrading, slightly relax quantile strictness to
+        # avoid complete lockout and let adaptive modules recover participation.
+        stress_relax = float(np.clip((target_wr - recent_wr) - 0.04, 0.0, 0.20))
+        if stress_relax > 0.0:
+            dynamic_q = float(np.clip(dynamic_q - min(0.10, 0.80 * stress_relax), 0.55, max_q))
     threshold = float(np.quantile(np.asarray(scores, dtype=np.float64), dynamic_q))
     allowed = bool(float(quality) >= threshold)
     return {
@@ -2700,6 +2744,7 @@ def _run_fold(
     precision_selective_threshold_sum = 0.0
     precision_selective_quality_sum = 0.0
     precision_selective_quantile_sum = 0.0
+    month_shield_mode_bars = 0
     last_trade_bar = -1
     opportunity_rescue_bars = 0
     opportunity_override_counterfactual = 0
@@ -2796,6 +2841,38 @@ def _run_fold(
             meta_p=meta_p,
             cfg=cfg,
         )
+        recent_global = _recent_quality_stats(
+            trades,
+            window=96,
+            min_trades=24,
+        )
+        recent_long = _recent_quality_stats(
+            long_trades,
+            window=64,
+            min_trades=12,
+        )
+        recent_short = _recent_quality_stats(
+            short_trades,
+            window=64,
+            min_trades=12,
+        )
+        recent_exp = float(recent_global.get("expectancy", 0.0))
+        recent_hit = float(recent_global.get("hit_rate", 0.5))
+        side_gap = float(recent_short.get("expectancy", 0.0) - recent_long.get("expectancy", 0.0))
+        month_shield_stress = bool(
+            bool(recent_global.get("ready", 0.0))
+            and (
+                recent_exp < 0.0
+                or recent_hit < 0.42
+                or (
+                    bool(recent_long.get("ready", 0.0))
+                    and bool(recent_short.get("ready", 0.0))
+                    and abs(side_gap) > 0.04
+                )
+            )
+        )
+        if month_shield_stress:
+            month_shield_mode_bars += 1
         high_conv_thresh = float(np.clip(getattr(cfg, "precision_high_conviction", 0.72), 0.0, 1.0))
         analog_hits = float(analog.get("analog_hits", 0.0))
         intel = _apply_intelligence_adjustment(
@@ -2820,6 +2897,7 @@ def _run_fold(
             change_mode=float(adapted.get("change_mode", 0.0)),
             long_trade_count=len(long_trades),
             short_trade_count=len(short_trades),
+            stress_mode=month_shield_stress,
         )
         side = int(round(float(intel.get("side", side))))
         edge = float(intel.get("edge", edge))
@@ -2848,6 +2926,7 @@ def _run_fold(
             cfg=cfg,
             long_trade_count=len(long_trades),
             short_trade_count=len(short_trades),
+            stress_mode=month_shield_stress,
         )
         side = int(round(float(time_adj.get("side", side))))
         edge = float(time_adj.get("edge", edge))
@@ -2904,6 +2983,7 @@ def _run_fold(
                 recent_rr=precision_selective_recent_rr,
                 total_trades=len(trades),
                 cfg=cfg,
+                stress_mode=month_shield_stress,
             )
             if float(precision_gate.get("ready", 0.0)) > 0.5:
                 precision_selective_mode_bars += 1
@@ -3414,6 +3494,7 @@ def _run_fold(
         "precision_selective_avg_quantile": round(
             float(precision_selective_quantile_sum / max(precision_selective_ready_bars, 1)), 6
         ),
+        "month_shield_mode_bars": int(month_shield_mode_bars),
         "time_bucket_day_side": day_report,
         "time_bucket_hour_side": hour_report,
         "time_bucket_best_short_hours": best_short_hours,
@@ -3670,6 +3751,7 @@ def run_mythos_walk_forward(
     total_precision_mode_bars = int(sum(int(r.get("precision_selective_mode_bars", 0)) for r in reports))
     total_precision_ready_bars = int(sum(int(r.get("precision_selective_ready_bars", 0)) for r in reports))
     total_precision_rejects = int(sum(int(r.get("precision_selective_rejects", 0)) for r in reports))
+    total_month_shield_mode_bars = int(sum(int(r.get("month_shield_mode_bars", 0)) for r in reports))
     weighted_precision_threshold = float(
         sum(
             float(r.get("precision_selective_avg_threshold", 0.0)) * int(r.get("precision_selective_ready_bars", 0))
@@ -3880,6 +3962,8 @@ def run_mythos_walk_forward(
         "precision_selective_reject_rate": round(
             float(total_precision_rejects / max(total_precision_rejects + total_trades, 1)), 4
         ),
+        "month_shield_mode_bars": total_month_shield_mode_bars,
+        "month_shield_mode_rate": round(float(total_month_shield_mode_bars / mode_denom), 4),
         "precision_selective_avg_threshold": round(aggregate_precision_threshold, 6),
         "precision_selective_avg_quality": round(aggregate_precision_quality, 6),
         "precision_selective_avg_quantile": round(aggregate_precision_quantile, 6),
