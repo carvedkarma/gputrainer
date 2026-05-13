@@ -359,6 +359,16 @@ class MythosConfig:
         self.transition_memory_edge_scale = float(self.transition_edge_gain)
         self.transition_memory_confidence_scale = float(self.transition_confidence_gain)
         self.transition_memory_uncertainty_scale = float(self.transition_uncertainty_gain)
+        # Normalize leverage/sizing rails so runtime clamps remain coherent.
+        self.max_leverage = float(max(getattr(self, "max_leverage", 1.8), 0.1))
+        self.min_size_mult = float(max(getattr(self, "min_size_mult", 0.5), 0.0))
+        self.max_size_mult = float(
+            max(
+                getattr(self, "max_size_mult", self.max_leverage),
+                self.min_size_mult,
+                self.max_leverage,
+            )
+        )
         self.adaptive_side_target_strength = float(
             np.clip(getattr(self, "adaptive_side_target_strength", 0.22), 0.0, 1.0)
         )
