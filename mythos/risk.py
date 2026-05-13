@@ -122,7 +122,33 @@ class RiskConstitution:
         safe_edge = max(float(edge), 0.0)
         safe_unc = max(float(uncertainty), 0.0)
         conf = 1.0 / (1.0 + safe_unc)
-        size_mult = conf * (1.0 + safe_edge)
+        conv = float(np.clip(conviction if conviction is not None else conf, 0.0, 1.0))
+        min_mult = float(max(getattr(self.cfg, "min_size_mult", 0.5), 0.0))
+        max_mult = float(
+            max(
+                getattr(self.cfg, "conviction_max_size_mult", self.cfg.max_size_mult),
+                getattr(self.cfg, "max_size_mult", 1.8),
+                min_mult,
+            )
+        )
+        edge_floor = float(max(getattr(self.cfg, "min_expected_r", 0.01), 0.0))
+        edge_span = 0.05
+        conf_floor = float(np.clip(getattr(self.cfg, "min_confidence", 0.55), 0.0, 1.0))
+        conv_floor = float(
+            np.clip(
+                max(
+                    getattr(self.cfg, "precision_min_conviction", 0.52),
+                    getattr(self.cfg, "conviction_score_threshold", 0.62) - 0.08,
+                ),
+                0.0,
+                1.0,
+            )
+        )
+        edge_rel = float(np.clip((safe_edge - edge_floor) / max(edge_span, 1e-6), 0.0, 1.0))
+        conf_rel = float(np.clip((conf - conf_floor) / max(1.0 - conf_floor, 1e-6), 0.0, 1.0))
+        conv_rel = float(np.clip((conv - conv_floor) / max(1.0 - conv_floor, 1e-6), 0.0, 1.0))
+        quality = float(np.clip(0.45 * conv_rel + 0.35 * edge_rel + 0.20 * conf_rel, 0.0, 1.0))
+        size_mult = float(min_mult + quality * (max_mult - min_mult))
         dd = self.current_drawdown_r()
         dd_start = float(max(getattr(self.cfg, "drawdown_size_start_r", 6.0), 0.0))
         dd_max = float(max(getattr(self.cfg, "drawdown_size_full_r", 14.0), dd_start + 1e-6))
@@ -131,8 +157,7 @@ class RiskConstitution:
             span = max(dd_max - dd_start, 1e-6)
             severity = float(np.clip((dd - dd_start) / span, 0.0, 1.0))
             throttle = float(1.0 - (1.0 - min_frac) * severity)
-            size_mult *= throttle
-        conv = float(np.clip(conviction if conviction is not None else conf, 0.0, 1.0))
+            size_mult = float(min_mult + (size_mult - min_mult) * throttle)
         score_thr = float(np.clip(getattr(self.cfg, "conviction_score_threshold", 0.62), 0.0, 1.0))
         guard_window = int(max(getattr(self.cfg, "conviction_guard_window", 32), 1))
         guard_min_trades = int(max(getattr(self.cfg, "conviction_guard_min_trades", 8), 1))
@@ -145,9 +170,8 @@ class RiskConstitution:
             boost = float(np.clip(getattr(self.cfg, "conviction_boost", 0.35), 0.0, 2.0))
             span = max(1.0 - score_thr, 1e-6)
             gain = 1.0 + boost * ((conv - score_thr) / span)
-            size_mult *= gain
-        max_mult = float(max(getattr(self.cfg, "conviction_max_size_mult", self.cfg.max_size_mult), self.cfg.max_size_mult))
-        size_mult = np.clip(size_mult, self.cfg.min_size_mult, max_mult)
+            size_mult = float(min_mult + (size_mult - min_mult) * gain)
+        size_mult = np.clip(size_mult, min_mult, max_mult)
         return float(size_mult)
 
     def high_conviction_expectancy(self) -> float:
