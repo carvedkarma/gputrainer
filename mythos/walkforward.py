@@ -1030,8 +1030,13 @@ def _update_intelligence_state(
 def _intelligence_bucket_score(bucket: Dict[str, float], cfg: MythosConfig) -> float:
     min_n = int(max(getattr(cfg, "intelligence_min_samples", 24), 1))
     n = int(max(bucket.get("n", 0.0), 0.0))
+    readiness = 1.0
     if n < min_n:
-        return 0.0
+        cold_min = int(max(min_n // 4, 4))
+        if n < cold_min:
+            return 0.0
+        # Sparse-data warmup: allow a scaled score instead of hard lockout.
+        readiness = float(np.clip(n / max(min_n, 1), 0.0, 1.0))
     hit_w = float(np.clip(getattr(cfg, "intelligence_hit_weight", 0.55), 0.0, 2.0))
     exp_w = float(np.clip(getattr(cfg, "intelligence_expectancy_weight", 0.45), 0.0, 2.0))
     var_w = float(np.clip(getattr(cfg, "intelligence_variance_penalty", 0.18), 0.0, 2.0))
@@ -1039,7 +1044,7 @@ def _intelligence_bucket_score(bucket: Dict[str, float], cfg: MythosConfig) -> f
     hit_term = float((float(bucket.get("hit_ema", 0.5)) - 0.5) * 2.0)
     exp_term = float(np.tanh(float(bucket.get("exp_ema", 0.0)) / max(2.0 * unit, 1e-6)))
     var_term = float(np.tanh(float(np.sqrt(max(bucket.get("var_ema", 0.0), 0.0))) / max(3.0 * unit, 1e-6)))
-    score = hit_w * hit_term + exp_w * exp_term - var_w * var_term
+    score = (hit_w * hit_term + exp_w * exp_term - var_w * var_term) * readiness
     return float(np.clip(score, -2.0, 2.0))
 
 
@@ -2751,6 +2756,10 @@ def _run_fold(
     opportunity_override_bayes = 0
     opportunity_override_nonconformity = 0
     opportunity_max_drought_ratio = 0.0
+    decision_bars_total = int(max(len(test_feat) - cfg.horizon, 0))
+    participation_relaxed_bars = 0
+    participation_override_counterfactual = 0
+    participation_pressure_sum = 0.0
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
         x = X_te[i]
@@ -2960,9 +2969,28 @@ def _run_fold(
             sure_recent_rr=sure_recent_rr,
             cfg=cfg,
         )
+        participation_pressure = 0.0
+        if bool(getattr(cfg, "participation_adapt_enable", True)) and decision_bars_total > 0:
+            progress = float((i + 1) / max(decision_bars_total, 1))
+            start_progress = float(np.clip(getattr(cfg, "participation_relax_start_progress", 0.25), 0.0, 1.0))
+            if progress >= start_progress:
+                target_fold_trades = int(max(getattr(cfg, "participation_target_trades_per_fold", 40), 1))
+                target_now = float(target_fold_trades * progress)
+                trade_gap = float(max(target_now - len(trades), 0.0))
+                participation_pressure = float(np.clip(trade_gap / max(float(target_fold_trades), 1.0), 0.0, 1.0))
+        participation_pressure_sum += participation_pressure
         sure_recent_window = int(max(getattr(cfg, "sure_recent_window", 96), 8))
         min_conv = float(np.clip(getattr(cfg, "precision_min_conviction", 0.52), 0.0, 1.0))
-        if side != 0 and conviction < min_conv:
+        adaptive_min_conv = min_conv
+        if participation_pressure > 0.0:
+            conv_relax = float(
+                np.clip(getattr(cfg, "participation_conviction_relax_max", 0.08), 0.0, 0.50)
+                * participation_pressure
+            )
+            adaptive_min_conv = float(
+                max(min_conv - conv_relax, np.clip(getattr(cfg, "participation_min_conviction", 0.46), 0.0, 1.0))
+            )
+        if side != 0 and conviction < adaptive_min_conv:
             skip_counts["low_conviction"] += 1
             continue
         if side != 0:
@@ -3028,6 +3056,18 @@ def _run_fold(
                 min_edge_floor = float(max(getattr(cfg, "opportunity_rescue_min_edge", 0.004), 0.0))
                 dynamic_conf_floor = max(float(cfg.min_confidence) - conf_relax * drought_ratio, min_conf_floor)
                 dynamic_edge_floor = max(float(edge_floor) - edge_relax * drought_ratio, min_edge_floor)
+        if participation_pressure > 0.0:
+            conf_relax = float(
+                np.clip(getattr(cfg, "participation_conf_relax_max", 0.10), 0.0, 0.60) * participation_pressure
+            )
+            edge_relax = float(
+                np.clip(getattr(cfg, "participation_edge_relax_max", 0.008), 0.0, 0.20) * participation_pressure
+            )
+            min_conf_floor = float(np.clip(getattr(cfg, "participation_min_confidence", 0.44), 0.0, 1.0))
+            min_edge_floor = float(max(getattr(cfg, "participation_min_edge", 0.003), 0.0))
+            dynamic_conf_floor = max(dynamic_conf_floor - conf_relax, min_conf_floor)
+            dynamic_edge_floor = max(dynamic_edge_floor - edge_relax, min_edge_floor)
+            participation_relaxed_bars += 1
         if meta_soft_block:
             meta_hard_conf_floor = min(dynamic_conf_floor + 0.04, 1.0)
             meta_hard_edge_floor = dynamic_edge_floor + 0.0015
@@ -3047,7 +3087,7 @@ def _run_fold(
         if not governor.allow_by_streak(i, side=side):
             skip_counts["streak_pause"] += 1
             continue
-        can_override_reject = (
+        drought_override_ready = (
             drought_ratio >= float(np.clip(getattr(cfg, "opportunity_rescue_override_start", 0.55), 0.0, 1.0))
             and conviction >= float(np.clip(getattr(cfg, "opportunity_rescue_override_conviction", 0.70), 0.0, 1.0))
             and edge >= (
@@ -3059,6 +3099,19 @@ def _run_fold(
                 1.0,
             )
         )
+        participation_override_ready = bool(
+            participation_pressure >= 0.30
+            and conviction >= float(np.clip(getattr(cfg, "participation_override_conviction", 0.74), 0.0, 1.0))
+            and edge >= (
+                dynamic_edge_floor + float(max(getattr(cfg, "participation_override_edge_buffer", 0.0015), 0.0))
+            )
+            and confidence >= min(
+                dynamic_conf_floor
+                + float(np.clip(getattr(cfg, "participation_override_conf_buffer", 0.01), 0.0, 1.0)),
+                1.0,
+            )
+        )
+        can_override_reject = bool(drought_override_ready or participation_override_ready)
         cf_pass = _adaptive_counterfactual_pass(
             analog_mem=analog_mem,
             x=x,
@@ -3071,6 +3124,8 @@ def _run_fold(
         )
         if not cf_pass:
             if can_override_reject:
+                if (not drought_override_ready) and participation_override_ready:
+                    participation_override_counterfactual += 1
                 opportunity_override_counterfactual += 1
                 edge = float(max(edge - 0.0015 * drought_ratio, 0.0))
                 confidence = float(np.clip(confidence - 0.01 * drought_ratio, 0.0, 1.0))
@@ -3139,6 +3194,7 @@ def _run_fold(
             side=side,
             edge=edge,
             uncertainty=uncertainty,
+            conviction=conviction,
             edge_floor=dynamic_edge_floor,
         ):
             skip_counts["risk_reject"] += 1
@@ -3246,7 +3302,14 @@ def _run_fold(
         )
         rr = float(rr_gross - execution_cost_r)
         execution_cost_total_r += float(execution_cost_r)
-        risk.record_trade(rr, int(timestamps[i]), edge=edge, uncertainty=uncertainty, conviction=conviction)
+        risk.record_trade(
+            rr,
+            int(timestamps[i]),
+            edge=edge,
+            uncertainty=uncertainty,
+            conviction=conviction,
+            size_mult=size,
+        )
         governor.record_trade(side=side, realized_r=rr, bar_idx=i)
         router.update_reliability(expert_name=expert_name, realized_r=rr, regime=regime)
         adaptive.update_after_trade(expert_name=expert_name, regime=regime, realized_r=rr, side=side)
@@ -3508,6 +3571,10 @@ def _run_fold(
         "opportunity_override_counterfactual": int(opportunity_override_counterfactual),
         "opportunity_override_bayes": int(opportunity_override_bayes),
         "opportunity_override_nonconformity": int(opportunity_override_nonconformity),
+        "participation_relaxed_bars": int(participation_relaxed_bars),
+        "participation_relax_rate": round(float(participation_relaxed_bars / max(decision_bars, 1)), 4),
+        "participation_avg_pressure": round(float(participation_pressure_sum / max(decision_bars, 1)), 4),
+        "participation_override_counterfactual": int(participation_override_counterfactual),
         "tp_mult_avg": round(float(np.mean(np.asarray(used_tp_mults, dtype=np.float64))) if used_tp_mults else float(cfg.tp_mult), 4),
         "tp_mult_min": round(float(np.min(np.asarray(used_tp_mults, dtype=np.float64))) if used_tp_mults else float(cfg.tp_mult), 4),
         "tp_mult_max": round(float(np.max(np.asarray(used_tp_mults, dtype=np.float64))) if used_tp_mults else float(cfg.tp_mult), 4),
@@ -3781,6 +3848,14 @@ def run_mythos_walk_forward(
     total_opportunity_override_nonconformity = int(
         sum(int(r.get("opportunity_override_nonconformity", 0)) for r in reports)
     )
+    total_participation_relaxed_bars = int(sum(int(r.get("participation_relaxed_bars", 0)) for r in reports))
+    total_participation_override_counterfactual = int(
+        sum(int(r.get("participation_override_counterfactual", 0)) for r in reports)
+    )
+    avg_participation_pressure = float(
+        sum(float(r.get("participation_avg_pressure", 0.0)) * int(r.get("decision_bars", 0)) for r in reports)
+        / max(total_decision_bars, 1)
+    )
     max_opportunity_drought_ratio = float(
         max([float(r.get("opportunity_max_drought_ratio", 0.0)) for r in reports], default=0.0)
     )
@@ -3981,6 +4056,10 @@ def run_mythos_walk_forward(
         "opportunity_override_counterfactual": total_opportunity_override_counterfactual,
         "opportunity_override_bayes": total_opportunity_override_bayes,
         "opportunity_override_nonconformity": total_opportunity_override_nonconformity,
+        "participation_relaxed_bars": total_participation_relaxed_bars,
+        "participation_relax_rate": round(float(total_participation_relaxed_bars / mode_denom), 4),
+        "participation_avg_pressure": round(avg_participation_pressure, 4),
+        "participation_override_counterfactual": total_participation_override_counterfactual,
         "robust_validation_enable": bool(getattr(cfg, "robust_validation_enable", True)),
         "robust_validation_ready": robust_ready,
         "robust_validation_paths": int(robust_validation.get("paths_evaluated", 0) or 0),

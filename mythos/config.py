@@ -151,6 +151,18 @@ class MythosConfig:
     opportunity_rescue_override_conviction: float = 0.70
     opportunity_rescue_override_edge_buffer: float = 0.002
     opportunity_rescue_override_conf_buffer: float = 0.02
+    participation_adapt_enable: bool = True
+    participation_target_trades_per_fold: int = 40
+    participation_relax_start_progress: float = 0.25
+    participation_conf_relax_max: float = 0.10
+    participation_edge_relax_max: float = 0.008
+    participation_conviction_relax_max: float = 0.08
+    participation_min_confidence: float = 0.44
+    participation_min_edge: float = 0.003
+    participation_min_conviction: float = 0.46
+    participation_override_conviction: float = 0.74
+    participation_override_edge_buffer: float = 0.0015
+    participation_override_conf_buffer: float = 0.01
     precision_min_confidence: float = 0.0
     precision_min_edge: float = 0.0
     precision_min_conviction: float = 0.52
@@ -213,6 +225,13 @@ class MythosConfig:
     drawdown_size_min_scale: float = 0.35
     disable_conviction_boost_drawdown_r: float = 6.0
     disable_leverage_drawdown_r: float = 6.0
+    risk_state_normalize_by_size: bool = True
+    risk_state_min_size_for_norm: float = 1.0
+    risk_state_max_size_for_norm: float = 250.0
+    risk_cap_override_enable: bool = True
+    risk_cap_override_conviction: float = 0.80
+    risk_cap_override_edge_buffer: float = 0.002
+    risk_cap_override_max_uncertainty: float = 0.70
     bayes_quality_enable: bool = True
     bayes_quality_warmup_trades: int = 20
     bayes_quality_decay: float = 0.995
@@ -369,6 +388,22 @@ class MythosConfig:
                 self.max_leverage,
             )
         )
+        # In high-leverage profiles, trade counts are naturally lower; relax
+        # warmup/sample gates so adaptive modules can still activate.
+        if self.min_size_mult >= 10.0:
+            self.intelligence_min_samples = int(min(max(getattr(self, "intelligence_min_samples", 24), 1), 12))
+            self.time_adaptive_warmup_trades = int(
+                min(max(getattr(self, "time_adaptive_warmup_trades", 36), 0), 12)
+            )
+            self.time_adaptive_min_bucket_trades = int(
+                min(max(getattr(self, "time_adaptive_min_bucket_trades", 8), 1), 4)
+            )
+            self.precision_selective_min_trades = int(
+                min(max(getattr(self, "precision_selective_min_trades", 48), 1), 18)
+            )
+            self.precision_selective_score_min_samples = int(
+                min(max(getattr(self, "precision_selective_score_min_samples", 128), 16), 64)
+            )
         self.adaptive_side_target_strength = float(
             np.clip(getattr(self, "adaptive_side_target_strength", 0.22), 0.0, 1.0)
         )
@@ -621,6 +656,38 @@ class MythosConfig:
         self.opportunity_rescue_override_conf_buffer = float(
             np.clip(getattr(self, "opportunity_rescue_override_conf_buffer", 0.02), 0.0, 1.0)
         )
+        self.participation_adapt_enable = bool(getattr(self, "participation_adapt_enable", True))
+        self.participation_target_trades_per_fold = int(
+            max(getattr(self, "participation_target_trades_per_fold", 40), 1)
+        )
+        self.participation_relax_start_progress = float(
+            np.clip(getattr(self, "participation_relax_start_progress", 0.25), 0.0, 1.0)
+        )
+        self.participation_conf_relax_max = float(
+            np.clip(getattr(self, "participation_conf_relax_max", 0.10), 0.0, 0.60)
+        )
+        self.participation_edge_relax_max = float(
+            np.clip(getattr(self, "participation_edge_relax_max", 0.008), 0.0, 0.20)
+        )
+        self.participation_conviction_relax_max = float(
+            np.clip(getattr(self, "participation_conviction_relax_max", 0.08), 0.0, 0.50)
+        )
+        self.participation_min_confidence = float(
+            np.clip(getattr(self, "participation_min_confidence", 0.44), 0.0, 1.0)
+        )
+        self.participation_min_edge = float(max(getattr(self, "participation_min_edge", 0.003), 0.0))
+        self.participation_min_conviction = float(
+            np.clip(getattr(self, "participation_min_conviction", 0.46), 0.0, 1.0)
+        )
+        self.participation_override_conviction = float(
+            np.clip(getattr(self, "participation_override_conviction", 0.74), 0.0, 1.0)
+        )
+        self.participation_override_edge_buffer = float(
+            max(getattr(self, "participation_override_edge_buffer", 0.0015), 0.0)
+        )
+        self.participation_override_conf_buffer = float(
+            np.clip(getattr(self, "participation_override_conf_buffer", 0.01), 0.0, 1.0)
+        )
         self.precision_min_confidence = float(
             np.clip(getattr(self, "precision_min_confidence", 0.0), 0.0, 1.0)
         )
@@ -758,6 +825,26 @@ class MythosConfig:
             max(getattr(self, "disable_conviction_boost_drawdown_r", self.dd_disable_leverage_r), 0.0)
         )
         self.disable_leverage_drawdown_r = float(self.dd_disable_leverage_r)
+        self.risk_state_normalize_by_size = bool(getattr(self, "risk_state_normalize_by_size", True))
+        self.risk_state_min_size_for_norm = float(
+            max(getattr(self, "risk_state_min_size_for_norm", 1.0), 1e-6)
+        )
+        self.risk_state_max_size_for_norm = float(
+            max(
+                getattr(self, "risk_state_max_size_for_norm", 250.0),
+                self.risk_state_min_size_for_norm,
+            )
+        )
+        self.risk_cap_override_enable = bool(getattr(self, "risk_cap_override_enable", True))
+        self.risk_cap_override_conviction = float(
+            np.clip(getattr(self, "risk_cap_override_conviction", 0.80), 0.0, 1.0)
+        )
+        self.risk_cap_override_edge_buffer = float(
+            max(getattr(self, "risk_cap_override_edge_buffer", 0.002), 0.0)
+        )
+        self.risk_cap_override_max_uncertainty = float(
+            np.clip(getattr(self, "risk_cap_override_max_uncertainty", 0.70), 0.01, 5.0)
+        )
         self.bayes_quality_enable = bool(getattr(self, "bayes_quality_enable", True))
         self.bayes_quality_warmup_trades = int(max(getattr(self, "bayes_quality_warmup_trades", 20), 1))
         self.bayes_quality_decay = float(

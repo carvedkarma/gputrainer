@@ -80,9 +80,9 @@ class RiskConstitution:
         side: int = 0,
         edge: float = 0.0,
         uncertainty: float = 1.0,
+        conviction: float | None = None,
         edge_floor: float | None = None,
     ) -> bool:
-        _ = uncertainty
         if int(side) == 0:
             return False
         # Signal-quality floors are already enforced in walkforward before risk checks.
@@ -92,17 +92,31 @@ class RiskConstitution:
             risk_edge_floor = float(max(min(risk_edge_floor, float(edge_floor)), 0.0))
         if float(edge) < risk_edge_floor:
             return False
+        conv = float(np.clip(conviction if conviction is not None else 0.0, 0.0, 1.0))
+        unc = float(max(uncertainty, 0.0))
+
+        def _allow_cap_override() -> bool:
+            if not bool(getattr(self.cfg, "risk_cap_override_enable", True)):
+                return False
+            conv_req = float(np.clip(getattr(self.cfg, "risk_cap_override_conviction", 0.80), 0.0, 1.0))
+            edge_req = float(risk_edge_floor + max(getattr(self.cfg, "risk_cap_override_edge_buffer", 0.002), 0.0))
+            unc_req = float(np.clip(getattr(self.cfg, "risk_cap_override_max_uncertainty", 0.70), 0.01, 5.0))
+            return bool(conv >= conv_req and float(edge) >= edge_req and unc <= unc_req)
+
         bar_index = self._to_bar_index(ts_ms=ts_ms, bar_index=bar_index)
         self._update_calendar(bar_index)
+        if self.should_stop_trading():
+            return False
         if self.state.day_trade_count >= int(self.cfg.max_trades_per_day):
             return False
         if (bar_index - self.state.last_trade_bar) < int(self.cfg.cooldown_bars):
             return False
-        if self.state.daily_r <= self.cfg.daily_loss_cap_r:
-            return False
-        if self.state.weekly_r <= self.cfg.weekly_loss_cap_r:
-            return False
-        if (self.state.equity_r - self.state.peak_equity_r) <= self.cfg.trailing_stop_r:
+        blocked_by_caps = bool(
+            self.state.daily_r <= self.cfg.daily_loss_cap_r
+            or self.state.weekly_r <= self.cfg.weekly_loss_cap_r
+            or (self.state.equity_r - self.state.peak_equity_r) <= self.cfg.trailing_stop_r
+        )
+        if blocked_by_caps and (not _allow_cap_override()):
             return False
         return True
 
@@ -195,21 +209,30 @@ class RiskConstitution:
         uncertainty: float | None = None,
         bar_index: int | None = None,
         conviction: float | None = None,
+        size_mult: float | None = None,
     ) -> None:
         _ = (edge, uncertainty)
         bar_index = self._to_bar_index(ts_ms=ts_ms, bar_index=bar_index)
         self._update_calendar(bar_index)
-        self.realized_r_history.append(float(realized_r))
+        rr = float(realized_r)
+        risk_rr = rr
+        if bool(getattr(self.cfg, "risk_state_normalize_by_size", True)):
+            size_floor = float(max(getattr(self.cfg, "risk_state_min_size_for_norm", 1.0), 1e-6))
+            size_cap = float(max(getattr(self.cfg, "risk_state_max_size_for_norm", 250.0), size_floor))
+            size = float(np.clip(abs(size_mult) if size_mult is not None else 1.0, size_floor, size_cap))
+            base_scale = float(max(getattr(self.cfg, "min_size_mult", 1.0), 1.0))
+            risk_rr = float(rr / max(size * base_scale, 1e-6))
+        self.realized_r_history.append(float(risk_rr))
         if conviction is not None:
             conv = float(np.clip(conviction, 0.0, 1.0))
             thr = float(np.clip(getattr(self.cfg, "precision_high_conviction", 0.72), 0.0, 1.0))
             if conv >= thr:
-                self._recent_high_conv_rr.append(float(realized_r))
+                self._recent_high_conv_rr.append(float(risk_rr))
                 if len(self._recent_high_conv_rr) > self._recent_high_conv_max:
                     del self._recent_high_conv_rr[0 : len(self._recent_high_conv_rr) - self._recent_high_conv_max]
-        self.state.daily_r += float(realized_r)
-        self.state.weekly_r += float(realized_r)
-        self.state.equity_r += float(realized_r)
+        self.state.daily_r += float(risk_rr)
+        self.state.weekly_r += float(risk_rr)
+        self.state.equity_r += float(risk_rr)
         self.state.peak_equity_r = max(self.state.peak_equity_r, self.state.equity_r)
         self.state.day_trade_count += 1
         self.state.last_trade_bar = int(bar_index)
