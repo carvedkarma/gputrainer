@@ -1437,6 +1437,101 @@ def _apply_time_adaptive_adjustment(
     }
 
 
+def _apply_micro_change_intelligence(
+    *,
+    side: int,
+    edge: float,
+    confidence: float,
+    uncertainty: float,
+    conviction: float,
+    bar_idx: int,
+    close: np.ndarray,
+    feat_row: pd.Series,
+    last_switch_bar: int,
+    cfg: MythosConfig,
+) -> Dict[str, float]:
+    s = int(side)
+    if not bool(getattr(cfg, "micro_change_enable", True)) or s not in (-1, 1) or int(bar_idx) < 4:
+        return {
+            "side": float(s),
+            "edge": float(max(edge, 0.0)),
+            "confidence": float(np.clip(confidence, 0.0, 1.0)),
+            "uncertainty": float(np.clip(uncertainty, 0.005, 2.0)),
+            "score": 0.0,
+            "alignment": 0.0,
+            "switched": 0.0,
+            "active": 0.0,
+        }
+    px_now = float(close[bar_idx])
+    px_1 = float(close[bar_idx - 1])
+    px_4 = float(close[bar_idx - 4])
+    ret1 = float((px_now / max(px_1, 1e-12)) - 1.0)
+    ret4 = float((px_now / max(px_4, 1e-12)) - 1.0)
+    vol16 = float(max(feat_row.get("vol_16", 0.0), 1e-6))
+    vol64 = float(max(feat_row.get("vol_64", vol16), 1e-6))
+    trend_accel = float(feat_row.get("trend_accel_4", 0.0))
+    trend_slope = float(feat_row.get("trend_slope_8", 0.0))
+    volume_z = float(feat_row.get("volume_z_64", 0.0))
+    adx = float(feat_row.get("adx_14", 0.0))
+    ret1_n = float(np.tanh(ret1 / vol16))
+    ret4_n = float(np.tanh(ret4 / vol64))
+    trend_n = float(np.tanh((0.65 * trend_accel + 0.35 * trend_slope) / max(0.02, 2.0 * vol64)))
+    volume_n = float(np.tanh(volume_z / 2.0))
+    adx_n = float(np.clip((adx - 0.2) / 0.8, -1.0, 1.0))
+    context_n = float(0.60 * volume_n + 0.40 * adx_n)
+    w1 = float(max(getattr(cfg, "micro_change_ret1_weight", 0.42), 0.0))
+    w4 = float(max(getattr(cfg, "micro_change_ret4_weight", 0.30), 0.0))
+    wt = float(max(getattr(cfg, "micro_change_trend_weight", 0.18), 0.0))
+    wc = float(max(getattr(cfg, "micro_change_volume_weight", 0.10), 0.0))
+    denom = float(max(w1 + w4 + wt + wc, 1e-6))
+    score = float(np.clip((w1 * ret1_n + w4 * ret4_n + wt * trend_n + wc * context_n) / denom, -1.0, 1.0))
+    threshold = float(np.clip(getattr(cfg, "micro_change_score_threshold", 0.08), 0.0, 1.0))
+    if float(abs(score)) < threshold:
+        return {
+            "side": float(s),
+            "edge": float(max(edge, 0.0)),
+            "confidence": float(np.clip(confidence, 0.0, 1.0)),
+            "uncertainty": float(np.clip(uncertainty, 0.005, 2.0)),
+            "score": score,
+            "alignment": float(s * score),
+            "switched": 0.0,
+            "active": 0.0,
+        }
+    micro_side = 1 if score > 0.0 else -1
+    switched = False
+    if bool(getattr(cfg, "micro_change_switch_enable", True)) and micro_side != s:
+        switch_thr = float(np.clip(getattr(cfg, "micro_change_switch_threshold", 0.22), 0.0, 1.0))
+        conv_guard = float(np.clip(getattr(cfg, "micro_change_switch_conviction_guard", 0.62), 0.0, 1.0))
+        switch_cd = int(max(getattr(cfg, "micro_change_switch_cooldown_bars", 8), 1))
+        if (
+            float(abs(score)) >= switch_thr
+            and float(conviction) < conv_guard
+            and int(bar_idx) - int(last_switch_bar) >= switch_cd
+        ):
+            s = micro_side
+            switched = True
+    alignment = float(np.clip(s * score, -1.0, 1.0))
+    edge_scale = float(np.clip(getattr(cfg, "micro_change_edge_scale", 0.004), 0.0, 0.10))
+    conf_scale = float(np.clip(getattr(cfg, "micro_change_conf_scale", 0.022), 0.0, 0.50))
+    unc_scale = float(np.clip(getattr(cfg, "micro_change_uncertainty_scale", 0.14), 0.0, 1.0))
+    edge_adj = float(np.clip(alignment * edge_scale, -2.0 * edge_scale, 2.0 * edge_scale))
+    conf_adj = float(alignment * conf_scale)
+    unc_mult = float(np.clip(1.0 - unc_scale * alignment, 0.50, 1.60))
+    edge2 = float(max(edge + edge_adj, 0.0))
+    conf2 = float(np.clip(confidence + conf_adj, 0.0, 1.0))
+    unc2 = float(np.clip(uncertainty * unc_mult, 0.005, 2.0))
+    return {
+        "side": float(s),
+        "edge": edge2,
+        "confidence": conf2,
+        "uncertainty": unc2,
+        "score": score,
+        "alignment": alignment,
+        "switched": float(1.0 if switched else 0.0),
+        "active": 1.0,
+    }
+
+
 def _update_time_adaptive_memory(
     *,
     day_idx: int,
@@ -2760,6 +2855,11 @@ def _run_fold(
     participation_relaxed_bars = 0
     participation_override_counterfactual = 0
     participation_pressure_sum = 0.0
+    micro_change_mode_bars = 0
+    micro_change_switches = 0
+    micro_change_score_sum = 0.0
+    micro_change_alignment_sum = 0.0
+    micro_change_last_switch_bar = -10_000_000
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
         x = X_te[i]
@@ -2957,6 +3057,38 @@ def _run_fold(
             time_adaptive_mode_bars += 1
         if float(time_adj.get("switched", 0.0)) > 0.5:
             time_adaptive_side_switches += 1
+        micro_adj = _apply_micro_change_intelligence(
+            side=side,
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            conviction=conviction,
+            bar_idx=i,
+            close=close,
+            feat_row=test_feat.iloc[i],
+            last_switch_bar=micro_change_last_switch_bar,
+            cfg=cfg,
+        )
+        side = int(round(float(micro_adj.get("side", side))))
+        edge = float(micro_adj.get("edge", edge))
+        confidence = float(np.clip(micro_adj.get("confidence", confidence), 0.0, 1.0))
+        uncertainty = float(np.clip(micro_adj.get("uncertainty", uncertainty), 0.005, 2.0))
+        conviction = _conviction_score(
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            meta_p=meta_p,
+            cfg=cfg,
+        )
+        micro_score = float(micro_adj.get("score", 0.0))
+        micro_alignment = float(micro_adj.get("alignment", 0.0))
+        if float(micro_adj.get("active", 0.0)) > 0.5:
+            micro_change_mode_bars += 1
+            micro_change_score_sum += micro_score
+            micro_change_alignment_sum += micro_alignment
+        if float(micro_adj.get("switched", 0.0)) > 0.5:
+            micro_change_switches += 1
+            micro_change_last_switch_bar = int(i)
         is_sure_signal = _is_sure_signal(
             side=side,
             edge=edge,
@@ -2978,6 +3110,10 @@ def _run_fold(
                 target_now = float(target_fold_trades * progress)
                 trade_gap = float(max(target_now - len(trades), 0.0))
                 participation_pressure = float(np.clip(trade_gap / max(float(target_fold_trades), 1.0), 0.0, 1.0))
+        if participation_pressure > 0.0:
+            align_floor = float(np.clip(getattr(cfg, "micro_change_participation_align_min", 0.35), 0.0, 1.0))
+            align_scale = float(np.clip(align_floor + (1.0 - align_floor) * max(micro_alignment, 0.0), align_floor, 1.0))
+            participation_pressure *= align_scale
         participation_pressure_sum += participation_pressure
         sure_recent_window = int(max(getattr(cfg, "sure_recent_window", 96), 8))
         min_conv = float(np.clip(getattr(cfg, "precision_min_conviction", 0.52), 0.0, 1.0))
@@ -3543,6 +3679,11 @@ def _run_fold(
         "time_adaptive_avg_conf_adjust": round(
             float(time_adaptive_conf_adjust_sum / max(time_adaptive_mode_bars, 1)), 6
         ),
+        "micro_change_mode_bars": int(micro_change_mode_bars),
+        "micro_change_mode_rate": round(float(micro_change_mode_bars / max(decision_bars, 1)), 4),
+        "micro_change_switches": int(micro_change_switches),
+        "micro_change_avg_score": round(float(micro_change_score_sum / max(micro_change_mode_bars, 1)), 6),
+        "micro_change_avg_alignment": round(float(micro_change_alignment_sum / max(micro_change_mode_bars, 1)), 6),
         "time_adaptive_enable": bool(getattr(cfg, "time_adaptive_enable", True)),
         "precision_selective_enable": bool(getattr(cfg, "precision_selective_enable", False)),
         "precision_selective_mode_bars": int(precision_selective_mode_bars),
@@ -3815,6 +3956,16 @@ def run_mythos_walk_forward(
     )
     aggregate_time_edge_adj = float(weighted_time_edge_adj / max(total_time_adaptive_mode_bars, 1))
     aggregate_time_conf_adj = float(weighted_time_conf_adj / max(total_time_adaptive_mode_bars, 1))
+    total_micro_change_mode_bars = int(sum(int(r.get("micro_change_mode_bars", 0)) for r in reports))
+    total_micro_change_switches = int(sum(int(r.get("micro_change_switches", 0)) for r in reports))
+    weighted_micro_score = float(
+        sum(float(r.get("micro_change_avg_score", 0.0)) * int(r.get("micro_change_mode_bars", 0)) for r in reports)
+    )
+    weighted_micro_alignment = float(
+        sum(float(r.get("micro_change_avg_alignment", 0.0)) * int(r.get("micro_change_mode_bars", 0)) for r in reports)
+    )
+    aggregate_micro_score = float(weighted_micro_score / max(total_micro_change_mode_bars, 1))
+    aggregate_micro_alignment = float(weighted_micro_alignment / max(total_micro_change_mode_bars, 1))
     total_precision_mode_bars = int(sum(int(r.get("precision_selective_mode_bars", 0)) for r in reports))
     total_precision_ready_bars = int(sum(int(r.get("precision_selective_ready_bars", 0)) for r in reports))
     total_precision_rejects = int(sum(int(r.get("precision_selective_rejects", 0)) for r in reports))
@@ -4029,6 +4180,11 @@ def run_mythos_walk_forward(
         "time_adaptive_side_switches": total_time_adaptive_side_switches,
         "time_adaptive_avg_edge_adjust": round(aggregate_time_edge_adj, 6),
         "time_adaptive_avg_conf_adjust": round(aggregate_time_conf_adj, 6),
+        "micro_change_mode_bars": total_micro_change_mode_bars,
+        "micro_change_mode_rate": round(float(total_micro_change_mode_bars / mode_denom), 4),
+        "micro_change_switches": total_micro_change_switches,
+        "micro_change_avg_score": round(aggregate_micro_score, 6),
+        "micro_change_avg_alignment": round(aggregate_micro_alignment, 6),
         "precision_selective_enable": bool(getattr(cfg, "precision_selective_enable", False)),
         "precision_selective_mode_bars": total_precision_mode_bars,
         "precision_selective_mode_rate": round(float(total_precision_mode_bars / mode_denom), 4),

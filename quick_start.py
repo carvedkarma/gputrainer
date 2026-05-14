@@ -6306,6 +6306,25 @@ Examples:
                         help="MYTHOS time intelligence: minimum per-side bucket samples required before side switching (default: 10)")
     parser.add_argument("--mythos-time-adaptive-report-top-n", type=int, default=6,
                         help="MYTHOS diagnostics: number of best/worst day/hour buckets to include in report (default: 6)")
+    parser.add_argument("--mythos-participation-target-trades-per-fold", type=int, default=40,
+                        help="MYTHOS participation controller: target trades per fold used for adaptive gate relaxation (default: 40)")
+    parser.add_argument("--mythos-micro-change-enable", dest="mythos_micro_change_enable", action="store_true",
+                        help="MYTHOS micro-change intelligence: enable short-horizon signal adjustment for slight market shifts (default: enabled)")
+    parser.add_argument("--mythos-no-micro-change-enable", dest="mythos_micro_change_enable", action="store_false",
+                        help="MYTHOS micro-change intelligence: disable short-horizon signal adjustment")
+    parser.set_defaults(mythos_micro_change_enable=True)
+    parser.add_argument("--mythos-micro-change-score-threshold", type=float, default=0.08,
+                        help="MYTHOS micro-change intelligence: minimum absolute micro score before adjustments activate (default: 0.08)")
+    parser.add_argument("--mythos-micro-change-edge-scale", type=float, default=0.004,
+                        help="MYTHOS micro-change intelligence: edge adjustment scale from micro alignment score (default: 0.004)")
+    parser.add_argument("--mythos-micro-change-conf-scale", type=float, default=0.022,
+                        help="MYTHOS micro-change intelligence: confidence adjustment scale from micro alignment score (default: 0.022)")
+    parser.add_argument("--mythos-micro-change-switch-threshold", type=float, default=0.22,
+                        help="MYTHOS micro-change intelligence: micro score threshold required to side-switch on slight regime flips (default: 0.22)")
+    parser.add_argument("--mythos-micro-change-switch-conviction-guard", type=float, default=0.62,
+                        help="MYTHOS micro-change intelligence: block micro side-switch when conviction exceeds this threshold (default: 0.62)")
+    parser.add_argument("--mythos-micro-change-participation-align-min", type=float, default=0.35,
+                        help="MYTHOS participation + micro fusion: minimum participation relax multiplier when micro alignment is weak (default: 0.35)")
     parser.add_argument("--mythos-precision-selective-enable", dest="mythos_precision_selective_enable", action="store_true",
                         help="MYTHOS precision mode: enable selective abstention gate to maximize decision precision (default: disabled)")
     parser.add_argument("--mythos-no-precision-selective-enable", dest="mythos_precision_selective_enable", action="store_false",
@@ -7547,6 +7566,14 @@ Examples:
                 time_adaptive_switch_conviction_guard=args.mythos_time_adaptive_switch_conviction_guard,
                 time_adaptive_switch_min_samples=args.mythos_time_adaptive_switch_min_samples,
                 time_adaptive_report_top_n=args.mythos_time_adaptive_report_top_n,
+                participation_target_trades_per_fold=args.mythos_participation_target_trades_per_fold,
+                micro_change_enable=args.mythos_micro_change_enable,
+                micro_change_score_threshold=args.mythos_micro_change_score_threshold,
+                micro_change_edge_scale=args.mythos_micro_change_edge_scale,
+                micro_change_conf_scale=args.mythos_micro_change_conf_scale,
+                micro_change_switch_threshold=args.mythos_micro_change_switch_threshold,
+                micro_change_switch_conviction_guard=args.mythos_micro_change_switch_conviction_guard,
+                micro_change_participation_align_min=args.mythos_micro_change_participation_align_min,
                 precision_selective_enable=args.mythos_precision_selective_enable,
                 precision_selective_min_trades=args.mythos_precision_selective_min_trades,
                 precision_selective_score_window=args.mythos_precision_selective_score_window,

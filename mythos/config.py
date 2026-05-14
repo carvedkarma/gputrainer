@@ -163,6 +163,20 @@ class MythosConfig:
     participation_override_conviction: float = 0.74
     participation_override_edge_buffer: float = 0.0015
     participation_override_conf_buffer: float = 0.01
+    micro_change_enable: bool = True
+    micro_change_score_threshold: float = 0.08
+    micro_change_ret1_weight: float = 0.42
+    micro_change_ret4_weight: float = 0.30
+    micro_change_trend_weight: float = 0.18
+    micro_change_volume_weight: float = 0.10
+    micro_change_edge_scale: float = 0.004
+    micro_change_conf_scale: float = 0.022
+    micro_change_uncertainty_scale: float = 0.14
+    micro_change_switch_enable: bool = True
+    micro_change_switch_threshold: float = 0.22
+    micro_change_switch_conviction_guard: float = 0.62
+    micro_change_switch_cooldown_bars: int = 8
+    micro_change_participation_align_min: float = 0.35
     precision_min_confidence: float = 0.0
     precision_min_edge: float = 0.0
     precision_min_conviction: float = 0.52
@@ -687,6 +701,36 @@ class MythosConfig:
         )
         self.participation_override_conf_buffer = float(
             np.clip(getattr(self, "participation_override_conf_buffer", 0.01), 0.0, 1.0)
+        )
+        self.micro_change_enable = bool(getattr(self, "micro_change_enable", True))
+        self.micro_change_score_threshold = float(
+            np.clip(getattr(self, "micro_change_score_threshold", 0.08), 0.0, 1.0)
+        )
+        self.micro_change_ret1_weight = float(max(getattr(self, "micro_change_ret1_weight", 0.42), 0.0))
+        self.micro_change_ret4_weight = float(max(getattr(self, "micro_change_ret4_weight", 0.30), 0.0))
+        self.micro_change_trend_weight = float(max(getattr(self, "micro_change_trend_weight", 0.18), 0.0))
+        self.micro_change_volume_weight = float(max(getattr(self, "micro_change_volume_weight", 0.10), 0.0))
+        self.micro_change_edge_scale = float(
+            np.clip(getattr(self, "micro_change_edge_scale", 0.004), 0.0, 0.10)
+        )
+        self.micro_change_conf_scale = float(
+            np.clip(getattr(self, "micro_change_conf_scale", 0.022), 0.0, 0.50)
+        )
+        self.micro_change_uncertainty_scale = float(
+            np.clip(getattr(self, "micro_change_uncertainty_scale", 0.14), 0.0, 1.0)
+        )
+        self.micro_change_switch_enable = bool(getattr(self, "micro_change_switch_enable", True))
+        self.micro_change_switch_threshold = float(
+            np.clip(getattr(self, "micro_change_switch_threshold", 0.22), 0.0, 1.0)
+        )
+        self.micro_change_switch_conviction_guard = float(
+            np.clip(getattr(self, "micro_change_switch_conviction_guard", 0.62), 0.0, 1.0)
+        )
+        self.micro_change_switch_cooldown_bars = int(
+            max(getattr(self, "micro_change_switch_cooldown_bars", 8), 1)
+        )
+        self.micro_change_participation_align_min = float(
+            np.clip(getattr(self, "micro_change_participation_align_min", 0.35), 0.0, 1.0)
         )
         self.precision_min_confidence = float(
             np.clip(getattr(self, "precision_min_confidence", 0.0), 0.0, 1.0)
