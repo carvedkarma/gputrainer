@@ -260,6 +260,68 @@
       color: #a6bbda;
       line-height: 1.3;
     }
+    .market-tape {
+      margin-top: 8px;
+      display: grid;
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      gap: 7px;
+    }
+    .tape-cell {
+      border: 1px solid rgba(120, 168, 248, .2);
+      border-radius: 9px;
+      background: linear-gradient(180deg, rgba(9, 21, 40, .88), rgba(6, 15, 30, .76));
+      padding: 6px 8px;
+      min-height: 52px;
+      position: relative;
+      overflow: hidden;
+    }
+    .tape-cell::after {
+      content: "";
+      position: absolute;
+      inset: auto -20% -65% -20%;
+      height: 42px;
+      background: radial-gradient(circle at 50% 0, rgba(96, 148, 243, .22), transparent 70%);
+      pointer-events: none;
+    }
+    .tape-cell .k {
+      font-size: .62rem;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: #91a8c8;
+    }
+    .tape-cell .v {
+      margin-top: 4px;
+      font-size: .86rem;
+      font-weight: 700;
+    }
+    .market-open-pnl {
+      margin-top: 8px;
+      font-size: .76rem;
+      color: #c3d7f4;
+      line-height: 1.35;
+    }
+    .market-open-pnl .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(122, 168, 245, .35);
+      background: rgba(9, 22, 44, .72);
+      padding: 3px 8px;
+      margin-right: 7px;
+      margin-bottom: 5px;
+      font-size: .7rem;
+    }
+    .blink-up { animation: blinkUp .7s ease; }
+    .blink-down { animation: blinkDown .7s ease; }
+    @keyframes blinkUp {
+      from { box-shadow: inset 0 0 0 999px rgba(42, 226, 173, .22); }
+      to { box-shadow: inset 0 0 0 0 rgba(42, 226, 173, 0); }
+    }
+    @keyframes blinkDown {
+      from { box-shadow: inset 0 0 0 999px rgba(255, 111, 141, .2); }
+      to { box-shadow: inset 0 0 0 0 rgba(255, 111, 141, 0); }
+    }
     .chart-wrap.market { height: 330px; }
     .open-visual-grid {
       margin-top: 9px;
@@ -353,6 +415,7 @@
       .grid-2 { grid-template-columns: 1fr; }
       .settings-grid { grid-template-columns: 1fr; }
       .toolbar { justify-content: flex-start; }
+      .market-tape { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
     }
   </style>
 </head>
@@ -398,17 +461,35 @@
 
     <section class="grid-main">
       <article class="card glass">
-        <h3>Live Market View (TradingView-style with Trade Markers)</h3>
+        <h3>Institutional Market Terminal (Candles + Trade Risk Lanes)</h3>
         <div class="market-toolbar">
           <label class="small" for="marketSymbolSelect">Symbol</label>
           <select id="marketSymbolSelect"></select>
-          <span class="small">Entries/Exits and open SL/TP overlays are drawn on chart.</span>
+          <label class="small" for="marketTfSelect">TF</label>
+          <select id="marketTfSelect">
+            <option value="1m">1m</option>
+            <option value="3m">3m</option>
+            <option value="5m">5m</option>
+            <option value="15m">15m</option>
+            <option value="30m">30m</option>
+            <option value="1h">1h</option>
+          </select>
+          <label class="small" for="marketDepthSelect">Candles</label>
+          <select id="marketDepthSelect">
+            <option value="120">120</option>
+            <option value="240" selected>240</option>
+            <option value="360">360</option>
+            <option value="480">480</option>
+          </select>
+          <span class="small">Live candlesticks with entry/exit markers and open-trade TP/SL overlays.</span>
         </div>
         <div class="chart-wrap market">
           <canvas id="marketCanvas"></canvas>
           <div id="marketEmpty" class="empty" hidden>No live market series yet.</div>
         </div>
         <div id="marketMeta" class="market-meta">Waiting for BTC/ETH cycle prices...</div>
+        <div id="marketTape" class="market-tape"></div>
+        <div id="marketOpenPnl" class="market-open-pnl"></div>
       </article>
       <article class="card glass">
         <h3>Paper Engine Account + Leverage Controls</h3>
@@ -530,6 +611,12 @@
       livePrices: {},
       livePriceTs: 0,
       liveTimer: null,
+      marketInterval: "1m",
+      marketDepth: 240,
+      marketCandlesByKey: {},
+      marketCandleFetchTs: {},
+      marketCandleSourceByKey: {},
+      marketPrevCloseBySymbol: {},
     };
     const $ = (id) => document.getElementById(id);
     const fmt = {
@@ -720,6 +807,134 @@
 
     function clamp(v, lo, hi) {
       return Math.max(lo, Math.min(hi, v));
+    }
+
+    function intervalToMs(interval) {
+      const map = {
+        "1m": 60 * 1000,
+        "3m": 3 * 60 * 1000,
+        "5m": 5 * 60 * 1000,
+        "15m": 15 * 60 * 1000,
+        "30m": 30 * 60 * 1000,
+        "1h": 60 * 60 * 1000,
+      };
+      return map[String(interval || "1m").toLowerCase()] || 60 * 1000;
+    }
+
+    function bucketStart(ts, bucketMs) {
+      const t = Number(ts || 0);
+      if (!Number.isFinite(t) || t <= 0) return 0;
+      return Math.floor(t / bucketMs) * bucketMs;
+    }
+
+    function normalizeCandles(rows) {
+      return (rows || []).map((r) => ({
+        ts: tsMs(r.ts || r.open_time || r.openTime || r.timestamp || 0),
+        open: Number(r.open || 0),
+        high: Number(r.high || 0),
+        low: Number(r.low || 0),
+        close: Number(r.close || 0),
+        volume: Number(r.volume || 0),
+      })).filter((r) => (
+        r.ts > 0
+        && Number.isFinite(r.open) && r.open > 0
+        && Number.isFinite(r.high) && r.high > 0
+        && Number.isFinite(r.low) && r.low > 0
+        && Number.isFinite(r.close) && r.close > 0
+      )).sort((a, b) => a.ts - b.ts);
+    }
+
+    function buildSyntheticCandlesFromPoints(points, bucketMs) {
+      const map = new Map();
+      for (const p of (points || [])) {
+        const ts = tsMs(p.ts || 0);
+        const px = Number(p.price || 0);
+        if (!ts || !Number.isFinite(px) || px <= 0) continue;
+        const b = bucketStart(ts, bucketMs);
+        const row = map.get(b);
+        if (!row) {
+          map.set(b, { ts: b, open: px, high: px, low: px, close: px, volume: 0 });
+        } else {
+          row.high = Math.max(row.high, px);
+          row.low = Math.min(row.low, px);
+          row.close = px;
+          row.volume += 0;
+        }
+      }
+      return Array.from(map.values()).sort((a, b) => a.ts - b.ts);
+    }
+
+    function buildSymbolTickPoints(symbol, cycles) {
+      const sym = String(symbol || "").toUpperCase();
+      const rows = (cycles || [])
+        .filter((c) => String(c.symbol || "").toUpperCase() === sym)
+        .map((c) => ({
+          ts: tsMs(c.server_ts || c.ts || c.timestamp || c.time || 0),
+          price: Number(c.price || 0),
+        }))
+        .filter((r) => r.ts > 0 && Number.isFinite(r.price) && r.price > 0)
+        .sort((a, b) => a.ts - b.ts);
+      const out = [];
+      let lastTs = 0;
+      for (const row of rows) {
+        if (row.ts === lastTs) continue;
+        out.push(row);
+        lastTs = row.ts;
+      }
+      const livePx = Number(state.livePrices?.[sym]);
+      if (Number.isFinite(livePx) && livePx > 0) {
+        out.push({ ts: Number(state.livePriceTs || Date.now()), price: livePx });
+      }
+      return out.slice(-2500);
+    }
+
+    function trackedMarketSymbols(summary, cycles, trades) {
+      const set = new Set();
+      (summary?.symbols || []).forEach((s) => {
+        const sym = String(s || "").toUpperCase();
+        if (sym) set.add(sym);
+      });
+      (cycles || []).forEach((c) => {
+        const sym = String(c.symbol || "").toUpperCase();
+        if (sym) set.add(sym);
+      });
+      (trades || []).forEach((t) => {
+        const sym = String(t.symbol || "").toUpperCase();
+        if (sym) set.add(sym);
+      });
+      if (!set.size) {
+        set.add("BTCUSDT");
+        set.add("ETHUSDT");
+      }
+      return Array.from(set).slice(0, 20);
+    }
+
+    async function refreshMarketCandles(summary, cycles, trades) {
+      const symbols = trackedMarketSymbols(summary, cycles, trades);
+      if (!symbols.length) return;
+      if (!symbols.includes(state.marketSymbol)) {
+        state.marketSymbol = symbols.includes("BTCUSDT") ? "BTCUSDT" : symbols[0];
+      }
+      const tf = String(state.marketInterval || "1m");
+      const depth = Number(state.marketDepth || 240);
+      const key = `${state.marketSymbol}|${tf}|${depth}`;
+      const now = Date.now();
+      const minGapMs = 1200;
+      if ((now - Number(state.marketCandleFetchTs[key] || 0)) < minGapMs) {
+        return;
+      }
+      state.marketCandleFetchTs[key] = now;
+      try {
+        const url = `/api/market/candles?symbol=${encodeURIComponent(state.marketSymbol)}&interval=${encodeURIComponent(tf)}&limit=${encodeURIComponent(depth)}`;
+        const payload = await fetchJson(url);
+        const candles = normalizeCandles(payload?.candles || []);
+        if (candles.length) {
+          state.marketCandlesByKey[key] = candles;
+          state.marketCandleSourceByKey[key] = String(payload?.source || "unknown");
+        }
+      } catch (_) {
+        // fallback handled in drawMarketChart using synthetic candles
+      }
     }
 
     function buildCyclePriceSeries(cycles) {
@@ -1364,17 +1579,7 @@
     }
 
     function drawMarketChart(cycles, trades, summary) {
-      const allSymbols = new Set();
-      (summary.symbols || []).forEach((s) => allSymbols.add(String(s).toUpperCase()));
-      (cycles || []).forEach((c) => {
-        const sym = String(c.symbol || "").toUpperCase();
-        if (sym) allSymbols.add(sym);
-      });
-      (trades || []).forEach((t) => {
-        const sym = String(t.symbol || "").toUpperCase();
-        if (sym) allSymbols.add(sym);
-      });
-      const symList = Array.from(allSymbols).sort();
+      const symList = trackedMarketSymbols(summary, cycles, trades).sort();
       const sel = $("marketSymbolSelect");
       if (!symList.includes(state.marketSymbol)) {
         state.marketSymbol = symList.includes("BTCUSDT") ? "BTCUSDT" : (symList[0] || "BTCUSDT");
@@ -1385,27 +1590,30 @@
       sel.value = state.marketSymbol;
 
       const symbol = state.marketSymbol;
-      const rows = (cycles || [])
-        .filter((c) => String(c.symbol || "").toUpperCase() === symbol)
-        .map((c) => ({
-          ts: tsMs(c.server_ts || c.ts || c.timestamp || c.time || 0),
-          price: Number(c.price || 0),
-        }))
-        .filter((r) => r.ts > 0 && Number.isFinite(r.price) && r.price > 0)
-        .sort((a, b) => a.ts - b.ts);
-      const uniq = [];
-      const seenTs = new Set();
-      for (const r of rows) {
-        if (seenTs.has(r.ts)) continue;
-        seenTs.add(r.ts);
-        uniq.push(r);
-      }
-      const points = uniq.slice(-1400);
+      const tf = String(state.marketInterval || "1m");
+      const depth = Number(state.marketDepth || 240);
+      const intervalMs = intervalToMs(tf);
+      const key = `${symbol}|${tf}|${depth}`;
+      const cachedCandles = normalizeCandles(state.marketCandlesByKey?.[key] || []);
+      const fallbackPoints = buildSymbolTickPoints(symbol, cycles);
+      const fallbackCandles = buildSyntheticCandlesFromPoints(fallbackPoints, intervalMs);
+      const candlesBase = (cachedCandles.length ? cachedCandles : fallbackCandles).slice(-depth);
+      const candles = candlesBase.map((c) => ({ ...c }));
       const livePx = Number(state.livePrices?.[symbol]);
+      const liveTs = Number(state.livePriceTs || Date.now());
       if (Number.isFinite(livePx) && livePx > 0) {
-        const liveTs = Number(state.livePriceTs || Date.now());
-        if (!points.length || Math.abs((points[points.length - 1]?.price || 0) - livePx) > 1e-9) {
-          points.push({ ts: liveTs, price: livePx });
+        const b = bucketStart(liveTs, intervalMs);
+        if (!candles.length) {
+          candles.push({ ts: b, open: livePx, high: livePx, low: livePx, close: livePx, volume: 0 });
+        } else {
+          const last = candles[candles.length - 1];
+          if (Math.abs((last.ts || 0) - b) <= 1e-6) {
+            last.high = Math.max(last.high, livePx);
+            last.low = Math.min(last.low, livePx);
+            last.close = livePx;
+          } else if (b > (last.ts || 0)) {
+            candles.push({ ts: b, open: last.close, high: livePx, low: livePx, close: livePx, volume: 0 });
+          }
         }
       }
 
@@ -1421,58 +1629,123 @@
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
 
-      if (points.length < 2) {
+      if (candles.length < 2) {
         empty.hidden = false;
-        $("marketMeta").textContent = `No market series yet for ${symbol}.`;
+        $("marketMeta").textContent = `No candle series yet for ${symbol}.`;
+        $("marketTape").innerHTML = "";
+        $("marketOpenPnl").innerHTML = "";
         return;
       }
       empty.hidden = true;
 
-      const pad = 30;
-      const prices = points.map((r) => r.price);
-      const minP = Math.min(...prices);
-      const maxP = Math.max(...prices);
-      const span = Math.max(maxP - minP, Math.abs(maxP) * 0.001, 1e-9);
+      const padL = 14;
+      const padR = 76;
+      const padT = 16;
+      const padB = 24;
+      const volH = Math.min(70, Math.max(42, h * 0.18));
+      const chartH = Math.max(90, h - padT - padB - volH);
+      const chartW = Math.max(120, w - padL - padR);
+      const minPriceRaw = Math.min(...candles.map((c) => c.low));
+      const maxPriceRaw = Math.max(...candles.map((c) => c.high));
+      const openForSym = (trades || []).filter((t) => String(t.status || "").toLowerCase() === "open" && String(t.symbol || "").toUpperCase() === symbol);
+      const allForSym = (trades || []).filter((t) => String(t.symbol || "").toUpperCase() === symbol);
+      const guidePrices = [];
+      openForSym.forEach((tr) => {
+        guidePrices.push(Number(tr.entry_price || tr.entryPrice || 0));
+        guidePrices.push(Number(tr.stop_loss || tr.stopLoss || tr.initial_sl || 0));
+        guidePrices.push(Number(tr.take_profit || tr.tp2 || tr.take_profit_price || 0));
+      });
+      if (Number.isFinite(livePx) && livePx > 0) guidePrices.push(livePx);
+      const guideMin = guidePrices.filter((x) => Number.isFinite(x) && x > 0);
+      const minP = guideMin.length ? Math.min(minPriceRaw, ...guideMin) : minPriceRaw;
+      const maxP = guideMin.length ? Math.max(maxPriceRaw, ...guideMin) : maxPriceRaw;
+      const span = Math.max(maxP - minP, Math.abs(maxP) * 0.002, 1e-9);
       const lo = minP - span * 0.08;
       const hi = maxP + span * 0.08;
-      const xSpan = Math.max(points.length - 1, 1);
-      const xAt = (i) => pad + (i / xSpan) * (w - pad * 2);
-      const yAt = (p) => pad + ((hi - p) / Math.max(hi - lo, 1e-9)) * (h - pad * 2);
+      const yAt = (p) => padT + ((hi - p) / Math.max(hi - lo, 1e-9)) * chartH;
+      const xStep = chartW / Math.max(candles.length, 1);
+      const bodyW = clamp(xStep * 0.64, 2.5, 16);
+      const xAt = (i) => padL + (i + 0.5) * xStep;
+      const volumes = candles.map((c) => Number(c.volume || 0));
+      const maxVol = Math.max(1e-9, ...volumes);
 
       ctx.strokeStyle = "rgba(122, 167, 238, .14)";
       ctx.lineWidth = 1;
       for (let i = 0; i <= 4; i++) {
-        const y = pad + (i / 4) * (h - pad * 2);
+        const y = padT + (i / 4) * chartH;
         ctx.beginPath();
-        ctx.moveTo(pad, y);
-        ctx.lineTo(w - pad, y);
+        ctx.moveTo(padL, y);
+        ctx.lineTo(padL + chartW, y);
         ctx.stroke();
+        const level = hi - (i / 4) * (hi - lo);
+        ctx.fillStyle = "rgba(184, 211, 245, .7)";
+        ctx.font = "11px Inter, system-ui, sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText(fmt.n(level, level > 1000 ? 2 : 4), padL + chartW + 6, y + 4);
       }
 
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "rgba(98, 229, 255, .96)";
-      ctx.beginPath();
-      points.forEach((r, i) => {
+      for (let i = 0; i < candles.length; i++) {
+        const c = candles[i];
         const x = xAt(i);
-        const y = yAt(r.price);
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      });
-      ctx.stroke();
+        const up = c.close >= c.open;
+        const color = up ? "rgba(42,226,173,.95)" : "rgba(255,111,141,.95)";
+        const wickColor = up ? "rgba(95, 238, 194, .95)" : "rgba(255, 137, 161, .95)";
+        const yO = yAt(c.open);
+        const yC = yAt(c.close);
+        const yH = yAt(c.high);
+        const yL = yAt(c.low);
+        ctx.strokeStyle = wickColor;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(x, yH);
+        ctx.lineTo(x, yL);
+        ctx.stroke();
+        const top = Math.min(yO, yC);
+        const bh = Math.max(Math.abs(yC - yO), 1.5);
+        ctx.fillStyle = color;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.fillRect(x - bodyW / 2, top, bodyW, bh);
+      }
 
-      const latest = points[points.length - 1];
-      const openForSym = (trades || []).filter((t) => String(t.status || "").toLowerCase() === "open" && String(t.symbol || "").toUpperCase() === symbol);
-      const allForSym = (trades || []).filter((t) => String(t.symbol || "").toUpperCase() === symbol);
+      const volTop = padT + chartH + 6;
+      for (let i = 0; i < candles.length; i++) {
+        const c = candles[i];
+        const x = xAt(i);
+        const up = c.close >= c.open;
+        const vh = (Number(c.volume || 0) / maxVol) * (volH - 14);
+        ctx.fillStyle = up ? "rgba(42,226,173,.28)" : "rgba(255,111,141,.24)";
+        ctx.fillRect(x - bodyW / 2, volTop + (volH - 10 - vh), bodyW, vh);
+      }
 
+      const latest = candles[candles.length - 1];
+      const prev = candles[candles.length - 2] || latest;
+      const delta = latest.close - prev.close;
+      const deltaPct = prev.close > 0 ? (delta / prev.close) * 100.0 : 0.0;
+      const blinkClass = delta >= 0 ? "blink-up" : "blink-down";
+      canvas.classList.remove("blink-up", "blink-down");
+      canvas.classList.add(blinkClass);
+      setTimeout(() => canvas.classList.remove("blink-up", "blink-down"), 320);
+
+      const allRowsByTs = candles.map((c, i) => ({ ts: c.ts, idx: i }));
       for (const tr of openForSym) {
         const entry = Number(tr.entry_price || tr.entryPrice || 0);
         const sl = Number(tr.stop_loss || tr.stopLoss || tr.initial_sl || 0);
         const tp = Number(tr.take_profit || tr.tp2 || tr.take_profit_price || 0);
         const entryTs = tsMs(tr.entry_time || tr.entryTs || tr.entry_ts || 0);
-        const i0 = nearestIndexByTs(points, entryTs);
+        const i0 = nearestIndexByTs(allRowsByTs, entryTs);
         const x0 = xAt(i0);
-        const xr = w - pad;
+        const xr = padL + chartW;
         const side = String(tr.side || "LONG").toUpperCase();
-        const color = side === "LONG" ? "rgba(42,226,173,.75)" : "rgba(255,111,141,.75)";
+        const riskFill = side === "LONG" ? "rgba(42,226,173,.07)" : "rgba(255,111,141,.07)";
+        const color = side === "LONG" ? "rgba(42,226,173,.9)" : "rgba(255,111,141,.9)";
+
+        if (Number.isFinite(sl) && sl > 0 && Number.isFinite(tp) && tp > 0) {
+          const yTop = Math.min(yAt(tp), yAt(sl));
+          const yBot = Math.max(yAt(tp), yAt(sl));
+          ctx.fillStyle = riskFill;
+          ctx.fillRect(x0, yTop, Math.max(xr - x0, 1), Math.max(yBot - yTop, 1));
+        }
 
         ctx.strokeStyle = color;
         ctx.lineWidth = 1.5;
@@ -1521,27 +1794,69 @@
       for (const tr of allForSym) {
         const entry = Number(tr.entry_price || tr.entryPrice || 0);
         const entryTs = tsMs(tr.entry_time || tr.entryTs || tr.entry_ts || 0);
-        const i0 = nearestIndexByTs(points, entryTs);
+        const i0 = nearestIndexByTs(allRowsByTs, entryTs);
         drawMarker(xAt(i0), yAt(entry), tr.side, true);
         if (String(tr.status || "").toLowerCase() === "closed") {
           const ex = Number(tr.exit_price || 0);
           const exTs = tsMs(tr.exit_time || tr.exitTs || 0);
-          const i1 = nearestIndexByTs(points, exTs);
+          const i1 = nearestIndexByTs(allRowsByTs, exTs);
           drawMarker(xAt(i1), yAt(ex || entry), tr.side, false);
         }
       }
 
-      const nowY = yAt(latest.price);
+      const nowY = yAt(latest.close);
       ctx.strokeStyle = "rgba(190, 219, 255, .45)";
       ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
       ctx.beginPath();
-      ctx.moveTo(pad, nowY);
-      ctx.lineTo(w - pad, nowY);
+      ctx.moveTo(padL, nowY);
+      ctx.lineTo(padL + chartW, nowY);
       ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(17, 33, 63, .95)";
+      ctx.strokeStyle = "rgba(165, 200, 255, .55)";
+      ctx.lineWidth = 1;
+      const tagW = 64;
+      const tagH = 18;
+      ctx.beginPath();
+      ctx.rect(padL + chartW + 6, nowY - tagH / 2, tagW, tagH);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "rgba(225, 240, 255, .96)";
+      ctx.font = "11px Inter, system-ui, sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText(fmt.n(latest.close, latest.close > 1000 ? 2 : 4), padL + chartW + 10, nowY + 4);
+
+      const openUsd = openForSym.reduce((acc, tr) => {
+        const riskUsd = Number(tr.risk_usd_used || 0);
+        if (!Number.isFinite(riskUsd) || riskUsd <= 0) return acc;
+        const rr = rrAtPrice(tr, latest.close);
+        return acc + rr * riskUsd;
+      }, 0);
+      const openR = openForSym.reduce((acc, tr) => acc + rrAtPrice(tr, latest.close), 0);
 
       const openN = openForSym.length;
       const closedN = allForSym.filter((t) => String(t.status || "").toLowerCase() === "closed").length;
-      $("marketMeta").innerHTML = `${symbol} • last <b>${fmt.n(latest.price, 3)}</b> • range <b>${fmt.n(minP, 2)} - ${fmt.n(maxP, 2)}</b> • open positions <b>${openN}</b> • closed trades <b>${closedN}</b> • points <b>${points.length}</b>`;
+      const source = state.marketCandleSourceByKey?.[key] || "synthetic";
+      $("marketMeta").innerHTML = `${symbol} • TF <b>${tf}</b> • last <b>${fmt.n(latest.close, 3)}</b> • O <b>${fmt.n(latest.open, 3)}</b> H <b>${fmt.n(latest.high, 3)}</b> L <b>${fmt.n(latest.low, 3)}</b> C <b>${fmt.n(latest.close, 3)}</b> • open positions <b>${openN}</b> • closed trades <b>${closedN}</b> • source <b>${source}</b>`;
+      $("marketTape").innerHTML = `
+        <div class="tape-cell"><div class="k">Last Price</div><div class="v ${klass(delta)}">${fmt.n(latest.close, 3)}</div></div>
+        <div class="tape-cell"><div class="k">Change</div><div class="v ${klass(delta)}">${fmt.n(delta, 3)} (${fmt.n(deltaPct, 2)}%)</div></div>
+        <div class="tape-cell"><div class="k">Session Range</div><div class="v">${fmt.n(minP, 2)} - ${fmt.n(maxP, 2)}</div></div>
+        <div class="tape-cell"><div class="k">Candle Body</div><div class="v">${fmt.n(Math.abs(latest.close - latest.open), 4)}</div></div>
+        <div class="tape-cell"><div class="k">Open Trade PnL</div><div class="v ${klass(openUsd)}">${fmt.usd(openUsd)} / ${fmt.r(openR, 3)}</div></div>
+        <div class="tape-cell"><div class="k">Market Depth</div><div class="v">${candles.length} candles</div></div>
+      `;
+      const openPills = openForSym.slice(0, 8).map((tr) => {
+        const rr = rrAtPrice(tr, latest.close);
+        const riskUsd = Number(tr.risk_usd_used || 0);
+        const usd = Number.isFinite(riskUsd) && riskUsd > 0 ? rr * riskUsd : 0;
+        const side = String(tr.side || "LONG").toUpperCase();
+        return `<span class="pill">#${tr.id ?? "-"} ${side} <b class="${klass(usd)}">${fmt.r(rr, 2)} • ${fmt.usd(usd)}</b></span>`;
+      });
+      $("marketOpenPnl").innerHTML = openPills.length
+        ? `Open-trade live marks: ${openPills.join("")}`
+        : "Open-trade live marks: no active position on this symbol.";
     }
 
     function renderOpenExposure(openTrades, cycles) {
@@ -1810,6 +2125,7 @@
         const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
         const trades = Array.isArray(payload.trades) ? payload.trades : [];
         await refreshLiveTicks(summary, cycles, trades);
+        await refreshMarketCandles(summary, cycles, trades);
         applyState();
         setStatus(true);
       } catch (err) {
@@ -1825,6 +2141,7 @@
       const trades = Array.isArray(payload.trades) ? payload.trades : [];
       const assets = Array.isArray(payload.assets) ? payload.assets : [];
       await refreshLiveTicks(summary, cycles, trades);
+      await refreshMarketCandles(summary, cycles, trades);
       const liveSummary = summaryWithLiveMarkToMarket(summary, trades, cycles);
       renderMetrics(liveSummary);
       renderInsights(liveSummary, trades, cycles, assets);
@@ -1873,7 +2190,31 @@
       const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
       const trades = Array.isArray(payload.trades) ? payload.trades : [];
       const summary = payload.summary || {};
-      drawMarketChart(cycles, trades, summary);
+      refreshMarketCandles(summary, cycles, trades).finally(() => {
+        drawMarketChart(cycles, trades, summary);
+      });
+    });
+    $("marketTfSelect").addEventListener("change", (e) => {
+      state.marketInterval = String(e.target.value || "1m");
+      if (!state.data) return;
+      const payload = state.data || {};
+      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+      const trades = Array.isArray(payload.trades) ? payload.trades : [];
+      const summary = payload.summary || {};
+      refreshMarketCandles(summary, cycles, trades).finally(() => {
+        drawMarketChart(cycles, trades, summary);
+      });
+    });
+    $("marketDepthSelect").addEventListener("change", (e) => {
+      state.marketDepth = Number(e.target.value || 240);
+      if (!state.data) return;
+      const payload = state.data || {};
+      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+      const trades = Array.isArray(payload.trades) ? payload.trades : [];
+      const summary = payload.summary || {};
+      refreshMarketCandles(summary, cycles, trades).finally(() => {
+        drawMarketChart(cycles, trades, summary);
+      });
     });
     $("openBody").addEventListener("click", async (e) => {
       const btn = e.target.closest("[data-close-id]");
@@ -1900,6 +2241,8 @@
       renderOpenTrades(trades, cycles);
     });
 
+    $("marketTfSelect").value = state.marketInterval;
+    $("marketDepthSelect").value = String(state.marketDepth);
     setupRouteUI();
     tick();
     schedule();

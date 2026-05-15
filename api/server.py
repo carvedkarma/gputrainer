@@ -5097,6 +5097,8 @@ def _latest_price_by_symbol(state: _DashboardSessionState) -> Dict[str, float]:
 
 _MARKET_PRICE_CACHE: Dict[str, Dict[str, Any]] = {}
 _MARKET_PRICE_TTL_S = 0.9
+_MARKET_CANDLE_CACHE: Dict[str, Dict[str, Any]] = {}
+_MARKET_CANDLE_TTL_S = 3.0
 _PAPER_MAX_LEVERAGE = 250.0
 _COINBASE_PRODUCT_MAP: Dict[str, str] = {
     "BTCUSDT": "BTC-USD",
@@ -5106,6 +5108,14 @@ _COINBASE_PRODUCT_MAP: Dict[str, str] = {
     "ADAUSDT": "ADA-USD",
     "XRPUSDT": "XRP-USD",
     "DOGEUSDT": "DOGE-USD",
+}
+_ALLOWED_CANDLE_INTERVALS: Dict[str, int] = {
+    "1m": 60_000,
+    "3m": 180_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+    "1h": 3_600_000,
 }
 
 
@@ -5171,6 +5181,62 @@ async def _fetch_coinbase_price(symbol: str) -> Optional[float]:
     except Exception:
         return None
     return None
+
+
+def _normalize_candle_interval(raw: Optional[str]) -> str:
+    text = str(raw or "1m").strip().lower()
+    return text if text in _ALLOWED_CANDLE_INTERVALS else "1m"
+
+
+def _normalize_candle_limit(raw: Any, default: int = 240) -> int:
+    try:
+        val = int(raw)
+    except Exception:
+        val = int(default)
+    return int(max(30, min(1000, val)))
+
+
+async def _fetch_binance_candles(symbol: str, interval: str, limit: int) -> List[Dict[str, Any]]:
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": str(symbol).upper(), "interval": interval, "limit": int(limit)}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, params=params)
+            if resp.status_code != 200:
+                return []
+            payload = resp.json()
+    except Exception:
+        return []
+    if not isinstance(payload, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for row in payload:
+        if not isinstance(row, list) or len(row) < 6:
+            continue
+        try:
+            ts = int(row[0])
+            o = float(row[1])
+            h = float(row[2])
+            l = float(row[3])
+            c = float(row[4])
+            v = float(row[5])
+            if not all(np.isfinite(x) for x in (o, h, l, c, v)):
+                continue
+            if o <= 0.0 or h <= 0.0 or l <= 0.0 or c <= 0.0:
+                continue
+            out.append(
+                {
+                    "ts": ts,
+                    "open": round(o, 8),
+                    "high": round(h, 8),
+                    "low": round(l, 8),
+                    "close": round(c, 8),
+                    "volume": round(max(v, 0.0), 8),
+                }
+            )
+        except Exception:
+            continue
+    return out
 
 
 async def _resolve_market_prices(symbols: List[str], force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
@@ -5876,6 +5942,49 @@ async def market_ticks(
         "sources": sources,
         "server_ts": latest_ts,
     }
+
+
+@app.get("/api/market/candles")
+async def market_candles(
+    symbol: str = Query(default="BTCUSDT"),
+    interval: str = Query(default="1m"),
+    limit: int = Query(default=240, ge=30, le=1000),
+    force_refresh: bool = Query(default=False),
+):
+    syms = _parse_symbol_list(symbol)
+    sym = syms[0] if syms else "BTCUSDT"
+    iv = _normalize_candle_interval(interval)
+    lim = _normalize_candle_limit(limit, default=240)
+    cache_key = f"{sym}|{iv}|{lim}"
+    now_ms = int(time.time() * 1000)
+    ttl_ms = int(_MARKET_CANDLE_TTL_S * 1000)
+
+    cached = _MARKET_CANDLE_CACHE.get(cache_key)
+    if cached and not force_refresh and (now_ms - int(cached.get("server_ts", 0))) <= ttl_ms:
+        return {
+            "symbol": sym,
+            "interval": iv,
+            "candles": list(cached.get("candles") or []),
+            "source": str(cached.get("source") or "cache"),
+            "server_ts": int(cached.get("server_ts") or now_ms),
+        }
+
+    candles = await _fetch_binance_candles(sym, iv, lim)
+    source = "binance" if candles else "unavailable"
+    if not candles and cached:
+        candles = list(cached.get("candles") or [])
+        source = "cache"
+
+    payload = {
+        "symbol": sym,
+        "interval": iv,
+        "candles": candles[-lim:] if candles else [],
+        "source": source,
+        "server_ts": now_ms,
+    }
+    if payload["candles"]:
+        _MARKET_CANDLE_CACHE[cache_key] = payload
+    return payload
 
 
 @app.get("/api/dashboard/sessions")
