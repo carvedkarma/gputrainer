@@ -2098,6 +2098,22 @@ class LiveRunner:
         edge_floor = float(getattr(model, "live_edge_threshold", 0.0))
         conf_floor = float(getattr(model, "live_min_confidence", 0.0))
         htf_score = 0
+        cfg_obj = getattr(model, "cfg", None)
+        min_expected_r = float(max(getattr(cfg_obj, "min_expected_r", 0.01), 1e-6))
+        min_lev = float(max(getattr(cfg_obj, "min_size_mult", 1.0), 1.0))
+        cfg_max_lev = float(
+            max(
+                getattr(cfg_obj, "max_size_mult", min_lev),
+                getattr(cfg_obj, "max_leverage", min_lev),
+                min_lev,
+            )
+        )
+        max_lev = float(np.clip(cfg_max_lev, min_lev, 250.0))
+        edge_n = float(np.clip(max(edge, 0.0) / max(2.5 * min_expected_r, 1e-6), 0.0, 1.0))
+        conf_n = float(np.clip(confidence, 0.0, 1.0))
+        unc_n = float(np.clip(1.0 / (1.0 + max(uncertainty, 0.0)), 0.0, 1.0))
+        size_quality = float(np.clip(0.45 * conf_n + 0.35 * edge_n + 0.20 * unc_n, 0.0, 1.0))
+        lane_size_mult = float(min_lev + (max_lev - min_lev) * size_quality)
 
         mythos_info = {
             "lane": "MYTHOS",
@@ -2114,7 +2130,8 @@ class LiveRunner:
             "awareness_profile": aware.get("profile"),
             "awareness_expectancy_r": round(float(aware.get("expectancy_r", 0.0)), 4),
             "awareness_n": int(aware.get("n", 0)),
-            "lane_size_mult": 1.0,
+            "lane_size_mult": round(lane_size_mult, 4),
+            "mythos_size_quality": round(size_quality, 4),
             "lane_horizon": 24,
         }
 

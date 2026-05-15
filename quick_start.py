@@ -98,6 +98,7 @@ def _apply_mythos_profile_overrides(args) -> list:
         "mythos_time_adaptive_enable": False,
         "mythos_time_adaptive_switch_enable": False,
         "mythos_precision_selective_enable": False,
+        "mythos_calibration_intelligence_enable": False,
         "mythos_counterfactual_target_reject_rate": 0.95,
         "mythos_counterfactual_reject_tolerance": 0.30,
         "mythos_counterfactual_adaptive_relax": 0.85,
@@ -6325,6 +6326,39 @@ Examples:
                         help="MYTHOS micro-change intelligence: block micro side-switch when conviction exceeds this threshold (default: 0.62)")
     parser.add_argument("--mythos-micro-change-participation-align-min", type=float, default=0.35,
                         help="MYTHOS participation + micro fusion: minimum participation relax multiplier when micro alignment is weak (default: 0.35)")
+    parser.add_argument("--mythos-calibration-intelligence-enable", dest="mythos_calibration_intelligence_enable", action="store_true",
+                        help="MYTHOS calibration intelligence: enable online confidence calibration guard that adapts confidence/uncertainty from recent reliability (default: enabled)")
+    parser.add_argument("--mythos-no-calibration-intelligence-enable", dest="mythos_calibration_intelligence_enable", action="store_false",
+                        help="MYTHOS calibration intelligence: disable online reliability calibration guard")
+    parser.set_defaults(mythos_calibration_intelligence_enable=True)
+    parser.add_argument("--mythos-calibration-window", type=int, default=120,
+                        help="MYTHOS calibration intelligence: rolling window of recent executed trades used for online calibration diagnostics (default: 120)")
+    parser.add_argument("--mythos-calibration-min-samples", type=int, default=28,
+                        help="MYTHOS calibration intelligence: minimum trades required before calibration guard can activate (default: 28)")
+    parser.add_argument("--mythos-calibration-target-abs-error", type=float, default=0.16,
+                        help="MYTHOS calibration intelligence: target mean absolute confidence error; higher recent error triggers protective hardening (default: 0.16)")
+    parser.add_argument("--mythos-calibration-target-brier", type=float, default=0.22,
+                        help="MYTHOS calibration intelligence: target Brier score used to detect overconfidence drift (default: 0.22)")
+    parser.add_argument("--mythos-calibration-conf-scale", type=float, default=0.028,
+                        help="MYTHOS calibration intelligence: confidence adjustment scale from calibration stress/quality score (default: 0.028)")
+    parser.add_argument("--mythos-calibration-edge-scale", type=float, default=0.004,
+                        help="MYTHOS calibration intelligence: edge adjustment scale from calibration stress/quality score (default: 0.004)")
+    parser.add_argument("--mythos-calibration-uncertainty-scale", type=float, default=0.35,
+                        help="MYTHOS calibration intelligence: uncertainty scaling gain from calibration stress/quality score (default: 0.35)")
+    parser.add_argument("--mythos-calibration-max-conf-adjust", type=float, default=0.08,
+                        help="MYTHOS calibration intelligence: max absolute confidence adjustment per decision (default: 0.08)")
+    parser.add_argument("--mythos-calibration-max-edge-adjust", type=float, default=0.012,
+                        help="MYTHOS calibration intelligence: max absolute edge adjustment per decision (default: 0.012)")
+    parser.add_argument("--mythos-calibration-max-uncertainty-mult", type=float, default=1.60,
+                        help="MYTHOS calibration intelligence: cap on uncertainty multiplier in protective mode (default: 1.60)")
+    parser.add_argument("--mythos-calibration-underconfidence-margin", type=float, default=0.04,
+                        help="MYTHOS calibration intelligence: minimum underconfidence gap required before opportunistic calibration boost (default: 0.04)")
+    parser.add_argument("--mythos-calibration-min-hit-for-boost", type=float, default=0.53,
+                        help="MYTHOS calibration intelligence: minimum recent hit rate required before opportunistic calibration boost (default: 0.53)")
+    parser.add_argument("--mythos-calibration-min-expectancy-for-boost", type=float, default=0.02,
+                        help="MYTHOS calibration intelligence: minimum recent expectancy required before opportunistic calibration boost (default: 0.02)")
+    parser.add_argument("--mythos-calibration-participation-min-scale", type=float, default=0.30,
+                        help="MYTHOS participation+calibration fusion: minimum participation relax multiplier when calibration quality is weak (default: 0.30)")
     parser.add_argument("--mythos-precision-selective-enable", dest="mythos_precision_selective_enable", action="store_true",
                         help="MYTHOS precision mode: enable selective abstention gate to maximize decision precision (default: disabled)")
     parser.add_argument("--mythos-no-precision-selective-enable", dest="mythos_precision_selective_enable", action="store_false",
@@ -7574,6 +7608,21 @@ Examples:
                 micro_change_switch_threshold=args.mythos_micro_change_switch_threshold,
                 micro_change_switch_conviction_guard=args.mythos_micro_change_switch_conviction_guard,
                 micro_change_participation_align_min=args.mythos_micro_change_participation_align_min,
+                calibration_intelligence_enable=args.mythos_calibration_intelligence_enable,
+                calibration_window=args.mythos_calibration_window,
+                calibration_min_samples=args.mythos_calibration_min_samples,
+                calibration_target_abs_error=args.mythos_calibration_target_abs_error,
+                calibration_target_brier=args.mythos_calibration_target_brier,
+                calibration_conf_scale=args.mythos_calibration_conf_scale,
+                calibration_edge_scale=args.mythos_calibration_edge_scale,
+                calibration_uncertainty_scale=args.mythos_calibration_uncertainty_scale,
+                calibration_max_conf_adjust=args.mythos_calibration_max_conf_adjust,
+                calibration_max_edge_adjust=args.mythos_calibration_max_edge_adjust,
+                calibration_max_uncertainty_mult=args.mythos_calibration_max_uncertainty_mult,
+                calibration_underconfidence_margin=args.mythos_calibration_underconfidence_margin,
+                calibration_min_hit_for_boost=args.mythos_calibration_min_hit_for_boost,
+                calibration_min_expectancy_for_boost=args.mythos_calibration_min_expectancy_for_boost,
+                calibration_participation_min_scale=args.mythos_calibration_participation_min_scale,
                 precision_selective_enable=args.mythos_precision_selective_enable,
                 precision_selective_min_trades=args.mythos_precision_selective_min_trades,
                 precision_selective_score_window=args.mythos_precision_selective_score_window,

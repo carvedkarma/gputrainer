@@ -5042,7 +5042,7 @@ class _DashboardSessionState:
     account_equity_usd: float = 10000.0
     risk_per_trade_pct: float = 1.0
     base_leverage: float = 1.0
-    max_leverage: float = 3.0
+    max_leverage: float = 200.0
     auto_leverage: bool = True
 
 
@@ -5097,6 +5097,7 @@ def _latest_price_by_symbol(state: _DashboardSessionState) -> Dict[str, float]:
 
 _MARKET_PRICE_CACHE: Dict[str, Dict[str, Any]] = {}
 _MARKET_PRICE_TTL_S = 0.9
+_PAPER_MAX_LEVERAGE = 250.0
 _COINBASE_PRODUCT_MAP: Dict[str, str] = {
     "BTCUSDT": "BTC-USD",
     "ETHUSDT": "ETH-USD",
@@ -5250,12 +5251,21 @@ def _resolve_trade_risk_and_leverage(state: _DashboardSessionState, trade: Dict[
         trade.get("risk_pct_used", trade.get("risk_pct")),
         fallback=state.risk_per_trade_pct,
     )
-    base_lev = _clip(_safe_float(state.base_leverage, 1.0), 1.0, 50.0)
-    max_lev = _clip(_safe_float(state.max_leverage, 3.0), base_lev, 50.0)
+    base_lev = _clip(_safe_float(state.base_leverage, 1.0), 1.0, _PAPER_MAX_LEVERAGE)
+    max_lev = _clip(_safe_float(state.max_leverage, 200.0), base_lev, _PAPER_MAX_LEVERAGE)
 
     explicit_lev = trade.get("leverage")
+    if explicit_lev is None:
+        for key in ("size_mult", "lane_size_mult", "position_leverage", "model_leverage"):
+            if trade.get(key) is not None:
+                explicit_lev = trade.get(key)
+                break
     if explicit_lev is not None:
-        leverage = _clip(_safe_float(explicit_lev, base_lev), 1.0, max_lev)
+        hinted_lev = _clip(_safe_float(explicit_lev, base_lev), 1.0, _PAPER_MAX_LEVERAGE)
+        if hinted_lev > max_lev:
+            max_lev = hinted_lev
+            state.max_leverage = max(float(state.max_leverage), float(hinted_lev))
+        leverage = _clip(hinted_lev, 1.0, max_lev)
     else:
         confidence = _clip(_safe_float(trade.get("p_enter", trade.get("confidence")), 0.0), 0.0, 1.0)
         edge = abs(_safe_float(trade.get("edge", trade.get("expected_return")), 0.0))
@@ -5790,9 +5800,17 @@ async def update_paper_settings(payload: Dict[str, Any], session_id: Optional[st
     if "risk_per_trade_pct" in payload:
         state.risk_per_trade_pct = _normalize_risk_pct(payload.get("risk_per_trade_pct"), fallback=state.risk_per_trade_pct)
     if "base_leverage" in payload:
-        state.base_leverage = _clip(_safe_float(payload.get("base_leverage"), state.base_leverage), 1.0, 50.0)
+        state.base_leverage = _clip(
+            _safe_float(payload.get("base_leverage"), state.base_leverage),
+            1.0,
+            _PAPER_MAX_LEVERAGE,
+        )
     if "max_leverage" in payload:
-        state.max_leverage = _clip(_safe_float(payload.get("max_leverage"), state.max_leverage), state.base_leverage, 50.0)
+        state.max_leverage = _clip(
+            _safe_float(payload.get("max_leverage"), state.max_leverage),
+            state.base_leverage,
+            _PAPER_MAX_LEVERAGE,
+        )
     if "auto_leverage" in payload:
         state.auto_leverage = _safe_bool(payload.get("auto_leverage"), state.auto_leverage)
 

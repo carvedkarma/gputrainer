@@ -423,11 +423,11 @@
           </div>
           <div class="setting-item">
             <label for="baseLevInput">Base Leverage</label>
-            <input id="baseLevInput" type="number" min="1" max="50" step="0.1" value="1.0" />
+            <input id="baseLevInput" type="number" min="1" max="250" step="0.1" value="1.0" />
           </div>
           <div class="setting-item">
             <label for="maxLevInput">Max Leverage</label>
-            <input id="maxLevInput" type="number" min="1" max="50" step="0.1" value="3.0" />
+            <input id="maxLevInput" type="number" min="1" max="250" step="0.1" value="200.0" />
           </div>
           <div class="setting-item" style="grid-column: 1 / -1;">
             <div class="switch-row">
@@ -472,7 +472,7 @@
         <div id="openExposureMeta" class="small" style="margin-bottom:8px">Open exposure graph booting...</div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Session</th><th>Symbol</th><th>Side</th><th>Entry</th><th>SL</th><th>TP</th><th>Live R</th><th>Lev</th><th>Action</th></tr></thead>
+            <thead><tr><th>ID</th><th>Session</th><th>Symbol</th><th>Side</th><th>Entry</th><th>SL</th><th>TP</th><th>Live R</th><th>Live USD</th><th>Lev</th><th>Risk USD</th><th>Action</th></tr></thead>
             <tbody id="openBody"></tbody>
           </table>
         </div>
@@ -591,7 +591,7 @@
             account_equity_usd: 10000,
             risk_per_trade_pct: 1.0,
             base_leverage: 1.0,
-            max_leverage: 3.0,
+            max_leverage: 200.0,
             auto_leverage: true,
           },
         },
@@ -773,6 +773,9 @@
       const toPct = (r) => clamp(((r - lo) / Math.max(hi - lo, 1e-9)) * 100, 0, 100);
       const nowMs = Date.now();
       const ageMins = entryTs > 0 ? Math.max(0, (nowMs - entryTs) / 60000) : 0;
+      const leverage = Number(trade.leverage || trade.lane_size_mult || 1);
+      const riskUsd = Number(trade.risk_usd_used || 0);
+      const liveUsd = Number.isFinite(riskUsd) && riskUsd > 0 ? liveR * riskUsd : 0;
       return {
         symbol,
         side,
@@ -787,6 +790,9 @@
         tpPct: toPct(tpR),
         livePct: toPct(liveR),
         ageMins,
+        leverage,
+        riskUsd,
+        liveUsd,
       };
     }
 
@@ -941,6 +947,45 @@
         if (Number.isFinite(v) && v > 0) map.set(String(sym).toUpperCase(), v);
       }
       return map;
+    }
+
+    function summaryWithLiveMarkToMarket(summary, trades, cycles) {
+      const s = { ...(summary || {}) };
+      const rows = Array.isArray(trades) ? trades : [];
+      const latest = priceMapWithLive(cycles);
+      const openTrades = rows.filter((t) => String(t.status || "").toLowerCase() === "open");
+      const closedTrades = rows.filter((t) => String(t.status || "").toLowerCase() === "closed");
+      let unrealR = 0;
+      let unrealUsd = 0;
+      const leverageValues = [];
+      for (const tr of closedTrades) {
+        const lev = Number(tr.leverage || 0);
+        if (Number.isFinite(lev) && lev > 0) leverageValues.push(lev);
+      }
+      for (const tr of openTrades) {
+        const sym = String(tr.symbol || "").toUpperCase();
+        const px = Number(latest.get(sym));
+        if (!Number.isFinite(px) || px <= 0) continue;
+        const rr = rrAtPrice(tr, px);
+        unrealR += rr;
+        const riskUsd = Number(tr.risk_usd_used || 0);
+        if (Number.isFinite(riskUsd) && riskUsd > 0) {
+          unrealUsd += rr * riskUsd;
+        }
+        const lev = Number(tr.leverage || 0);
+        if (Number.isFinite(lev) && lev > 0) leverageValues.push(lev);
+      }
+      const paperEq = Number(s.paper_equity_usd || 0);
+      const realizedUsd = Number(s.realized_net_usd || 0);
+      s.unrealized_r = Number(unrealR.toFixed(6));
+      s.unrealized_usd = Number(unrealUsd.toFixed(2));
+      s.equity_live_usd = Number((paperEq + realizedUsd + unrealUsd).toFixed(2));
+      if (leverageValues.length) {
+        const avgLev = leverageValues.reduce((a, b) => a + b, 0) / leverageValues.length;
+        s.avg_leverage = Number(avgLev.toFixed(4));
+        s.max_leverage_used = Number(Math.max(...leverageValues).toFixed(4));
+      }
+      return s;
     }
 
     function mergeDashboardPayloads(payloads) {
@@ -1270,7 +1315,7 @@
       setInputValueIfIdle("equityInput", Number(st.account_equity_usd ?? s.paper_equity_usd ?? 10000).toFixed(2));
       setInputValueIfIdle("riskPctInput", Number(st.risk_per_trade_pct ?? 1.0).toFixed(2));
       setInputValueIfIdle("baseLevInput", Number(st.base_leverage ?? 1.0).toFixed(2));
-      setInputValueIfIdle("maxLevInput", Number(st.max_leverage ?? 3.0).toFixed(2));
+      setInputValueIfIdle("maxLevInput", Number(st.max_leverage ?? 200.0).toFixed(2));
       setInputValueIfIdle("autoLevInput", !!st.auto_leverage);
       $("paperStatus").textContent = isAll
         ? "Select a specific session to edit equity/risk/leverage."
@@ -1286,7 +1331,7 @@
         account_equity_usd: Number($("equityInput").value || 0),
         risk_per_trade_pct: Number($("riskPctInput").value || 1),
         base_leverage: Number($("baseLevInput").value || 1),
-        max_leverage: Number($("maxLevInput").value || 3),
+        max_leverage: Number($("maxLevInput").value || 200),
         auto_leverage: !!$("autoLevInput").checked,
         revalue_open_positions: true,
       };
@@ -1574,7 +1619,8 @@
             <div class="trade-visual-stats">
               <div class="trade-visual-stat"><div class="k">Live R</div><div class="v ${liveCls}">${fmt.n(tr.liveR, 3)}</div></div>
               <div class="trade-visual-stat"><div class="k">Price</div><div class="v">${fmt.n(tr.latestPx, 3)}</div></div>
-              <div class="trade-visual-stat"><div class="k">Entry</div><div class="v">${fmt.n(tr.entry, 3)}</div></div>
+              <div class="trade-visual-stat"><div class="k">Lev</div><div class="v">x${fmt.n(tr.leverage || 1, 2)}</div></div>
+              <div class="trade-visual-stat"><div class="k">Live USD</div><div class="v ${liveCls}">${fmt.usd(tr.liveUsd || 0)}</div></div>
             </div>
             <div class="risk-rail">
               <div class="risk-label" style="left:${tr.slPct}%">SL</div>
@@ -1610,6 +1656,8 @@
         const side = String(t.side || "LONG").toUpperCase();
         const sid = String(t.session_id || state.sessionId || "-");
         const lev = Number(t.leverage || 1);
+        const riskUsd = Number(t.risk_usd_used || 0);
+        const liveUsd = Number.isFinite(riskUsd) && riskUsd > 0 ? rr * riskUsd : 0;
         return `
           <tr>
             <td>${t.id ?? "-"}</td>
@@ -1620,10 +1668,12 @@
             <td>${fmt.n(sl, 2)}</td>
             <td>${fmt.n(t.take_profit || t.tp2 || t.take_profit_price || 0, 2)}</td>
             <td class="${klass(rr)}">${fmt.n(rr, 3)}</td>
+            <td class="${klass(liveUsd)}">${fmt.usd(liveUsd)}</td>
             <td>x${fmt.n(lev, 2)}</td>
+            <td>${fmt.usd(riskUsd)}</td>
             <td><button class="btn mono" data-close-id="${t.id}" data-close-session="${sid}">Manual Close</button></td>
           </tr>`;
-      }).join("") : `<tr><td colspan="10" class="small">No open positions.</td></tr>`;
+      }).join("") : `<tr><td colspan="12" class="small">No open positions.</td></tr>`;
       renderOpenExposure(open, cycles);
       renderOpenVisuals(open, latest, cycleSeriesMap);
     }
@@ -1711,13 +1761,14 @@
       const trades = Array.isArray(payload.trades) ? payload.trades : [];
       const models = Array.isArray(payload.models) ? payload.models : (summary.models || []);
       const assets = Array.isArray(payload.assets) ? payload.assets : [];
+      const liveSummary = summaryWithLiveMarkToMarket(summary, trades, cycles);
 
-      renderMetrics(summary);
-      renderInsights(summary, trades, cycles, assets);
-      renderPaperControls(summary);
+      renderMetrics(liveSummary);
+      renderInsights(liveSummary, trades, cycles, assets);
+      renderPaperControls(liveSummary);
       renderModels(models);
       renderAssets(assets);
-      drawMarketChart(cycles, trades, summary);
+      drawMarketChart(cycles, trades, liveSummary);
       renderOpenTrades(trades, cycles);
       renderSignals(preds);
       renderTrades(trades);
@@ -1725,10 +1776,10 @@
       renderCharts(payload);
 
       const stamp = new Date().toLocaleTimeString();
-      const sessTxt = summary.session_id === "__all__"
-        ? `All sessions (${summary.session_count || state.sessions.length || 0})`
-        : `Session ${summary.session_id || state.sessionId}`;
-      $("runMeta").textContent = `${sessTxt} • Engine ${String(summary.engine || ENGINE_FILTER).toUpperCase()} • Assets ${summary.asset_count || assets.length || 0} • Open ${summary.open_positions || 0} • Equity ${fmt.usd(summary.equity_live_usd || summary.paper_equity_usd || 0)} • Updated ${stamp}`;
+      const sessTxt = liveSummary.session_id === "__all__"
+        ? `All sessions (${liveSummary.session_count || state.sessions.length || 0})`
+        : `Session ${liveSummary.session_id || state.sessionId}`;
+      $("runMeta").textContent = `${sessTxt} • Engine ${String(liveSummary.engine || ENGINE_FILTER).toUpperCase()} • Assets ${liveSummary.asset_count || assets.length || 0} • Open ${liveSummary.open_positions || 0} • Equity ${fmt.usd(liveSummary.equity_live_usd || liveSummary.paper_equity_usd || 0)} • Updated ${stamp}`;
     }
 
     function setStatus(ok, msg = "") {
@@ -1774,9 +1825,18 @@
       const trades = Array.isArray(payload.trades) ? payload.trades : [];
       const assets = Array.isArray(payload.assets) ? payload.assets : [];
       await refreshLiveTicks(summary, cycles, trades);
+      const liveSummary = summaryWithLiveMarkToMarket(summary, trades, cycles);
+      renderMetrics(liveSummary);
+      renderInsights(liveSummary, trades, cycles, assets);
+      renderPaperControls(liveSummary);
       renderAssets(assets);
-      drawMarketChart(cycles, trades, summary);
+      drawMarketChart(cycles, trades, liveSummary);
       renderOpenTrades(trades, cycles);
+      const stamp = new Date().toLocaleTimeString();
+      const sessTxt = liveSummary.session_id === "__all__"
+        ? `All sessions (${liveSummary.session_count || state.sessions.length || 0})`
+        : `Session ${liveSummary.session_id || state.sessionId}`;
+      $("runMeta").textContent = `${sessTxt} • Engine ${String(liveSummary.engine || ENGINE_FILTER).toUpperCase()} • Assets ${liveSummary.asset_count || assets.length || 0} • Open ${liveSummary.open_positions || 0} • Equity ${fmt.usd(liveSummary.equity_live_usd || liveSummary.paper_equity_usd || 0)} • Updated ${stamp}`;
     }
 
     function schedule() {

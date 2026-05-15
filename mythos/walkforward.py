@@ -717,6 +717,52 @@ def _recent_quality_stats(
     return {"ready": ready, "n": float(n), "hit_rate": hit_rate, "expectancy": expectancy}
 
 
+def _recent_calibration_stats(
+    confidence_hist: List[float],
+    outcome_hist: List[float],
+    rr_hist: List[float],
+    *,
+    window: int,
+    min_samples: int,
+) -> Dict[str, float]:
+    w = int(max(window, 1))
+    m = int(max(min_samples, 1))
+    n = int(min(len(confidence_hist), len(outcome_hist), len(rr_hist)))
+    if n <= 0:
+        return {
+            "ready": 0.0,
+            "n": 0.0,
+            "abs_error": 0.0,
+            "brier": 0.0,
+            "hit_rate": 0.0,
+            "expectancy": 0.0,
+            "avg_confidence": 0.0,
+            "confidence_gap": 0.0,
+        }
+    k = int(min(w, n))
+    conf = np.asarray(confidence_hist[-k:], dtype=np.float64)
+    out = np.asarray(outcome_hist[-k:], dtype=np.float64)
+    rr = np.asarray(rr_hist[-k:], dtype=np.float64)
+    conf = np.clip(conf, 0.0, 1.0)
+    out = np.clip(out, 0.0, 1.0)
+    err = conf - out
+    abs_error = float(np.mean(np.abs(err))) if err.size else 0.0
+    brier = float(np.mean(err ** 2)) if err.size else 0.0
+    hit_rate = float(np.mean(out > 0.5)) if out.size else 0.0
+    expectancy = float(np.mean(rr)) if rr.size else 0.0
+    avg_conf = float(np.mean(conf)) if conf.size else 0.0
+    return {
+        "ready": float(k >= m),
+        "n": float(k),
+        "abs_error": abs_error,
+        "brier": brier,
+        "hit_rate": hit_rate,
+        "expectancy": expectancy,
+        "avg_confidence": avg_conf,
+        "confidence_gap": float(avg_conf - hit_rate),
+    }
+
+
 def _bayes_bucket(prior_alpha: float, prior_beta: float) -> Dict[str, float]:
     return {
         "alpha": float(max(prior_alpha, 1e-6)),
@@ -1529,6 +1575,127 @@ def _apply_micro_change_intelligence(
         "alignment": alignment,
         "switched": float(1.0 if switched else 0.0),
         "active": 1.0,
+    }
+
+
+def _apply_calibration_intelligence(
+    *,
+    side: int,
+    edge: float,
+    confidence: float,
+    uncertainty: float,
+    conviction: float,
+    confidence_hist: List[float],
+    outcome_hist: List[float],
+    rr_hist: List[float],
+    cfg: MythosConfig,
+) -> Dict[str, float]:
+    s = int(side)
+    base = {
+        "edge": float(max(edge, 0.0)),
+        "confidence": float(np.clip(confidence, 0.0, 1.0)),
+        "uncertainty": float(np.clip(uncertainty, 0.005, 2.0)),
+        "ready": 0.0,
+        "active": 0.0,
+        "mode_score": 0.0,
+        "mode_protective": 0.0,
+        "mode_opportunistic": 0.0,
+        "abs_error": 0.0,
+        "brier": 0.0,
+        "hit_rate": 0.0,
+        "expectancy": 0.0,
+        "confidence_gap": 0.0,
+        "participation_scale": 1.0,
+    }
+    if s not in (-1, 1) or not bool(getattr(cfg, "calibration_intelligence_enable", True)):
+        return base
+
+    stats = _recent_calibration_stats(
+        confidence_hist,
+        outcome_hist,
+        rr_hist,
+        window=int(max(getattr(cfg, "calibration_window", 120), 8)),
+        min_samples=int(max(getattr(cfg, "calibration_min_samples", 28), 4)),
+    )
+    base.update(
+        {
+            "abs_error": float(stats.get("abs_error", 0.0)),
+            "brier": float(stats.get("brier", 0.0)),
+            "hit_rate": float(stats.get("hit_rate", 0.0)),
+            "expectancy": float(stats.get("expectancy", 0.0)),
+            "confidence_gap": float(stats.get("confidence_gap", 0.0)),
+        }
+    )
+    if float(stats.get("ready", 0.0)) < 0.5:
+        return base
+
+    abs_err = float(stats.get("abs_error", 0.0))
+    brier = float(stats.get("brier", 0.0))
+    hit_rate = float(stats.get("hit_rate", 0.0))
+    expectancy = float(stats.get("expectancy", 0.0))
+    conf_gap = float(stats.get("confidence_gap", 0.0))
+
+    target_abs = float(np.clip(getattr(cfg, "calibration_target_abs_error", 0.16), 0.01, 0.60))
+    target_brier = float(np.clip(getattr(cfg, "calibration_target_brier", 0.22), 0.01, 0.80))
+    under_margin = float(np.clip(getattr(cfg, "calibration_underconfidence_margin", 0.04), 0.0, 0.30))
+    min_hit_boost = float(np.clip(getattr(cfg, "calibration_min_hit_for_boost", 0.53), 0.0, 1.0))
+    min_exp_boost = float(getattr(cfg, "calibration_min_expectancy_for_boost", 0.02))
+    conf_scale = float(np.clip(getattr(cfg, "calibration_conf_scale", 0.028), 0.0, 0.50))
+    edge_scale = float(np.clip(getattr(cfg, "calibration_edge_scale", 0.004), 0.0, 0.10))
+    unc_scale = float(np.clip(getattr(cfg, "calibration_uncertainty_scale", 0.35), 0.0, 2.0))
+    max_conf_adj = float(np.clip(getattr(cfg, "calibration_max_conf_adjust", 0.08), 0.0, 0.60))
+    max_edge_adj = float(np.clip(getattr(cfg, "calibration_max_edge_adjust", 0.012), 0.0, 0.20))
+    max_unc_mult = float(np.clip(getattr(cfg, "calibration_max_uncertainty_mult", 1.60), 1.0, 5.0))
+    min_part_scale = float(np.clip(getattr(cfg, "calibration_participation_min_scale", 0.30), 0.0, 1.0))
+
+    abs_overshoot = float(max(abs_err - target_abs, 0.0) / max(target_abs, 1e-6))
+    brier_overshoot = float(max(brier - target_brier, 0.0) / max(target_brier, 1e-6))
+    overconf = float(max(conf_gap, 0.0))
+    stress = float(np.clip(0.55 * abs_overshoot + 0.35 * brier_overshoot + 0.70 * overconf, 0.0, 2.0))
+
+    underconf = float(max(-conf_gap - under_margin, 0.0))
+    boost_score = 0.0
+    if hit_rate >= min_hit_boost and expectancy >= min_exp_boost:
+        exp_scale = max(abs(min_exp_boost), 0.02)
+        boost_score = float(np.clip(underconf + max(expectancy - min_exp_boost, 0.0) / exp_scale, 0.0, 1.5))
+
+    mode_score = float(np.clip(boost_score - stress, -2.0, 2.0))
+    conf_adj = float(np.clip(mode_score * conf_scale, -max_conf_adj, max_conf_adj))
+    edge_adj = float(np.clip(mode_score * edge_scale, -max_edge_adj, max_edge_adj))
+    if mode_score < 0.0:
+        unc_mult = float(np.clip(1.0 + unc_scale * abs(mode_score), 1.0, max_unc_mult))
+    elif mode_score > 0.0:
+        unc_mult = float(np.clip(1.0 - 0.45 * unc_scale * mode_score, 0.55, 1.0))
+    else:
+        unc_mult = 1.0
+
+    conf2 = float(np.clip(confidence + conf_adj, 0.0, 1.0))
+    edge2 = float(max(edge + edge_adj, 0.0))
+    # In protective mode, avoid oversizing from stale conviction bursts.
+    if mode_score < -0.15 and float(conviction) > 0.75:
+        edge2 = float(max(edge2 - 0.25 * max_edge_adj, 0.0))
+    unc2 = float(np.clip(uncertainty * unc_mult, 0.005, 2.0))
+    protective = float(1.0 if mode_score < -0.05 else 0.0)
+    opportunistic = float(1.0 if mode_score > 0.05 else 0.0)
+    participation_scale = 1.0
+    if protective > 0.5:
+        participation_scale = float(np.clip(1.0 - 0.75 * min(abs(mode_score), 1.0), min_part_scale, 1.0))
+
+    return {
+        "edge": edge2,
+        "confidence": conf2,
+        "uncertainty": unc2,
+        "ready": 1.0,
+        "active": float(1.0 if abs(mode_score) > 1e-9 else 0.0),
+        "mode_score": mode_score,
+        "mode_protective": protective,
+        "mode_opportunistic": opportunistic,
+        "abs_error": abs_err,
+        "brier": brier,
+        "hit_rate": hit_rate,
+        "expectancy": expectancy,
+        "confidence_gap": conf_gap,
+        "participation_scale": participation_scale,
     }
 
 
@@ -2860,6 +3027,20 @@ def _run_fold(
     micro_change_score_sum = 0.0
     micro_change_alignment_sum = 0.0
     micro_change_last_switch_bar = -10_000_000
+    calibration_conf_hist: List[float] = []
+    calibration_outcome_hist: List[float] = []
+    calibration_rr_hist: List[float] = []
+    calibration_mode_bars = 0
+    calibration_ready_bars = 0
+    calibration_protective_bars = 0
+    calibration_opportunistic_bars = 0
+    calibration_abs_error_sum = 0.0
+    calibration_brier_sum = 0.0
+    calibration_hit_rate_sum = 0.0
+    calibration_gap_sum = 0.0
+    calibration_mode_score_sum = 0.0
+    calibration_participation_scale_sum = 0.0
+    calibration_keep = int(max(getattr(cfg, "calibration_window", 120) * 2, 64))
     for i in range(len(test_feat) - cfg.horizon):
         regime = int(test_regime[i])
         x = X_te[i]
@@ -3080,6 +3261,41 @@ def _run_fold(
             meta_p=meta_p,
             cfg=cfg,
         )
+        calibration_adj = _apply_calibration_intelligence(
+            side=side,
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            conviction=conviction,
+            confidence_hist=calibration_conf_hist,
+            outcome_hist=calibration_outcome_hist,
+            rr_hist=calibration_rr_hist,
+            cfg=cfg,
+        )
+        edge = float(calibration_adj.get("edge", edge))
+        confidence = float(np.clip(calibration_adj.get("confidence", confidence), 0.0, 1.0))
+        uncertainty = float(np.clip(calibration_adj.get("uncertainty", uncertainty), 0.005, 2.0))
+        conviction = _conviction_score(
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            meta_p=meta_p,
+            cfg=cfg,
+        )
+        if float(calibration_adj.get("ready", 0.0)) > 0.5:
+            calibration_ready_bars += 1
+            calibration_abs_error_sum += float(calibration_adj.get("abs_error", 0.0))
+            calibration_brier_sum += float(calibration_adj.get("brier", 0.0))
+            calibration_hit_rate_sum += float(calibration_adj.get("hit_rate", 0.0))
+            calibration_gap_sum += float(calibration_adj.get("confidence_gap", 0.0))
+            calibration_participation_scale_sum += float(calibration_adj.get("participation_scale", 1.0))
+            if float(calibration_adj.get("active", 0.0)) > 0.5:
+                calibration_mode_bars += 1
+                calibration_mode_score_sum += float(calibration_adj.get("mode_score", 0.0))
+            if float(calibration_adj.get("mode_protective", 0.0)) > 0.5:
+                calibration_protective_bars += 1
+            if float(calibration_adj.get("mode_opportunistic", 0.0)) > 0.5:
+                calibration_opportunistic_bars += 1
         micro_score = float(micro_adj.get("score", 0.0))
         micro_alignment = float(micro_adj.get("alignment", 0.0))
         if float(micro_adj.get("active", 0.0)) > 0.5:
@@ -3114,6 +3330,10 @@ def _run_fold(
             align_floor = float(np.clip(getattr(cfg, "micro_change_participation_align_min", 0.35), 0.0, 1.0))
             align_scale = float(np.clip(align_floor + (1.0 - align_floor) * max(micro_alignment, 0.0), align_floor, 1.0))
             participation_pressure *= align_scale
+            calib_scale = float(
+                np.clip(calibration_adj.get("participation_scale", 1.0), 0.0, 1.0)
+            )
+            participation_pressure *= calib_scale
         participation_pressure_sum += participation_pressure
         sure_recent_window = int(max(getattr(cfg, "sure_recent_window", 96), 8))
         min_conv = float(np.clip(getattr(cfg, "precision_min_conviction", 0.52), 0.0, 1.0))
@@ -3478,6 +3698,15 @@ def _run_fold(
         )
         trades.append(rr)
         gross_trades.append(rr_gross)
+        calibration_conf_hist.append(float(np.clip(confidence, 0.0, 1.0)))
+        calibration_outcome_hist.append(1.0 if rr > 0.0 else 0.0)
+        calibration_rr_hist.append(float(rr))
+        if len(calibration_conf_hist) > calibration_keep:
+            del calibration_conf_hist[0 : len(calibration_conf_hist) - calibration_keep]
+        if len(calibration_outcome_hist) > calibration_keep:
+            del calibration_outcome_hist[0 : len(calibration_outcome_hist) - calibration_keep]
+        if len(calibration_rr_hist) > calibration_keep:
+            del calibration_rr_hist[0 : len(calibration_rr_hist) - calibration_keep]
         precision_selective_recent_rr.append(rr)
         ps_window = int(max(getattr(cfg, "precision_selective_score_window", 512), 32))
         if len(precision_selective_recent_rr) > ps_window:
@@ -3684,6 +3913,30 @@ def _run_fold(
         "micro_change_switches": int(micro_change_switches),
         "micro_change_avg_score": round(float(micro_change_score_sum / max(micro_change_mode_bars, 1)), 6),
         "micro_change_avg_alignment": round(float(micro_change_alignment_sum / max(micro_change_mode_bars, 1)), 6),
+        "calibration_intelligence_enable": bool(getattr(cfg, "calibration_intelligence_enable", True)),
+        "calibration_ready_bars": int(calibration_ready_bars),
+        "calibration_mode_bars": int(calibration_mode_bars),
+        "calibration_mode_rate": round(float(calibration_mode_bars / max(decision_bars, 1)), 4),
+        "calibration_protective_bars": int(calibration_protective_bars),
+        "calibration_opportunistic_bars": int(calibration_opportunistic_bars),
+        "calibration_avg_abs_error": round(
+            float(calibration_abs_error_sum / max(calibration_ready_bars, 1)), 6
+        ),
+        "calibration_avg_brier": round(
+            float(calibration_brier_sum / max(calibration_ready_bars, 1)), 6
+        ),
+        "calibration_avg_hit_rate": round(
+            float(calibration_hit_rate_sum / max(calibration_ready_bars, 1)), 6
+        ),
+        "calibration_avg_confidence_gap": round(
+            float(calibration_gap_sum / max(calibration_ready_bars, 1)), 6
+        ),
+        "calibration_avg_mode_score": round(
+            float(calibration_mode_score_sum / max(calibration_mode_bars, 1)), 6
+        ),
+        "calibration_avg_participation_scale": round(
+            float(calibration_participation_scale_sum / max(calibration_ready_bars, 1)), 6
+        ),
         "time_adaptive_enable": bool(getattr(cfg, "time_adaptive_enable", True)),
         "precision_selective_enable": bool(getattr(cfg, "precision_selective_enable", False)),
         "precision_selective_mode_bars": int(precision_selective_mode_bars),
@@ -3966,6 +4219,65 @@ def run_mythos_walk_forward(
     )
     aggregate_micro_score = float(weighted_micro_score / max(total_micro_change_mode_bars, 1))
     aggregate_micro_alignment = float(weighted_micro_alignment / max(total_micro_change_mode_bars, 1))
+    total_calibration_ready_bars = int(sum(int(r.get("calibration_ready_bars", 0)) for r in reports))
+    total_calibration_mode_bars = int(sum(int(r.get("calibration_mode_bars", 0)) for r in reports))
+    total_calibration_protective_bars = int(
+        sum(int(r.get("calibration_protective_bars", 0)) for r in reports)
+    )
+    total_calibration_opportunistic_bars = int(
+        sum(int(r.get("calibration_opportunistic_bars", 0)) for r in reports)
+    )
+    weighted_calibration_abs_error = float(
+        sum(
+            float(r.get("calibration_avg_abs_error", 0.0)) * int(r.get("calibration_ready_bars", 0))
+            for r in reports
+        )
+    )
+    weighted_calibration_brier = float(
+        sum(float(r.get("calibration_avg_brier", 0.0)) * int(r.get("calibration_ready_bars", 0)) for r in reports)
+    )
+    weighted_calibration_hit_rate = float(
+        sum(
+            float(r.get("calibration_avg_hit_rate", 0.0)) * int(r.get("calibration_ready_bars", 0))
+            for r in reports
+        )
+    )
+    weighted_calibration_gap = float(
+        sum(
+            float(r.get("calibration_avg_confidence_gap", 0.0)) * int(r.get("calibration_ready_bars", 0))
+            for r in reports
+        )
+    )
+    weighted_calibration_mode_score = float(
+        sum(
+            float(r.get("calibration_avg_mode_score", 0.0)) * int(r.get("calibration_mode_bars", 0))
+            for r in reports
+        )
+    )
+    weighted_calibration_participation_scale = float(
+        sum(
+            float(r.get("calibration_avg_participation_scale", 1.0)) * int(r.get("calibration_ready_bars", 0))
+            for r in reports
+        )
+    )
+    aggregate_calibration_abs_error = float(
+        weighted_calibration_abs_error / max(total_calibration_ready_bars, 1)
+    )
+    aggregate_calibration_brier = float(
+        weighted_calibration_brier / max(total_calibration_ready_bars, 1)
+    )
+    aggregate_calibration_hit_rate = float(
+        weighted_calibration_hit_rate / max(total_calibration_ready_bars, 1)
+    )
+    aggregate_calibration_gap = float(
+        weighted_calibration_gap / max(total_calibration_ready_bars, 1)
+    )
+    aggregate_calibration_mode_score = float(
+        weighted_calibration_mode_score / max(total_calibration_mode_bars, 1)
+    )
+    aggregate_calibration_participation_scale = float(
+        weighted_calibration_participation_scale / max(total_calibration_ready_bars, 1)
+    )
     total_precision_mode_bars = int(sum(int(r.get("precision_selective_mode_bars", 0)) for r in reports))
     total_precision_ready_bars = int(sum(int(r.get("precision_selective_ready_bars", 0)) for r in reports))
     total_precision_rejects = int(sum(int(r.get("precision_selective_rejects", 0)) for r in reports))
@@ -4185,6 +4497,18 @@ def run_mythos_walk_forward(
         "micro_change_switches": total_micro_change_switches,
         "micro_change_avg_score": round(aggregate_micro_score, 6),
         "micro_change_avg_alignment": round(aggregate_micro_alignment, 6),
+        "calibration_intelligence_enable": bool(getattr(cfg, "calibration_intelligence_enable", True)),
+        "calibration_ready_bars": total_calibration_ready_bars,
+        "calibration_mode_bars": total_calibration_mode_bars,
+        "calibration_mode_rate": round(float(total_calibration_mode_bars / mode_denom), 4),
+        "calibration_protective_bars": total_calibration_protective_bars,
+        "calibration_opportunistic_bars": total_calibration_opportunistic_bars,
+        "calibration_avg_abs_error": round(aggregate_calibration_abs_error, 6),
+        "calibration_avg_brier": round(aggregate_calibration_brier, 6),
+        "calibration_avg_hit_rate": round(aggregate_calibration_hit_rate, 6),
+        "calibration_avg_confidence_gap": round(aggregate_calibration_gap, 6),
+        "calibration_avg_mode_score": round(aggregate_calibration_mode_score, 6),
+        "calibration_avg_participation_scale": round(aggregate_calibration_participation_scale, 6),
         "precision_selective_enable": bool(getattr(cfg, "precision_selective_enable", False)),
         "precision_selective_mode_bars": total_precision_mode_bars,
         "precision_selective_mode_rate": round(float(total_precision_mode_bars / mode_denom), 4),

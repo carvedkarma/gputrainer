@@ -177,6 +177,21 @@ class MythosConfig:
     micro_change_switch_conviction_guard: float = 0.62
     micro_change_switch_cooldown_bars: int = 8
     micro_change_participation_align_min: float = 0.35
+    calibration_intelligence_enable: bool = True
+    calibration_window: int = 120
+    calibration_min_samples: int = 28
+    calibration_target_abs_error: float = 0.16
+    calibration_target_brier: float = 0.22
+    calibration_conf_scale: float = 0.028
+    calibration_edge_scale: float = 0.004
+    calibration_uncertainty_scale: float = 0.35
+    calibration_max_conf_adjust: float = 0.08
+    calibration_max_edge_adjust: float = 0.012
+    calibration_max_uncertainty_mult: float = 1.60
+    calibration_underconfidence_margin: float = 0.04
+    calibration_min_hit_for_boost: float = 0.53
+    calibration_min_expectancy_for_boost: float = 0.02
+    calibration_participation_min_scale: float = 0.30
     precision_min_confidence: float = 0.0
     precision_min_edge: float = 0.0
     precision_min_conviction: float = 0.52
@@ -731,6 +746,49 @@ class MythosConfig:
         )
         self.micro_change_participation_align_min = float(
             np.clip(getattr(self, "micro_change_participation_align_min", 0.35), 0.0, 1.0)
+        )
+        self.calibration_intelligence_enable = bool(
+            getattr(self, "calibration_intelligence_enable", True)
+        )
+        self.calibration_window = int(max(getattr(self, "calibration_window", 120), 8))
+        self.calibration_min_samples = int(
+            max(getattr(self, "calibration_min_samples", 28), 4)
+        )
+        self.calibration_target_abs_error = float(
+            np.clip(getattr(self, "calibration_target_abs_error", 0.16), 0.01, 0.60)
+        )
+        self.calibration_target_brier = float(
+            np.clip(getattr(self, "calibration_target_brier", 0.22), 0.01, 0.80)
+        )
+        self.calibration_conf_scale = float(
+            np.clip(getattr(self, "calibration_conf_scale", 0.028), 0.0, 0.50)
+        )
+        self.calibration_edge_scale = float(
+            np.clip(getattr(self, "calibration_edge_scale", 0.004), 0.0, 0.10)
+        )
+        self.calibration_uncertainty_scale = float(
+            np.clip(getattr(self, "calibration_uncertainty_scale", 0.35), 0.0, 2.0)
+        )
+        self.calibration_max_conf_adjust = float(
+            np.clip(getattr(self, "calibration_max_conf_adjust", 0.08), 0.0, 0.60)
+        )
+        self.calibration_max_edge_adjust = float(
+            np.clip(getattr(self, "calibration_max_edge_adjust", 0.012), 0.0, 0.20)
+        )
+        self.calibration_max_uncertainty_mult = float(
+            np.clip(getattr(self, "calibration_max_uncertainty_mult", 1.60), 1.0, 5.0)
+        )
+        self.calibration_underconfidence_margin = float(
+            np.clip(getattr(self, "calibration_underconfidence_margin", 0.04), 0.0, 0.30)
+        )
+        self.calibration_min_hit_for_boost = float(
+            np.clip(getattr(self, "calibration_min_hit_for_boost", 0.53), 0.0, 1.0)
+        )
+        self.calibration_min_expectancy_for_boost = float(
+            getattr(self, "calibration_min_expectancy_for_boost", 0.02)
+        )
+        self.calibration_participation_min_scale = float(
+            np.clip(getattr(self, "calibration_participation_min_scale", 0.30), 0.0, 1.0)
         )
         self.precision_min_confidence = float(
             np.clip(getattr(self, "precision_min_confidence", 0.0), 0.0, 1.0)
