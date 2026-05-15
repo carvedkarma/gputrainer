@@ -951,18 +951,88 @@ def _compute_atr(df: pd.DataFrame, window: int = 14) -> float:
     return float(np.mean(true_ranges))
 
 
+def _resolve_mythos_live_tp_sl(
+    *,
+    cfg_obj,
+    side: str,
+    edge: float,
+    confidence: float,
+    uncertainty: float,
+    feature_row: Dict[str, float],
+    fallback_tp_mult: float,
+    fallback_sl_mult: float,
+) -> Tuple[float, float]:
+    """
+    Mirror walk-forward adaptive TP/SL logic for Mythos live paper execution.
+    Falls back to static multipliers if adaptive config is unavailable/disabled.
+    """
+    base_tp = float(max(getattr(cfg_obj, "tp_mult", fallback_tp_mult), 0.10)) if cfg_obj is not None else float(max(fallback_tp_mult, 0.10))
+    base_sl = float(max(getattr(cfg_obj, "sl_mult", fallback_sl_mult), 0.10)) if cfg_obj is not None else float(max(fallback_sl_mult, 0.10))
+    if cfg_obj is None or not bool(getattr(cfg_obj, "adaptive_tp_sl_enable", True)):
+        return base_tp, base_sl
+    try:
+        edge_unit = float(max(getattr(cfg_obj, "min_expected_r", 0.01), 1e-6))
+        edge_score = float(np.tanh(float(edge) / max(2.0 * edge_unit, 1e-6)))
+        conf_score = float(np.clip((float(confidence) - 0.5) * 2.0, -1.0, 1.0))
+        unc_norm = float(np.clip(float(uncertainty), 0.0, 2.0) / 2.0)
+        trend_ema = float(feature_row.get("trend_ema", 0.0))
+        vol_16 = float(max(feature_row.get("vol_16", 0.0), 1e-6))
+        vol_64 = float(max(feature_row.get("vol_64", vol_16), 1e-6))
+        vol_ratio = float(np.clip(vol_16 / max(vol_64, 1e-6), 0.25, 4.0))
+        vol_stress = float(max(vol_ratio - 1.0, 0.0))
+        trend_score = float(np.clip(np.tanh(abs(trend_ema) * 4.0), 0.0, 1.0))
+        quality = float(np.clip(0.45 * conf_score + 0.45 * edge_score - 0.30 * unc_norm, -1.0, 1.0))
+
+        tp_gain = (
+            float(np.clip(getattr(cfg_obj, "adaptive_tp_quality_gain", 0.35), 0.0, 2.0)) * quality
+            + float(np.clip(getattr(cfg_obj, "adaptive_tp_trend_gain", 0.20), 0.0, 2.0)) * trend_score
+            - float(np.clip(getattr(cfg_obj, "adaptive_tp_vol_penalty", 0.18), 0.0, 2.0)) * vol_stress
+        )
+        sl_gain = (
+            -float(np.clip(getattr(cfg_obj, "adaptive_sl_quality_tighten", 0.25), 0.0, 2.0)) * max(quality, 0.0)
+            + float(np.clip(getattr(cfg_obj, "adaptive_sl_uncertainty_widen", 0.30), 0.0, 2.0)) * unc_norm
+            + float(np.clip(getattr(cfg_obj, "adaptive_sl_vol_widen", 0.20), 0.0, 2.0)) * vol_stress
+        )
+        if str(side).upper() == "SHORT":
+            tp_gain += float(np.clip(getattr(cfg_obj, "adaptive_short_tp_bias", 0.05), -1.0, 1.0))
+            sl_gain += float(np.clip(getattr(cfg_obj, "adaptive_short_sl_bias", 0.04), -1.0, 1.0))
+
+        tp_mult = float(base_tp * (1.0 + tp_gain))
+        sl_mult = float(base_sl * (1.0 + sl_gain))
+        tp_mult = float(
+            np.clip(
+                tp_mult,
+                float(np.clip(getattr(cfg_obj, "adaptive_tp_min_mult", 1.2), 0.10, 20.0)),
+                float(max(getattr(cfg_obj, "adaptive_tp_max_mult", 3.6), getattr(cfg_obj, "adaptive_tp_min_mult", 1.2))),
+            )
+        )
+        sl_mult = float(
+            np.clip(
+                sl_mult,
+                float(np.clip(getattr(cfg_obj, "adaptive_sl_min_mult", 0.8), 0.10, 20.0)),
+                float(max(getattr(cfg_obj, "adaptive_sl_max_mult", 2.4), getattr(cfg_obj, "adaptive_sl_min_mult", 0.8))),
+            )
+        )
+        return tp_mult, sl_mult
+    except Exception:
+        return base_tp, base_sl
+
+
 def _build_prediction_payload(
     symbol: str, side: str, p_enter: float, current_price: float, atr: float,
     entry_price: float, tp_mult: float, sl_mult: float, htf: dict,
+    tp_mult_used: Optional[float] = None, sl_mult_used: Optional[float] = None,
     exec_result=None
 ) -> dict:
     """Build a prediction dict compatible with the dashboard push endpoint."""
+    tp_mult_eff = float(tp_mult_used if tp_mult_used is not None else tp_mult)
+    sl_mult_eff = float(sl_mult_used if sl_mult_used is not None else sl_mult)
     if side == "LONG":
-        sl_price = entry_price - sl_mult * atr
-        tp_price = entry_price + tp_mult * atr
+        sl_price = entry_price - sl_mult_eff * atr
+        tp_price = entry_price + tp_mult_eff * atr
     else:
-        sl_price = entry_price + sl_mult * atr
-        tp_price = entry_price - tp_mult * atr
+        sl_price = entry_price + sl_mult_eff * atr
+        tp_price = entry_price - tp_mult_eff * atr
 
     sl_pct = abs(entry_price - sl_price) / entry_price
     tp_pct = abs(tp_price - entry_price) / entry_price
@@ -1015,6 +1085,8 @@ def _build_prediction_payload(
         "risk_pct": round(risk_pct, 2),
         "p_enter": round(p_enter, 4),
         "atr": round(atr, 2),
+        "tp_mult_used": round(tp_mult_eff, 4),
+        "sl_mult_used": round(sl_mult_eff, 4),
     }
 
 
@@ -2114,6 +2186,16 @@ class LiveRunner:
         unc_n = float(np.clip(1.0 / (1.0 + max(uncertainty, 0.0)), 0.0, 1.0))
         size_quality = float(np.clip(0.45 * conf_n + 0.35 * edge_n + 0.20 * unc_n, 0.0, 1.0))
         lane_size_mult = float(min_lev + (max_lev - min_lev) * size_quality)
+        tp_mult_used, sl_mult_used = _resolve_mythos_live_tp_sl(
+            cfg_obj=cfg_obj,
+            side=side,
+            edge=edge,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            feature_row=row,
+            fallback_tp_mult=self.tp_mult,
+            fallback_sl_mult=self.sl_mult,
+        )
 
         mythos_info = {
             "lane": "MYTHOS",
@@ -2132,8 +2214,21 @@ class LiveRunner:
             "awareness_n": int(aware.get("n", 0)),
             "lane_size_mult": round(lane_size_mult, 4),
             "mythos_size_quality": round(size_quality, 4),
+            "tp_mult_used": round(float(tp_mult_used), 4),
+            "sl_mult_used": round(float(sl_mult_used), 4),
             "lane_horizon": 24,
         }
+        if atr and atr > 0 and not (atr != atr):
+            sl_dist = float(sl_mult_used * atr)
+            tp_dist = float(tp_mult_used * atr)
+            if side == "LONG":
+                mythos_info["sl_price"] = round(current_price - sl_dist, 6)
+                mythos_info["tp_price"] = round(current_price + tp_dist, 6)
+            else:
+                mythos_info["sl_price"] = round(current_price + sl_dist, 6)
+                mythos_info["tp_price"] = round(current_price - tp_dist, 6)
+            mythos_info["sl_dist_atr"] = round(sl_dist / atr, 3)
+            mythos_info["tp_dist_atr"] = round(tp_dist / atr, 3)
 
         if side not in {"LONG", "SHORT"} or abstain or edge < edge_floor or confidence < conf_floor:
             blocks = []
@@ -2187,7 +2282,7 @@ class LiveRunner:
         except Exception as e:
             log.warning(f"Failed to push Mythos ENTER cycle log for {symbol}: {e}")
 
-        sl_pct = self.sl_mult * atr / max(current_price, 1e-9)
+        sl_pct = float(max(sl_mult_used, 0.1)) * atr / max(current_price, 1e-9)
         risk_pct = min(2.0 * sl_pct * 100, 5.0)
         return {
             "symbol": symbol,
@@ -2654,10 +2749,12 @@ class LiveRunner:
         lane_size_mult = float(v5_info.get("lane_size_mult", 1.0))
         model_name = str(v5_info.get("model_name", "v5_forecaster_live"))
         htf_score = v5_info.get('htf_score', 0)
+        lane_sl_mult = float(v5_info.get("sl_mult_used", self.sl_mult))
+        lane_tp_mult = float(v5_info.get("tp_mult_used", self.tp_mult))
 
         if self.execution_mode == "signal_only" or not self.record_trades:
-            sig_sl_dist = self.sl_mult * atr
-            sig_tp_dist = self.tp_mult * atr
+            sig_sl_dist = lane_sl_mult * atr
+            sig_tp_dist = lane_tp_mult * atr
             if side == "LONG":
                 sig_sl = current_price - sig_sl_dist
                 sig_tp = current_price + sig_tp_dist
@@ -2705,13 +2802,13 @@ class LiveRunner:
 
         v5_mae = v5_info.get('v5_mae', 0.0)
         v5_mfe = v5_info.get('v5_mfe', 0.0)
-        base_sl_dist = self.sl_mult * atr
-        base_tp_dist = self.tp_mult * atr
+        base_sl_dist = lane_sl_mult * atr
+        base_tp_dist = lane_tp_mult * atr
         if self.predictive_sltp and v5_mfe > 0 and v5_mae > 0:
-            mae_dist = v5_mae * self.sl_mult * atr
+            mae_dist = v5_mae * lane_sl_mult * atr
             sl_dist = max(base_sl_dist, mae_dist)
             sl_dist = min(sl_dist, base_sl_dist * 2.5)
-            mfe_dist = v5_mfe * self.sl_mult * atr
+            mfe_dist = v5_mfe * lane_sl_mult * atr
             tp_dist = max(base_tp_dist, mfe_dist)
             tp_dist = min(tp_dist, base_tp_dist * 3.0)
         else:
@@ -2729,6 +2826,8 @@ class LiveRunner:
             symbol=symbol, side=side, p_enter=p_enter,
             current_price=current_price, atr=atr,
             entry_price=entry_price, tp_mult=self.tp_mult, sl_mult=self.sl_mult,
+            tp_mult_used=float(tp_dist / max(atr, 1e-9)),
+            sl_mult_used=float(sl_dist / max(atr, 1e-9)),
             htf=htf, exec_result=exec_result,
         )
         prediction["model_name"] = model_name
