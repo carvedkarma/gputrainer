@@ -1514,9 +1514,15 @@ class LiveRunner:
                         htf: dict, direction: str, decision: str, reasons: list,
                         lane_info: Optional[dict] = None,
                         e_net_pred: float = None, enter_logit: float = None,
-                        temperature_used: float = None):
+                        temperature_used: float = None,
+                        decision_stage: str = "candidate",
+                        execution_status: Optional[str] = None):
         url = f"{self.replit_url.rstrip('/')}/api/live/cycle-log"
         li = lane_info or {}
+        stage = str(decision_stage or "candidate").strip().lower()
+        if stage not in {"candidate", "execution"}:
+            stage = "candidate"
+        status = str(execution_status or ("candidate" if stage == "candidate" else "unknown")).strip().lower()
         payload = {
             "symbol": symbol,
             "cycle_ts": int(time.time() * 1000),
@@ -1532,6 +1538,8 @@ class LiveRunner:
             "threshold_used": float(li.get('threshold_used', self.v5_score_threshold)),
             "decision": str(decision),
             "reasons": [str(r) for r in reasons] if reasons else [],
+            "decision_stage": stage,
+            "execution_status": status,
             "htf_score": li.get('htf_score'),
             "hold_reason": li.get('hold_reason'),
             "e_net_pred": round(float(e_net_pred), 4) if e_net_pred is not None else li.get('ret_mu'),
@@ -2444,6 +2452,28 @@ class LiveRunner:
             return
 
         accepted = self.portfolio.filter_and_rank(candidates)
+        accepted_ids = {id(c) for c in accepted}
+        for c in candidates:
+            if id(c) in accepted_ids:
+                continue
+            reject_reason = str(c.get("reject_reason") or "portfolio_reject")
+            li = dict(c.get("v5_info") or {})
+            li["hold_reason"] = reject_reason
+            try:
+                self._push_cycle_log(
+                    symbol=str(c.get("symbol", "")),
+                    price=float(c.get("current_price", 0.0) or 0.0),
+                    p_enter=float(c.get("p_enter", 0.0) or 0.0),
+                    htf=c.get("htf") or {},
+                    direction=str(c.get("side", "NEUTRAL")),
+                    decision="ENTER_REJECTED",
+                    reasons=[reject_reason],
+                    lane_info=li,
+                    decision_stage="execution",
+                    execution_status="rejected",
+                )
+            except Exception:
+                continue
         if not accepted:
             log.info("All candidates rejected by portfolio rules.")
             return
@@ -3152,6 +3182,23 @@ class LiveRunner:
                 "(existing positions continue to be managed)",
                 candidate.get('symbol', '?'), halt_reason,
             )
+            try:
+                v5_info = dict(candidate.get("v5_info", {}) or {})
+                v5_info["hold_reason"] = str(halt_reason)
+                self._push_cycle_log(
+                    symbol=str(candidate.get("symbol", "")),
+                    price=float(candidate.get("current_price", 0.0) or 0.0),
+                    p_enter=float(candidate.get("p_enter", 0.0) or 0.0),
+                    htf=candidate.get("htf") or {},
+                    direction=str(candidate.get("side", "NEUTRAL")),
+                    decision="ENTER_BLOCKED",
+                    reasons=[str(halt_reason)],
+                    lane_info=v5_info,
+                    decision_stage="execution",
+                    execution_status="rejected",
+                )
+            except Exception:
+                pass
             return
 
         symbol = candidate['symbol']
@@ -3193,6 +3240,8 @@ class LiveRunner:
                         f"v5_score={v5_info.get('v5_score','?')} p={p_enter:.4f}",
                     ],
                     lane_info=v5_info,
+                    decision_stage="execution",
+                    execution_status="not_executed",
                 )
             except Exception as e:
                 log.warning(f"Failed to push {no_exec_reason} cycle log for {symbol}: {e}")
@@ -3214,6 +3263,24 @@ class LiveRunner:
 
             if not exec_result.executed:
                 log.info(f"  {symbol}: execution module skipped trade — {exec_result.reason}")
+                try:
+                    v5_info = dict(candidate.get("v5_info", {}) or {})
+                    skip_reason = str(exec_result.reason or "execution_module_skipped")
+                    v5_info["hold_reason"] = skip_reason
+                    self._push_cycle_log(
+                        symbol=symbol,
+                        price=current_price,
+                        p_enter=p_enter,
+                        htf=htf,
+                        direction=side,
+                        decision="EXECUTION_SKIPPED",
+                        reasons=[skip_reason],
+                        lane_info=v5_info,
+                        decision_stage="execution",
+                        execution_status="rejected",
+                    )
+                except Exception:
+                    pass
                 return
 
             entry_price = exec_result.entry_price
@@ -3298,6 +3365,21 @@ class LiveRunner:
                          f"| v5_score={v5_info.get('v5_score','?')} "
                          f"[WARNING: execution_mode=live but no real exchange adapter — no order placed]")
         self._push_prediction(prediction)
+        try:
+            self._push_cycle_log(
+                symbol=symbol,
+                price=entry_price,
+                p_enter=p_enter,
+                htf=htf,
+                direction=side,
+                decision="ENTER_EXECUTED",
+                reasons=[f"trade_opened side={side} entry={entry_price:.2f}"],
+                lane_info=v5_info,
+                decision_stage="execution",
+                execution_status="executed",
+            )
+        except Exception as e:
+            log.warning(f"Failed to push execution cycle log for {symbol}: {e}")
 
     def _print_summary(self):
         summary = self.portfolio.summary()

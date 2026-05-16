@@ -686,7 +686,7 @@
         <h3>Cycle Decisions</h3>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Session</th><th>Symbol</th><th>Decision</th><th>Direction</th><th>P Enter</th><th>Price</th><th>Reason</th></tr></thead>
+            <thead><tr><th>ID</th><th>Session</th><th>Symbol</th><th>Decision</th><th>Stage</th><th>Direction</th><th>P Enter</th><th>Price</th><th>Reason</th></tr></thead>
             <tbody id="cycleBody"></tbody>
           </table>
         </div>
@@ -2413,12 +2413,13 @@
           <td class="mono">${c.session_id ?? "-"}</td>
           <td>${c.symbol ?? "-"}</td>
           <td>${c.decision ?? "-"}</td>
+          <td>${c.decision_stage || "-"}/${c.execution_status || "-"}</td>
           <td>${c.direction ?? "-"}</td>
           <td>${fmt.pct(c.p_enter ?? 0, 2)}</td>
           <td>${fmt.n(c.price ?? 0, 2)}</td>
           <td title="${Array.isArray(c.reasons) ? c.reasons.join(" | ") : (c.hold_reason || "-")}">${c.hold_reason || (Array.isArray(c.reasons) ? c.reasons[0] : "-")}</td>
         </tr>
-      `).join("") : `<tr><td colspan="8" class="small">No cycle logs yet.</td></tr>`;
+      `).join("") : `<tr><td colspan="9" class="small">No cycle logs yet.</td></tr>`;
     }
 
     function renderCharts(payload) {
