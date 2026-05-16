@@ -1697,12 +1697,35 @@ class LiveRunner:
             if symbol not in self.symbol_models:
                 try:
                     m, e, fc, temp, sm = _load_model(self.device, symbol=symbol, model_backend=self.live_model)
+                    self._apply_live_model_runtime_overrides(m, symbol=symbol)
                     self.symbol_models[symbol] = (m, e, fc, temp, sm)
                 except SystemExit:
                     log.warning(f"No per-symbol model for {symbol}, using global model")
                     self.symbol_models[symbol] = (self.model, self.engineer, self.feature_columns, self.temperature, self.symbol_map)
             return self.symbol_models[symbol]
         return self.model, self.engineer, self.feature_columns, self.temperature, self.symbol_map
+
+    def _apply_live_model_runtime_overrides(self, model, symbol: Optional[str] = None):
+        """Apply live runtime controls (e.g. cooldown) without retraining."""
+        if not getattr(model, "_is_mythos", False):
+            return
+        cfg = getattr(model, "cfg", None)
+        if cfg is None:
+            return
+        try:
+            prev = int(getattr(cfg, "cooldown_bars", self.cooldown_bars))
+            now = int(max(self.cooldown_bars, 0))
+            cfg.cooldown_bars = now
+            if prev != now:
+                sym = str(symbol or getattr(model, "symbol", "GLOBAL")).upper()
+                log.info(
+                    "[MYTHOS_RUNTIME_OVERRIDE] symbol=%s cooldown_bars %s -> %s",
+                    sym,
+                    prev,
+                    now,
+                )
+        except Exception:
+            return
 
     def _effective_staleness_limit_seconds(self) -> float:
         """Interval-aware staleness budget to avoid false halts on 15m+ bars."""
@@ -2059,6 +2082,7 @@ class LiveRunner:
         self.model, self.engineer, self.feature_columns, self.temperature, self.symbol_map = _load_model(
             self.device, model_backend=self.live_model
         )
+        self._apply_live_model_runtime_overrides(self.model)
         if self.live_model == "mythos" and not getattr(self.model, "_is_mythos", False):
             log.error("[MYTHOS] live_model=mythos but loaded model is not Mythos. Aborting.")
             sys.exit(1)
@@ -2186,6 +2210,10 @@ class LiveRunner:
             now = time.time()
             if now >= deadline:
                 break
+            # Keep in-memory positions in sync with dashboard/manual actions
+            # between main cycles so manual closes are reflected quickly.
+            if self.execution_mode == "paper" and self.record_trades:
+                self._sync_portfolio_from_web(source="wait_loop")
             open_symbols = list(self.portfolio.open_positions.keys())
             if open_symbols:
                 prices = self._fetch_live_prices_batch(open_symbols)
