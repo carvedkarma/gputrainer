@@ -2209,6 +2209,45 @@ class LiveRunner:
                 continue
         return out
 
+    def _fetch_intrabar_high_low_batch(self, symbols: List[str], interval: str = "1m", limit: int = 2) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """Fetch short-horizon candle highs/lows for barrier-touch detection."""
+        highs: Dict[str, float] = {}
+        lows: Dict[str, float] = {}
+        syms = [str(s or "").upper() for s in symbols if str(s or "").strip()]
+        for sym in sorted(set(syms)):
+            try:
+                resp = requests.get(
+                    "https://api.binance.com/api/v3/klines",
+                    params={"symbol": sym, "interval": interval, "limit": max(int(limit), 1)},
+                    timeout=5,
+                )
+                if resp.status_code != 200:
+                    continue
+                rows = resp.json()
+                if not isinstance(rows, list) or not rows:
+                    continue
+                hi_vals = []
+                lo_vals = []
+                for row in rows:
+                    if not isinstance(row, list) or len(row) < 5:
+                        continue
+                    try:
+                        hi = float(row[2])
+                        lo = float(row[3])
+                    except Exception:
+                        continue
+                    if np.isfinite(hi) and hi > 0.0:
+                        hi_vals.append(hi)
+                    if np.isfinite(lo) and lo > 0.0:
+                        lo_vals.append(lo)
+                if hi_vals:
+                    highs[sym] = max(hi_vals)
+                if lo_vals:
+                    lows[sym] = min(lo_vals)
+            except Exception:
+                continue
+        return highs, lows
+
     def _monitor_open_positions_during_wait(self, wait_seconds: float):
         """
         During inter-cycle sleep, keep checking live price against SL/TP.
@@ -2232,7 +2271,8 @@ class LiveRunner:
             if open_symbols:
                 prices = self._fetch_live_prices_batch(open_symbols)
                 if prices:
-                    self.portfolio.check_exits(prices)
+                    highs, lows = self._fetch_intrabar_high_low_batch(open_symbols, interval="1m", limit=2)
+                    self.portfolio.check_exits(prices, highs=highs, lows=lows)
                     self._enforce_equity_hard_stop(prices)
             remaining = max(deadline - time.time(), 0.0)
             sleep_s = min(OPEN_POSITION_MONITOR_INTERVAL_S, remaining)
