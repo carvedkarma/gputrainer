@@ -6939,6 +6939,29 @@ Examples:
                         help="Capital protection: block new entries when live equity <= this USD floor (default: 0 = disabled)")
     parser.add_argument("--equity-hard-stop-usd", type=float, default=0.0,
                         help="Emergency capital protection: when live equity <= this USD floor, flatten open risk and latch halt (default: 0 = disabled)")
+    parser.add_argument("--mythos-tm-enable", dest="mythos_tm_enable", action="store_true",
+                        help="Enable Mythos adaptive trade manager parity layer (default: on)")
+    parser.add_argument("--mythos-no-tm-enable", dest="mythos_tm_enable", action="store_false",
+                        help="Disable Mythos adaptive trade manager parity layer")
+    parser.set_defaults(mythos_tm_enable=True)
+    parser.add_argument("--mythos-tm-policy", type=str, default="max",
+                        choices=["defensive", "balanced", "aggressive", "max"],
+                        help="Mythos trade-manager policy preset (default: max)")
+    parser.add_argument("--mythos-tm-scale-out", dest="mythos_tm_scale_out", action="store_true",
+                        help="Enable auto scale-out ladder for Mythos live positions (default: on)")
+    parser.add_argument("--mythos-no-tm-scale-out", dest="mythos_tm_scale_out", action="store_false",
+                        help="Disable Mythos auto scale-out ladder")
+    parser.set_defaults(mythos_tm_scale_out=True)
+    parser.add_argument("--mythos-tm-time-adaptive", dest="mythos_tm_time_adaptive", action="store_true",
+                        help="Enable regime-aware adaptive hold-time for Mythos live positions (default: on)")
+    parser.add_argument("--mythos-no-tm-time-adaptive", dest="mythos_tm_time_adaptive", action="store_false",
+                        help="Disable regime-aware adaptive hold-time for Mythos")
+    parser.set_defaults(mythos_tm_time_adaptive=True)
+    parser.add_argument("--mythos-tm-vol-trailing", dest="mythos_tm_vol_trailing", action="store_true",
+                        help="Enable volatility-aware trailing behavior for Mythos live positions (default: on)")
+    parser.add_argument("--mythos-no-tm-vol-trailing", dest="mythos_tm_vol_trailing", action="store_false",
+                        help="Disable volatility-aware trailing behavior for Mythos")
+    parser.set_defaults(mythos_tm_vol_trailing=True)
     parser.add_argument("--exec-tf", type=str, default="3m", choices=["1m", "3m", "5m"],
                         help="Execution timeframe for improved fills (default: 3m)")
     parser.add_argument("--exec-window-min", type=int, default=15,
@@ -7146,6 +7169,11 @@ Examples:
             live_model=resolved_live_model,
             equity_floor_usd=args.equity_floor_usd,
             equity_hard_stop_usd=args.equity_hard_stop_usd,
+            mythos_tm_enabled=getattr(args, "mythos_tm_enable", True),
+            mythos_tm_policy=getattr(args, "mythos_tm_policy", "max"),
+            mythos_tm_scale_out=getattr(args, "mythos_tm_scale_out", True),
+            mythos_tm_time_adaptive=getattr(args, "mythos_tm_time_adaptive", True),
+            mythos_tm_vol_trailing=getattr(args, "mythos_tm_vol_trailing", True),
         )
         runner.learning_manager = learning_mgr
 

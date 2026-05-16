@@ -1126,6 +1126,11 @@ class LiveRunner:
         live_model: str = "v5",
         equity_floor_usd: float = 0.0,
         equity_hard_stop_usd: float = 0.0,
+        mythos_tm_enabled: bool = True,
+        mythos_tm_policy: str = "max",
+        mythos_tm_scale_out: bool = True,
+        mythos_tm_time_adaptive: bool = True,
+        mythos_tm_vol_trailing: bool = True,
     ):
         self.replit_url = replit_url
         self.symbols = symbols
@@ -1169,6 +1174,13 @@ class LiveRunner:
         self.equity_hard_stop_usd = float(max(equity_hard_stop_usd, 0.0))
         if self.equity_hard_stop_usd > 0.0 and self.equity_floor_usd > 0.0 and self.equity_hard_stop_usd > self.equity_floor_usd:
             self.equity_hard_stop_usd = self.equity_floor_usd
+        self.mythos_tm_enabled = bool(mythos_tm_enabled)
+        self.mythos_tm_policy = str(mythos_tm_policy or "max").strip().lower()
+        if self.mythos_tm_policy not in {"defensive", "balanced", "aggressive", "max"}:
+            self.mythos_tm_policy = "max"
+        self.mythos_tm_scale_out = bool(mythos_tm_scale_out)
+        self.mythos_tm_time_adaptive = bool(mythos_tm_time_adaptive)
+        self.mythos_tm_vol_trailing = bool(mythos_tm_vol_trailing)
         self._equity_hard_stop_latched: bool = False
         self._equity_snapshot_cache_ts: float = 0.0
         self._equity_snapshot_live_usd: Optional[float] = None
@@ -1241,6 +1253,15 @@ class LiveRunner:
             self.equity_floor_usd,
             self.equity_hard_stop_usd,
         )
+        if self.live_model == "mythos":
+            log.info(
+                "[CONFIG] Mythos trade manager: enabled=%s policy=%s scale_out=%s time_adaptive=%s vol_trailing=%s",
+                self.mythos_tm_enabled,
+                self.mythos_tm_policy,
+                self.mythos_tm_scale_out,
+                self.mythos_tm_time_adaptive,
+                self.mythos_tm_vol_trailing,
+            )
 
         self.model = None
         self.engineer = None
@@ -1258,7 +1279,13 @@ class LiveRunner:
         self._feature_check_logged: Dict[str, bool] = {}
 
         from trade_manager import TradeManager
-        self.trade_manager = TradeManager()
+        trade_policy = self.mythos_tm_policy if self.live_model == "mythos" else "balanced"
+        self.trade_manager = TradeManager(
+            policy_mode=trade_policy,
+            enable_scale_out=(self.mythos_tm_scale_out if self.live_model == "mythos" else True),
+            enable_regime_time_stop=(self.mythos_tm_time_adaptive if self.live_model == "mythos" else True),
+            enable_volatility_trailing=(self.mythos_tm_vol_trailing if self.live_model == "mythos" else True),
+        )
 
         self._consecutive_api_errors: int = 0
         self._daily_closed_r: float = 0.0
@@ -1612,6 +1639,59 @@ class LiveRunner:
         payload = {"stop_loss": new_sl, "session_id": self.paper_session_id}
         _retry_request("PATCH", url, json=payload)
 
+    def _post_trade_manager_action(
+        self,
+        trade_id: int,
+        action: str,
+        extra_payload: Optional[Dict[str, object]] = None,
+    ) -> Optional[Dict[str, object]]:
+        if not self.replit_url or trade_id <= 0:
+            return None
+        payload: Dict[str, object] = {"action": str(action)}
+        if extra_payload:
+            payload.update(extra_payload)
+        resp = _retry_request(
+            "POST",
+            f"{self.replit_url.rstrip('/')}/api/paper/trade/{int(trade_id)}/manager-action",
+            params={"session_id": self.paper_session_id},
+            json=payload,
+        )
+        if resp is None or resp.status_code != 200:
+            return None
+        try:
+            data = resp.json()
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    def _apply_partial_close_from_tm(self, pos, close_pct: float, reason: str) -> bool:
+        close_pct = float(np.clip(close_pct, 1.0, 100.0))
+        tm_note = f"tm_auto_{reason.lower()}"
+        if pos.dashboard_trade_id:
+            payload = {
+                "close_pct": close_pct,
+                "note": tm_note,
+                "manual_close": False,
+            }
+            result = self._post_trade_manager_action(int(pos.dashboard_trade_id), "partial_close", payload)
+            if result:
+                self._sync_portfolio_from_web(source=f"tm_partial_{pos.symbol}")
+                return True
+
+        # Fallback path for non-dashboard contexts: keep the position open but
+        # reduce risk and effective size so manager behavior still matches.
+        keep_ratio = max(0.0, 1.0 - (close_pct / 100.0))
+        pos.risk_pct = float(max(pos.risk_pct * keep_ratio, 0.0))
+        pos.size_mult = float(max(pos.size_mult * keep_ratio, 0.0))
+        log.info(
+            "[TM_PARTIAL_FALLBACK] sym=%s pct=%.1f keep_ratio=%.3f reason=%s",
+            pos.symbol,
+            close_pct,
+            keep_ratio,
+            reason,
+        )
+        return True
+
     def _get_model_for_symbol(self, symbol: str):
         if self.per_symbol_models:
             if symbol not in self.symbol_models:
@@ -1794,6 +1874,13 @@ class LiveRunner:
                         pos.tp_price = new_tp
                         changed = True
                     try:
+                        new_horizon = int(wp.get("lane_horizon") or wp.get("horizon") or pos.horizon)
+                        if new_horizon > 0 and new_horizon != int(pos.horizon):
+                            pos.horizon = new_horizon
+                            changed = True
+                    except Exception:
+                        pass
+                    try:
                         lev = float(wp.get("leverage") or pos.size_mult)
                         if np.isfinite(lev) and lev > 0:
                             pos.size_mult = lev
@@ -1819,6 +1906,12 @@ class LiveRunner:
                 risk_pct = atr / entry_price * 100 if entry_price > 0 else 1.0
                 lane = str(wp.get("lane") or ("MYTHOS" if self.live_model == "mythos" else "V5"))
 
+                try:
+                    restored_horizon = int(float(wp.get("lane_horizon") or wp.get("horizon") or 96))
+                except Exception:
+                    restored_horizon = 96
+                restored_horizon = int(max(restored_horizon, 1))
+
                 pos = _Pos(
                     symbol=sym, side=side,
                     entry_price=entry_price,
@@ -1830,7 +1923,8 @@ class LiveRunner:
                     size_mult=1.0,
                     risk_pct=risk_pct,
                     bar_index=self.cycle_count,
-                    lane=lane, horizon=96,
+                    lane=lane,
+                    horizon=restored_horizon,
                 )
                 try:
                     pos.dashboard_trade_id = int(wp.get("id") or 0) or None
@@ -1932,6 +2026,14 @@ class LiveRunner:
         log.info(f"  Symbols: {', '.join(self.symbols)}")
         if self.live_model == "mythos":
             log.info("  Runtime model: MYTHOS")
+            log.info(
+                "  Mythos TM: enabled=%s policy=%s scale_out=%s time_adaptive=%s vol_trailing=%s",
+                self.mythos_tm_enabled,
+                self.mythos_tm_policy,
+                self.mythos_tm_scale_out,
+                self.mythos_tm_time_adaptive,
+                self.mythos_tm_vol_trailing,
+            )
         else:
             log.info(f"  V5 Scoring: lambda={self.v5_score_lambda} threshold={self.v5_score_threshold} min_mu_r={self.v5_min_mu_r}")
         log.info(f"  TP={self.tp_mult}x SL={self.sl_mult}x | Cooldown: {self.cooldown_bars} bars")
@@ -2101,7 +2203,7 @@ class LiveRunner:
         """Run Smart Trade Manager over all open positions.
 
         For each open position, compute current HTF score and p_enter,
-        then ask TradeManager for an action. Handle MOVE_SL, TRAIL_SL, CLOSE_FULL.
+        then ask TradeManager for an action.
         """
         open_positions = dict(self.portfolio.open_positions)
         if not open_positions:
@@ -2116,7 +2218,7 @@ class LiveRunner:
             candle_low = lows.get(symbol)
 
             current_htf_score = getattr(pos, 'htf_score', None)
-            current_p_enter = None
+            current_p_enter = float(getattr(pos, "p_enter", 0.0) or 0.0)
 
             action = self.trade_manager.update_position(
                 symbol=symbol,
@@ -2141,6 +2243,20 @@ class LiveRunner:
                         self._update_trade_sl(pos.dashboard_trade_id, action.new_sl)
                     except Exception as e:
                         log.warning(f"Failed to update SL on dashboard for {symbol}: {e}")
+
+            elif action.action == "CLOSE_PARTIAL":
+                close_pct = float(action.close_pct if action.close_pct is not None else 25.0)
+                try:
+                    applied = self._apply_partial_close_from_tm(pos, close_pct=close_pct, reason=action.reason)
+                    if applied:
+                        log.info(
+                            "[TM_PARTIAL] sym=%s pct=%.1f reason=%s",
+                            symbol,
+                            close_pct,
+                            action.reason,
+                        )
+                except Exception as e:
+                    log.warning(f"Failed partial-close TM action for {symbol}: {e}")
 
             elif action.action == "CLOSE_FULL":
                 if symbol not in self.portfolio.open_positions:
@@ -2204,9 +2320,7 @@ class LiveRunner:
         if self.execution_mode in ("paper", "live") and self.record_trades:
             self.portfolio.check_exits(prices, highs=highs, lows=lows)
             self._enforce_equity_hard_stop(prices)
-            # Pure model isolation: TradeManager overlays are V5-specific.
-            # Mythos sessions run with native signal+SL/TP flow only.
-            if self.live_model != "mythos":
+            if self.live_model != "mythos" or self.mythos_tm_enabled:
                 self._run_trade_manager(prices, highs, lows)
 
         awareness = self._decision_awareness_snapshot()
@@ -2363,6 +2477,23 @@ class LiveRunner:
         unc_n = float(np.clip(1.0 / (1.0 + max(uncertainty, 0.0)), 0.0, 1.0))
         size_quality = float(np.clip(0.45 * conf_n + 0.35 * edge_n + 0.20 * unc_n, 0.0, 1.0))
         lane_size_mult = float(min_lev + (max_lev - min_lev) * size_quality)
+        regime_raw = str(pred.get("regime", "") or "").strip().upper()
+        regime_horizon_bias = 0
+        if "TREND" in regime_raw or "BREAKOUT" in regime_raw:
+            regime_horizon_bias = 10
+        elif "MOMENTUM" in regime_raw:
+            regime_horizon_bias = 5
+        elif "MEAN" in regime_raw or "CHOP" in regime_raw:
+            regime_horizon_bias = -5
+        quality_horizon = float(np.clip(0.55 * conf_n + 0.35 * edge_n + 0.10 * unc_n, 0.0, 1.0))
+        uncertainty_penalty = float(max(uncertainty - 0.85, 0.0) * 8.0)
+        lane_horizon = int(
+            np.clip(
+                round(12 + (quality_horizon * 40.0) + regime_horizon_bias - uncertainty_penalty),
+                8,
+                96,
+            )
+        )
         tp_mult_used, sl_mult_used = _resolve_mythos_live_tp_sl(
             cfg_obj=cfg_obj,
             side=side,
@@ -2393,7 +2524,9 @@ class LiveRunner:
             "mythos_size_quality": round(size_quality, 4),
             "tp_mult_used": round(float(tp_mult_used), 4),
             "sl_mult_used": round(float(sl_mult_used), 4),
-            "lane_horizon": 24,
+            "lane_horizon": lane_horizon,
+            "mythos_time_horizon": lane_horizon,
+            "mythos_horizon_profile": "regime_adaptive",
         }
         if atr and atr > 0 and not (atr != atr):
             sl_dist = float(sl_mult_used * atr)

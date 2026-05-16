@@ -6189,6 +6189,7 @@ async def open_positions_summary(session_id: str = Query(default="default")):
                 "entryTs": int(tr.get("entry_time") or tr.get("entryTs") or 0),
                 "signalConfidence": float(tr.get("p_enter") or tr.get("signalConfidence") or 0.0),
                 "lane": tr.get("lane", "V5"),
+                "lane_horizon": int(max(_safe_float(tr.get("lane_horizon", tr.get("horizon", 24)), 24.0), 1.0)),
                 "leverage": float(tr.get("leverage") or 1.0),
                 "riskUsd": float(tr.get("risk_usd_used") or 0.0),
             }
