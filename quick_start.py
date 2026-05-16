@@ -120,6 +120,7 @@ def _apply_mythos_profile_overrides(args) -> list:
         "mythos_disable_conviction_boost_dd_r": 200.0,
         "mythos_disable_leverage_dd_r": 200.0,
         "mythos_dd_risk_recovery_r": 190.0,
+        "mythos_risk_hard_stops_non_overridable": False,
         # Recover pre-collapse leverage participation by removing strict
         # sure/leverage policy gates introduced in newer stack revisions.
         "mythos_sure_min_analog_hits": 0,
@@ -6402,14 +6403,35 @@ Examples:
                         help="MYTHOS robust validation: maximum CPCV paths evaluated per run (default: 256)")
     parser.add_argument("--mythos-cpcv-random-seed", type=int, default=42,
                         help="MYTHOS robust validation: RNG seed for CPCV path sampling when combinations are large (default: 42)")
+    parser.add_argument("--mythos-cpcv-purge-folds", type=int, default=1,
+                        help="MYTHOS robust validation: fold-level purge gap around CPCV test folds (default: 1)")
+    parser.add_argument("--mythos-cpcv-embargo-folds", type=int, default=1,
+                        help="MYTHOS robust validation: post-test embargo folds excluded from CPCV train sets (default: 1)")
     parser.add_argument("--mythos-robust-validation-trial-count", type=int, default=8,
                         help="MYTHOS robust validation: effective number of trials used for DSR deflation (default: 8)")
     parser.add_argument("--mythos-robust-validation-sr-benchmark", type=float, default=0.0,
                         help="MYTHOS robust validation: Sharpe benchmark threshold used by PSR/DSR (default: 0.0)")
     parser.add_argument("--mythos-robust-validation-spa-bootstrap-samples", type=int, default=400,
                         help="MYTHOS robust validation: bootstrap samples for SPA-style p-value estimation (default: 400)")
+    parser.add_argument("--mythos-robust-validation-spa-block-size", type=int, default=3,
+                        help="MYTHOS robust validation: circular block size for SPA bootstrap (default: 3)")
     parser.add_argument("--mythos-robust-validation-report-top-paths", type=int, default=5,
                         help="MYTHOS robust validation: number of best/worst CPCV paths to include in report (default: 5)")
+    parser.add_argument("--mythos-runtime-strict-config", dest="mythos_runtime_strict_config", action="store_true",
+                        help="MYTHOS artifact governance: fail runtime load on unknown config keys (default: enabled)")
+    parser.add_argument("--mythos-no-runtime-strict-config", dest="mythos_runtime_strict_config", action="store_false",
+                        help="MYTHOS artifact governance: allow unknown config keys at runtime load")
+    parser.set_defaults(mythos_runtime_strict_config=True)
+    parser.add_argument("--mythos-runtime-require-adaptive-brain", dest="mythos_runtime_require_adaptive_brain", action="store_true",
+                        help="MYTHOS runtime parity guard: require adaptive_brain payload in saved artifacts (default: disabled)")
+    parser.add_argument("--mythos-no-runtime-require-adaptive-brain", dest="mythos_runtime_require_adaptive_brain", action="store_false",
+                        help="MYTHOS runtime parity guard: do not require adaptive_brain payload in artifacts")
+    parser.set_defaults(mythos_runtime_require_adaptive_brain=False)
+    parser.add_argument("--mythos-risk-hard-stops-non-overridable", dest="mythos_risk_hard_stops_non_overridable", action="store_true",
+                        help="MYTHOS risk constitution: enforce daily/weekly/trailing caps as hard non-overridable stops (default: enabled)")
+    parser.add_argument("--mythos-no-risk-hard-stops-non-overridable", dest="mythos_risk_hard_stops_non_overridable", action="store_false",
+                        help="MYTHOS risk constitution: allow cap overrides when override gates are met")
+    parser.set_defaults(mythos_risk_hard_stops_non_overridable=True)
     parser.add_argument("--mythos-meta-bootstrap-samples", type=int, default=1024,
                         help="MYTHOS v7: bootstrap samples from training analog memory to pre-warm meta learner (default: 1024)")
     parser.add_argument("--mythos-meta-bootstrap-epochs", type=int, default=2,
@@ -7496,6 +7518,8 @@ Examples:
                 save_best_model=args.mythos_save_best_model,
                 best_model_metric=args.mythos_best_model_metric,
                 model_output_dir=args.mythos_model_output_dir,
+                runtime_strict_config=args.mythos_runtime_strict_config,
+                runtime_require_adaptive_brain=args.mythos_runtime_require_adaptive_brain,
                 analog_k=args.mythos_analog_k,
                 analog_blend=args.mythos_analog_blend,
                 online_reliability_alpha=args.mythos_online_reliability_alpha,
@@ -7693,9 +7717,12 @@ Examples:
                 cpcv_test_fraction=args.mythos_cpcv_test_fraction,
                 cpcv_max_paths=args.mythos_cpcv_max_paths,
                 cpcv_random_seed=args.mythos_cpcv_random_seed,
+                cpcv_purge_folds=args.mythos_cpcv_purge_folds,
+                cpcv_embargo_folds=args.mythos_cpcv_embargo_folds,
                 robust_validation_trial_count=args.mythos_robust_validation_trial_count,
                 robust_validation_sr_benchmark=args.mythos_robust_validation_sr_benchmark,
                 robust_validation_spa_bootstrap_samples=args.mythos_robust_validation_spa_bootstrap_samples,
+                robust_validation_spa_block_size=args.mythos_robust_validation_spa_block_size,
                 robust_validation_report_top_paths=args.mythos_robust_validation_report_top_paths,
                 drawdown_edge_start_r=args.mythos_drawdown_edge_start_r,
                 drawdown_edge_step_r=args.mythos_drawdown_edge_step_r,
@@ -7731,6 +7758,7 @@ Examples:
                 counterfactual_margin=args.mythos_counterfactual_margin,
                 counterfactual_uncertainty_weight=args.mythos_counterfactual_uncertainty_weight,
                 counterfactual_min_alt_hits=args.mythos_counterfactual_min_alt_hits,
+                risk_hard_stops_non_overridable=args.mythos_risk_hard_stops_non_overridable,
                 enable_gpu_neural_experts=args.mythos_use_neural_expert,
                 neural_expert_device=args.mythos_neural_device,
                 neural_expert_hidden=args.mythos_neural_hidden,

@@ -48,6 +48,9 @@ class MythosConfig:
     save_best_model: bool = True
     best_model_metric: str = "total_r"
     model_output_dir: str = "checkpoints/mythos_models"
+    artifact_schema_version: int = 2
+    runtime_strict_config: bool = True
+    runtime_require_adaptive_brain: bool = False
     analog_k: int = 48
     analog_blend: float = 0.35
     online_reliability_alpha: float = 0.08
@@ -139,7 +142,10 @@ class MythosConfig:
     robust_validation_trial_count: int = 8
     robust_validation_sr_benchmark: float = 0.0
     robust_validation_spa_bootstrap_samples: int = 400
+    robust_validation_spa_block_size: int = 3
     robust_validation_report_top_paths: int = 5
+    cpcv_purge_folds: int = 1
+    cpcv_embargo_folds: int = 1
     opportunity_rescue_enable: bool = True
     opportunity_rescue_start_bars: int = 96
     opportunity_rescue_full_bars: int = 384
@@ -258,6 +264,7 @@ class MythosConfig:
     risk_state_min_size_for_norm: float = 1.0
     risk_state_max_size_for_norm: float = 250.0
     risk_cap_override_enable: bool = True
+    risk_hard_stops_non_overridable: bool = True
     risk_cap_override_conviction: float = 0.80
     risk_cap_override_edge_buffer: float = 0.002
     risk_cap_override_max_uncertainty: float = 0.70
@@ -416,6 +423,13 @@ class MythosConfig:
                 self.min_size_mult,
                 self.max_leverage,
             )
+        )
+        self.artifact_schema_version = int(
+            np.clip(getattr(self, "artifact_schema_version", 2), 1, 16)
+        )
+        self.runtime_strict_config = bool(getattr(self, "runtime_strict_config", True))
+        self.runtime_require_adaptive_brain = bool(
+            getattr(self, "runtime_require_adaptive_brain", False)
         )
         # In high-leverage profiles, trade counts are naturally lower; relax
         # warmup/sample gates so adaptive modules can still activate.
@@ -653,8 +667,17 @@ class MythosConfig:
         self.robust_validation_spa_bootstrap_samples = int(
             np.clip(getattr(self, "robust_validation_spa_bootstrap_samples", 400), 32, 5000)
         )
+        self.robust_validation_spa_block_size = int(
+            np.clip(getattr(self, "robust_validation_spa_block_size", 3), 1, 128)
+        )
         self.robust_validation_report_top_paths = int(
             max(getattr(self, "robust_validation_report_top_paths", 5), 1)
+        )
+        self.cpcv_purge_folds = int(
+            np.clip(getattr(self, "cpcv_purge_folds", 1), 0, 16)
+        )
+        self.cpcv_embargo_folds = int(
+            np.clip(getattr(self, "cpcv_embargo_folds", 1), 0, 16)
         )
         self.opportunity_rescue_enable = bool(getattr(self, "opportunity_rescue_enable", True))
         self.opportunity_rescue_start_bars = int(max(getattr(self, "opportunity_rescue_start_bars", 96), 1))
@@ -938,6 +961,9 @@ class MythosConfig:
             )
         )
         self.risk_cap_override_enable = bool(getattr(self, "risk_cap_override_enable", True))
+        self.risk_hard_stops_non_overridable = bool(
+            getattr(self, "risk_hard_stops_non_overridable", True)
+        )
         self.risk_cap_override_conviction = float(
             np.clip(getattr(self, "risk_cap_override_conviction", 0.80), 0.0, 1.0)
         )

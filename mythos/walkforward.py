@@ -2391,6 +2391,8 @@ def _build_cpcv_splits(
     test_size: int,
     max_paths: int,
     seed: int,
+    purge_folds: int = 0,
+    embargo_folds: int = 0,
 ) -> List[Tuple[List[int], List[int]]]:
     if n_folds < 2:
         return []
@@ -2415,9 +2417,22 @@ def _build_cpcv_splits(
             attempts += 1
         chosen = sorted(uniq)
     splits: List[Tuple[List[int], List[int]]] = []
+    purge_folds = int(max(purge_folds, 0))
+    embargo_folds = int(max(embargo_folds, 0))
     for test_idx in chosen:
         test_set = set(int(i) for i in test_idx)
-        train_idx = [i for i in all_idx if i not in test_set]
+        forbidden: set[int] = set(test_set)
+        if purge_folds > 0:
+            for t in test_set:
+                lo = max(0, int(t) - purge_folds)
+                hi = min(n_folds - 1, int(t) + purge_folds)
+                forbidden.update(range(lo, hi + 1))
+        if embargo_folds > 0 and test_set:
+            post_start = max(test_set) + 1
+            post_end = min(n_folds - 1, max(test_set) + embargo_folds)
+            if post_start <= post_end:
+                forbidden.update(range(post_start, post_end + 1))
+        train_idx = [i for i in all_idx if i not in forbidden]
         test_list = [int(i) for i in test_idx]
         if train_idx and test_list:
             splits.append((train_idx, test_list))
@@ -2482,6 +2497,7 @@ def _spa_single_model(
     *,
     bootstrap_samples: int,
     seed: int,
+    block_size: int = 1,
 ) -> Dict[str, float]:
     arr = np.asarray(values, dtype=np.float64)
     n = int(arr.size)
@@ -2497,10 +2513,19 @@ def _spa_single_model(
     t_obs = float(max(sqrt(float(n)) * mu / sigma, 0.0))
     centered = arr - mu
     reps = int(max(bootstrap_samples, 32))
+    block_size = int(max(block_size, 1))
     rng = np.random.default_rng(int(seed))
     ge_count = 0
     for _ in range(reps):
-        idx = rng.integers(0, n, size=n)
+        if block_size <= 1:
+            idx = rng.integers(0, n, size=n)
+        else:
+            idx_parts: List[int] = []
+            while len(idx_parts) < n:
+                start = int(rng.integers(0, n))
+                take = int(min(block_size, n - len(idx_parts)))
+                idx_parts.extend(((start + j) % n) for j in range(take))
+            idx = np.asarray(idx_parts[:n], dtype=np.int64)
         sample = centered[idx]
         s = float(np.std(sample, ddof=1))
         if s <= 1e-12:
@@ -2540,11 +2565,15 @@ def _robust_validation_report(
     test_size = int(np.clip(round(len(folds) * test_fraction), 1, len(folds) - 1))
     max_paths = int(max(getattr(cfg, "cpcv_max_paths", 256), 1))
     seed = int(max(getattr(cfg, "cpcv_random_seed", 42), 0))
+    purge_folds = int(max(getattr(cfg, "cpcv_purge_folds", 1), 0))
+    embargo_folds = int(max(getattr(cfg, "cpcv_embargo_folds", 1), 0))
     splits = _build_cpcv_splits(
         n_folds=len(folds),
         test_size=test_size,
         max_paths=max_paths,
         seed=seed,
+        purge_folds=purge_folds,
+        embargo_folds=embargo_folds,
     )
     if not splits:
         report["reason"] = "no_valid_cpcv_splits"
@@ -2590,6 +2619,7 @@ def _robust_validation_report(
         te,
         bootstrap_samples=int(max(getattr(cfg, "robust_validation_spa_bootstrap_samples", 400), 32)),
         seed=seed + 17,
+        block_size=int(max(getattr(cfg, "robust_validation_spa_block_size", 3), 1)),
     )
     top_n = int(max(getattr(cfg, "robust_validation_report_top_paths", 5), 1))
     sorted_rows = sorted(rows, key=lambda x: float(x.get("test_score", 0.0)), reverse=True)
@@ -2604,6 +2634,8 @@ def _robust_validation_report(
             "neutral_score": round(neutral, 6),
             "test_fraction": round(test_fraction, 4),
             "test_fold_size": int(test_size),
+            "cpcv_purge_folds": int(purge_folds),
+            "cpcv_embargo_folds": int(embargo_folds),
             "paths_evaluated": int(len(rows)),
             "pbo_overfit_probability": round(overfit_prob, 6),
             "pbo_oos_underperform_probability": round(oos_underperform_prob, 6),
@@ -2617,6 +2649,7 @@ def _robust_validation_report(
             "sharpe_deflator": round(float(sharpe_diag.get("sharpe_deflator", 0.0)), 6),
             "spa_t_stat": round(float(spa_diag.get("t_stat", 0.0)), 6),
             "spa_p_value": round(float(spa_diag.get("p_value", 1.0)), 6),
+            "spa_block_size": int(max(getattr(cfg, "robust_validation_spa_block_size", 3), 1)),
             "significant_edge_95": significance_95,
             "top_paths": top_paths,
             "worst_paths": worst_paths,
@@ -2643,6 +2676,12 @@ def _save_model_artifact(
     model_path = output_dir / f"mythos_best_{symbol}.json"
     payload = {
         "kind": "mythos_best_fold_model",
+        "artifact_schema_version": int(max(getattr(cfg, "artifact_schema_version", 2), 1)),
+        "decision_graph_version": "mythos-institutional-v2",
+        "runtime_strict_config": bool(getattr(cfg, "runtime_strict_config", True)),
+        "runtime_require_adaptive_brain": bool(
+            getattr(cfg, "runtime_require_adaptive_brain", False)
+        ),
         "symbol": symbol,
         "fold": int(fold_idx),
         "window_start": window_start,

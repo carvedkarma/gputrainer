@@ -13,9 +13,16 @@ from .features import MYTHOS_FEATURE_COLUMNS
 from .router import MetaRouter
 
 
-def _coerce_config(payload: Dict[str, object]) -> MythosConfig:
+def _coerce_config(payload: Dict[str, object], *, strict: bool = False) -> MythosConfig:
     cfg_data = payload if isinstance(payload, dict) else {}
     allowed = {f.name for f in fields(MythosConfig)}
+    if strict:
+        unknown = sorted(str(k) for k in cfg_data.keys() if k not in allowed)
+        if unknown:
+            raise ValueError(
+                "Mythos artifact config has unknown fields in strict mode: "
+                + ", ".join(unknown)
+            )
     clean = {k: v for k, v in cfg_data.items() if k in allowed}
     return MythosConfig(**clean)
 
@@ -135,7 +142,15 @@ class MythosRuntimeModel:
     def from_artifact(cls, artifact_path: Path) -> "MythosRuntimeModel":
         path = Path(artifact_path)
         payload = json.loads(path.read_text())
-        cfg = _coerce_config(payload.get("config", {}))
+        schema_version = int(max(payload.get("artifact_schema_version", 1), 1))
+        strict_mode = bool(payload.get("runtime_strict_config", schema_version >= 2))
+        cfg = _coerce_config(payload.get("config", {}), strict=strict_mode)
+        if bool(getattr(cfg, "runtime_require_adaptive_brain", False)) and payload.get("adaptive_brain") is None:
+            raise ValueError(
+                f"Mythos artifact requires adaptive_brain for runtime parity but it is missing: {path}"
+            )
+        if str(payload.get("kind", "mythos_best_fold_model")) != "mythos_best_fold_model":
+            raise ValueError(f"Invalid Mythos artifact kind: {path}")
         wm = RuntimeWorldModel.from_state_dict(payload.get("world_model", {}))
         experts = [RuntimeLinearExpert.from_state_dict(ex) for ex in payload.get("experts", [])]
         if not experts:

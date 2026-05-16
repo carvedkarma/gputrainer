@@ -32,6 +32,24 @@ class RiskConstitution:
         self._recent_high_conv_rr: List[float] = []
         self._recent_high_conv_max = int(max(getattr(cfg, "high_conviction_expectancy_window", 64), 8))
         self._equity_curve: List[float] = []
+        self._bar_seconds = self._resolve_bar_seconds()
+        self._bars_per_day = int(max(round(86400.0 / max(self._bar_seconds, 1.0)), 1))
+        self._bars_per_week = int(max(self._bars_per_day * 7, 1))
+
+    def _resolve_bar_seconds(self) -> float:
+        raw = str(getattr(self.cfg, "interval", "15m") or "15m").strip().lower()
+        if not raw:
+            return 15.0 * 60.0
+        try:
+            if raw.endswith("m"):
+                return max(float(raw[:-1]), 1.0) * 60.0
+            if raw.endswith("h"):
+                return max(float(raw[:-1]), 1.0) * 3600.0
+            if raw.endswith("d"):
+                return max(float(raw[:-1]), 1.0) * 86400.0
+            return max(float(raw), 1.0) * 60.0
+        except Exception:
+            return 15.0 * 60.0
 
     def current_drawdown_r(self) -> float:
         return float(max(self.state.peak_equity_r - self.state.equity_r, 0.0))
@@ -57,13 +75,11 @@ class RiskConstitution:
             return int(bar_index)
         if ts_ms is None:
             raise ValueError("Either ts_ms or bar_index must be provided")
-        # 15m bars
-        return int(ts_ms // (15 * 60 * 1000))
+        return int(ts_ms // int(max(self._bar_seconds * 1000.0, 1.0)))
 
     def _update_calendar(self, bar_index: int) -> None:
-        # 15m bars -> 96 bars/day, 672 bars/week
-        day_idx = int(bar_index // 96)
-        week_idx = int(bar_index // 672)
+        day_idx = int(bar_index // self._bars_per_day)
+        week_idx = int(bar_index // self._bars_per_week)
         if day_idx != self.state.day_idx:
             self.state.day_idx = day_idx
             self.state.daily_r = 0.0
@@ -116,8 +132,12 @@ class RiskConstitution:
             or self.state.weekly_r <= self.cfg.weekly_loss_cap_r
             or (self.state.equity_r - self.state.peak_equity_r) <= self.cfg.trailing_stop_r
         )
-        if blocked_by_caps and (not _allow_cap_override()):
-            return False
+        if blocked_by_caps:
+            # Institutional default: hard constitution caps are not bypassable.
+            if bool(getattr(self.cfg, "risk_hard_stops_non_overridable", True)):
+                return False
+            if not _allow_cap_override():
+                return False
         return True
 
     def position_size_multiplier(

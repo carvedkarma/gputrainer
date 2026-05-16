@@ -179,15 +179,23 @@ def test_robust_validation_knobs_are_normalized():
         cpcv_test_fraction=2.0,
         cpcv_max_paths=0,
         cpcv_random_seed=-1,
+        cpcv_purge_folds=-3,
+        cpcv_embargo_folds=99,
         robust_validation_trial_count=0,
         robust_validation_spa_bootstrap_samples=1,
+        robust_validation_spa_block_size=999,
         robust_validation_report_top_paths=0,
+        artifact_schema_version=99,
     )
     assert cfg.robust_validation_min_folds == 3
     assert cfg.robust_validation_metric == "expectancy_r"
     assert cfg.cpcv_test_fraction == 0.9
     assert cfg.cpcv_max_paths == 1
     assert cfg.cpcv_random_seed == 0
+    assert cfg.cpcv_purge_folds == 0
+    assert cfg.cpcv_embargo_folds == 16
     assert cfg.robust_validation_trial_count == 1
     assert cfg.robust_validation_spa_bootstrap_samples == 32
+    assert cfg.robust_validation_spa_block_size == 128
     assert cfg.robust_validation_report_top_paths == 1
+    assert cfg.artifact_schema_version == 16
