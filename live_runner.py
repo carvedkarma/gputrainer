@@ -1762,6 +1762,36 @@ class LiveRunner:
                 if pos:
                     log.info(f"[PortfolioSync/{source}] Removed stale in-memory position for {sym} (closed in web app)")
 
+            # Update existing in-memory positions with latest web stop/TP/risk state.
+            shared = mem_symbols & web_symbols
+            for sym in shared:
+                try:
+                    wp = web_positions[sym]
+                    pos = self.portfolio.open_positions.get(sym)
+                    if pos is None:
+                        continue
+                    new_sl = float(wp.get("stopLoss") or pos.sl_price)
+                    new_tp = float(wp.get("tp2") or pos.tp_price)
+                    changed = False
+                    if np.isfinite(new_sl) and new_sl > 0 and abs(new_sl - float(pos.sl_price)) > 1e-9:
+                        pos.sl_price = new_sl
+                        changed = True
+                    if np.isfinite(new_tp) and new_tp > 0 and abs(new_tp - float(pos.tp_price)) > 1e-9:
+                        pos.tp_price = new_tp
+                        changed = True
+                    try:
+                        lev = float(wp.get("leverage") or pos.size_mult)
+                        if np.isfinite(lev) and lev > 0:
+                            pos.size_mult = lev
+                    except Exception:
+                        pass
+                    if pos.entry_price > 0:
+                        pos.risk_pct = max(abs(pos.entry_price - pos.sl_price) / max(pos.entry_price, 1e-9) * 100.0, 0.0)
+                    if changed:
+                        log.info(f"[PortfolioSync/{source}] Updated {sym} SL/TP from web app state")
+                except Exception:
+                    continue
+
             # Add positions the web app shows as OPEN but not in memory
             from portfolio import Position as _Pos
             new_syms = web_symbols - mem_symbols
@@ -1788,6 +1818,10 @@ class LiveRunner:
                     bar_index=self.cycle_count,
                     lane=lane, horizon=96,
                 )
+                try:
+                    pos.dashboard_trade_id = int(wp.get("id") or 0) or None
+                except Exception:
+                    pos.dashboard_trade_id = None
                 self.portfolio.open_positions[sym] = pos
                 log.info(f"[PortfolioSync/{source}] Restored {side} {sym} @ {entry_price:.2f} from web app")
 

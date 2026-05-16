@@ -5691,6 +5691,95 @@ async def push_cycle_log_local(payload: Dict[str, Any], session_id: Optional[str
     return {"ok": True, "id": row_id, "session_id": sid}
 
 
+def _resolve_trade_context(
+    trade_id: int,
+    payload: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
+) -> tuple[_DashboardSessionState, Dict[str, Any]]:
+    sid = _resolve_session_id(payload, session_id=session_id)
+    trade = None
+    state = _dashboard_sessions.get(sid)
+    if state is not None:
+        trade = state.trades.get(int(trade_id))
+    if trade is None:
+        for candidate in _dashboard_sessions.values():
+            maybe = candidate.trades.get(int(trade_id))
+            if maybe is not None and (not session_id or candidate.session_id == sid):
+                state = candidate
+                trade = maybe
+                break
+    if trade is None or state is None:
+        raise HTTPException(status_code=404, detail=f"Trade {trade_id} not found")
+    return state, trade
+
+
+def _close_open_trade_record(
+    *,
+    state: _DashboardSessionState,
+    trade: Dict[str, Any],
+    exit_price: float,
+    outcome: str,
+    note: str,
+    fee_bps: float = 8.0,
+    explicit_cost_r: Optional[float] = None,
+    manual_close: bool = False,
+) -> Dict[str, Any]:
+    symbol = str(trade.get("symbol", "")).upper()
+    entry = float(trade.get("entry_price") or trade.get("entryPrice") or 0.0)
+    side = str(trade.get("side", "LONG")).upper()
+    initial_sl = float(trade.get("initial_sl") or trade.get("stop_loss") or trade.get("stopLoss") or entry)
+    risk_abs = abs(entry - initial_sl)
+    if risk_abs <= 1e-9:
+        risk_abs = max(entry * 0.001, 1e-6)
+
+    gross_r = (exit_price - entry) / risk_abs if side == "LONG" else (entry - exit_price) / risk_abs
+    if explicit_cost_r is not None:
+        cost_r = float(explicit_cost_r)
+    else:
+        cost_r = (float(fee_bps) / 10000.0) * 2.0 / (risk_abs / max(entry, 1e-9))
+    net_r = gross_r - cost_r
+
+    risk_usd = float(trade.get("risk_usd_used", 0.0) or 0.0)
+    if risk_usd <= 0.0:
+        risk_meta = _resolve_trade_risk_and_leverage(state, trade)
+        trade["risk_pct_used"] = round(float(risk_meta["risk_pct_used"]), 4)
+        trade["leverage"] = round(float(risk_meta["leverage"]), 4)
+        trade["equity_usd_at_entry"] = round(float(risk_meta["equity_usd_at_entry"]), 2)
+        trade["risk_usd_used"] = round(float(risk_meta["risk_usd_used"]), 2)
+        risk_usd = float(trade["risk_usd_used"])
+
+    gross_usd = round(gross_r * risk_usd, 2)
+    cost_usd = round(cost_r * risk_usd, 2)
+    net_usd = round(net_r * risk_usd, 2)
+    now_ms = int(time.time() * 1000)
+    trade.update(
+        {
+            "status": "closed",
+            "manual_close": bool(manual_close),
+            "exit_time": now_ms,
+            "exit_price": round(float(exit_price), 6),
+            "outcome": str(outcome),
+            "exit_reason": str(note or outcome),
+            "gross_r": round(float(gross_r), 6),
+            "cost_r": round(float(cost_r), 6),
+            "net_r": round(float(net_r), 6),
+            "sized_r": round(float(net_r * float(trade.get("lane_size_mult", 1.0) or 1.0)), 6),
+            "risk_usd_used": round(float(risk_usd), 2),
+            "pnl_usd_gross": gross_usd,
+            "pnl_usd_cost": cost_usd,
+            "pnl_usd": net_usd,
+            "leverage": round(float(trade.get("leverage", 1.0) or 1.0), 4),
+            "engine": _infer_engine_from_payload(trade, session_id=state.session_id),
+            "manager_last_action": str(outcome).lower(),
+            "manager_last_action_ts": now_ms,
+            "manager_symbol": symbol,
+        }
+    )
+    state.updated_at_ms = now_ms
+    _refresh_session_engine_hint(state, trade)
+    return trade
+
+
 @app.post("/api/live/trade")
 async def create_live_trade(payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
     sid = _resolve_session_id(payload, session_id=session_id)
@@ -5722,20 +5811,7 @@ async def create_live_trade(payload: Dict[str, Any], session_id: Optional[str] =
 
 @app.patch("/api/live/trade/{trade_id}")
 async def update_live_trade(trade_id: int, payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
-    sid = _resolve_session_id(payload, session_id=session_id)
-    trade = None
-    state = _dashboard_sessions.get(sid)
-    if state is not None:
-        trade = state.trades.get(int(trade_id))
-    if trade is None:
-        for candidate in _dashboard_sessions.values():
-            maybe = candidate.trades.get(int(trade_id))
-            if maybe is not None and (not session_id or candidate.session_id == sid):
-                state = candidate
-                trade = maybe
-                break
-    if trade is None or state is None:
-        raise HTTPException(status_code=404, detail=f"Trade {trade_id} not found")
+    state, trade = _resolve_trade_context(int(trade_id), payload=payload, session_id=session_id)
     trade.update(payload or {})
     trade["id"] = int(trade_id)
     trade["session_id"] = state.session_id
@@ -5775,20 +5851,7 @@ async def manual_close_paper_trade(
     payload: Dict[str, Any],
     session_id: Optional[str] = Query(default=None),
 ):
-    sid = _resolve_session_id(payload, session_id=session_id)
-    state = _dashboard_sessions.get(sid)
-    trade: Optional[Dict[str, Any]] = None
-    if state is not None:
-        trade = state.trades.get(int(trade_id))
-    if trade is None:
-        for candidate in _dashboard_sessions.values():
-            maybe = candidate.trades.get(int(trade_id))
-            if maybe is not None and (not session_id or candidate.session_id == sid):
-                state = candidate
-                trade = maybe
-                break
-    if trade is None or state is None:
-        raise HTTPException(status_code=404, detail=f"Trade {trade_id} not found")
+    state, trade = _resolve_trade_context(int(trade_id), payload=payload, session_id=session_id)
 
     if str(trade.get("status", "open")).lower() == "closed":
         return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade, "already_closed": True}
@@ -5797,57 +5860,193 @@ async def manual_close_paper_trade(
     latest_px = _latest_price_by_symbol(state).get(symbol)
     entry = float(trade.get("entry_price") or trade.get("entryPrice") or 0.0)
     exit_price = float(payload.get("exit_price") or latest_px or entry or 0.0)
-    side = str(trade.get("side", "LONG")).upper()
-    initial_sl = float(trade.get("initial_sl") or trade.get("stop_loss") or trade.get("stopLoss") or entry)
-    risk_abs = abs(entry - initial_sl)
-    if risk_abs <= 1e-9:
-        risk_abs = max(entry * 0.001, 1e-6)
-
-    gross_r = (exit_price - entry) / risk_abs if side == "LONG" else (entry - exit_price) / risk_abs
-    fee_bps = float(payload.get("fee_bps", 8.0) or 0.0)
-    explicit_cost_r = payload.get("cost_r")
-    if explicit_cost_r is not None:
-        cost_r = float(explicit_cost_r)
-    else:
-        cost_r = (fee_bps / 10000.0) * 2.0 / (risk_abs / max(entry, 1e-9))
-    net_r = gross_r - cost_r
-
-    risk_usd = float(trade.get("risk_usd_used", 0.0) or 0.0)
-    if risk_usd <= 0.0:
-        risk_meta = _resolve_trade_risk_and_leverage(state, trade)
-        trade["risk_pct_used"] = round(float(risk_meta["risk_pct_used"]), 4)
-        trade["leverage"] = round(float(risk_meta["leverage"]), 4)
-        trade["equity_usd_at_entry"] = round(float(risk_meta["equity_usd_at_entry"]), 2)
-        trade["risk_usd_used"] = round(float(risk_meta["risk_usd_used"]), 2)
-        risk_usd = float(trade["risk_usd_used"])
-    gross_usd = round(gross_r * risk_usd, 2)
-    cost_usd = round(cost_r * risk_usd, 2)
-    net_usd = round(net_r * risk_usd, 2)
-
-    now_ms = int(time.time() * 1000)
-    trade.update(
-        {
-            "status": "closed",
-            "manual_close": True,
-            "exit_time": now_ms,
-            "exit_price": round(exit_price, 6),
-            "outcome": str(payload.get("outcome") or "MANUAL_CLOSE"),
-            "exit_reason": str(payload.get("note") or "manual_close_dashboard"),
-            "gross_r": round(float(gross_r), 6),
-            "cost_r": round(float(cost_r), 6),
-            "net_r": round(float(net_r), 6),
-            "sized_r": round(float(net_r * float(trade.get("lane_size_mult", 1.0) or 1.0)), 6),
-            "risk_usd_used": round(float(risk_usd), 2),
-            "pnl_usd_gross": gross_usd,
-            "pnl_usd_cost": cost_usd,
-            "pnl_usd": net_usd,
-            "leverage": round(float(trade.get("leverage", 1.0) or 1.0), 4),
-            "engine": _infer_engine_from_payload(trade, session_id=state.session_id),
-        }
+    _close_open_trade_record(
+        state=state,
+        trade=trade,
+        exit_price=exit_price,
+        outcome=str(payload.get("outcome") or "MANUAL_CLOSE"),
+        note=str(payload.get("note") or "manual_close_dashboard"),
+        fee_bps=float(payload.get("fee_bps", 8.0) or 0.0),
+        explicit_cost_r=float(payload.get("cost_r")) if payload.get("cost_r") is not None else None,
+        manual_close=True,
     )
-    state.updated_at_ms = now_ms
-    _refresh_session_engine_hint(state, trade)
     return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade}
+
+
+@app.post("/api/paper/trade/{trade_id}/manager-action")
+async def paper_trade_manager_action(
+    trade_id: int,
+    payload: Dict[str, Any],
+    session_id: Optional[str] = Query(default=None),
+):
+    state, trade = _resolve_trade_context(int(trade_id), payload=payload, session_id=session_id)
+    if str(trade.get("status", "open")).lower() == "closed":
+        return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade, "already_closed": True}
+
+    action = str(payload.get("action", "")).strip().lower()
+    symbol = str(trade.get("symbol", "")).upper()
+    latest_px = _latest_price_by_symbol(state).get(symbol)
+    entry = float(trade.get("entry_price") or trade.get("entryPrice") or 0.0)
+    side = str(trade.get("side", "LONG")).upper()
+    current_sl = float(trade.get("stop_loss") or trade.get("stopLoss") or trade.get("initial_sl") or entry)
+    now_ms = int(time.time() * 1000)
+
+    if action in {"force_close", "close", "manual_close"}:
+        exit_price = float(payload.get("exit_price") or latest_px or entry or 0.0)
+        _close_open_trade_record(
+            state=state,
+            trade=trade,
+            exit_price=exit_price,
+            outcome=str(payload.get("outcome") or "FORCE_CLOSE"),
+            note=str(payload.get("note") or "manager_force_close"),
+            fee_bps=float(payload.get("fee_bps", 8.0) or 0.0),
+            explicit_cost_r=float(payload.get("cost_r")) if payload.get("cost_r") is not None else None,
+            manual_close=bool(payload.get("manual_close", True)),
+        )
+        return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade, "action": action}
+
+    if action in {"breakeven", "move_sl"}:
+        if action == "breakeven":
+            target_sl = float(entry)
+            note = "manager_breakeven"
+        else:
+            if payload.get("new_stop_loss") is None:
+                raise HTTPException(status_code=400, detail="new_stop_loss is required for move_sl")
+            target_sl = float(payload.get("new_stop_loss"))
+            note = str(payload.get("note") or "manager_move_sl")
+        if not np.isfinite(target_sl) or target_sl <= 0.0:
+            raise HTTPException(status_code=400, detail="new stop loss must be a positive finite value")
+        if side == "LONG":
+            target_sl = max(target_sl, current_sl)
+        else:
+            target_sl = min(target_sl, current_sl)
+        trade["stop_loss"] = round(float(target_sl), 6)
+        trade["stopLoss"] = round(float(target_sl), 6)
+        if action == "breakeven":
+            trade["breakeven_moved"] = True
+        trade["manager_last_action"] = action
+        trade["manager_last_action_note"] = note
+        trade["manager_last_action_ts"] = now_ms
+        state.updated_at_ms = now_ms
+        _refresh_session_engine_hint(state, trade)
+        return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade, "action": action}
+
+    if action == "partial_close":
+        close_pct = float(payload.get("close_pct", payload.get("close_percent", 50.0)) or 50.0)
+        close_pct = float(np.clip(close_pct, 1.0, 100.0))
+        close_frac = close_pct / 100.0
+        if close_frac >= 0.999:
+            exit_price = float(payload.get("exit_price") or latest_px or entry or 0.0)
+            _close_open_trade_record(
+                state=state,
+                trade=trade,
+                exit_price=exit_price,
+                outcome="PARTIAL_CLOSE_FULL",
+                note=str(payload.get("note") or "manager_partial_close_full"),
+                fee_bps=float(payload.get("fee_bps", 8.0) or 0.0),
+                explicit_cost_r=float(payload.get("cost_r")) if payload.get("cost_r") is not None else None,
+                manual_close=False,
+            )
+            return {
+                "ok": True,
+                "id": int(trade_id),
+                "session_id": state.session_id,
+                "trade": trade,
+                "action": action,
+                "close_pct": close_pct,
+            }
+
+        exit_price = float(payload.get("exit_price") or latest_px or entry or 0.0)
+        initial_sl = float(trade.get("initial_sl") or trade.get("stop_loss") or trade.get("stopLoss") or entry)
+        risk_abs = abs(entry - initial_sl)
+        if risk_abs <= 1e-9:
+            risk_abs = max(entry * 0.001, 1e-6)
+        gross_r = (exit_price - entry) / risk_abs if side == "LONG" else (entry - exit_price) / risk_abs
+        fee_bps = float(payload.get("fee_bps", 8.0) or 0.0)
+        cost_r = (
+            float(payload.get("cost_r"))
+            if payload.get("cost_r") is not None
+            else (fee_bps / 10000.0) * 2.0 / (risk_abs / max(entry, 1e-9))
+        )
+        net_r = gross_r - cost_r
+
+        risk_usd_total = float(trade.get("risk_usd_used", 0.0) or 0.0)
+        if risk_usd_total <= 0.0:
+            risk_meta = _resolve_trade_risk_and_leverage(state, trade)
+            trade["risk_pct_used"] = round(float(risk_meta["risk_pct_used"]), 4)
+            trade["leverage"] = round(float(risk_meta["leverage"]), 4)
+            trade["equity_usd_at_entry"] = round(float(risk_meta["equity_usd_at_entry"]), 2)
+            trade["risk_usd_used"] = round(float(risk_meta["risk_usd_used"]), 2)
+            risk_usd_total = float(trade["risk_usd_used"])
+        realized_risk_usd = float(max(risk_usd_total * close_frac, 0.0))
+        remaining_risk_usd = float(max(risk_usd_total - realized_risk_usd, 0.0))
+        gross_usd = round(gross_r * realized_risk_usd, 2)
+        cost_usd = round(cost_r * realized_risk_usd, 2)
+        net_usd = round(net_r * realized_risk_usd, 2)
+
+        child_id = state.next_trade_id
+        state.next_trade_id += 1
+        child = dict(trade)
+        child.update(
+            {
+                "id": int(child_id),
+                "session_id": state.session_id,
+                "status": "closed",
+                "partial_close": True,
+                "partial_close_frac": round(float(close_frac), 6),
+                "parent_trade_id": int(trade_id),
+                "exit_time": now_ms,
+                "exit_price": round(float(exit_price), 6),
+                "outcome": "PARTIAL_CLOSE",
+                "exit_reason": str(payload.get("note") or f"manager_partial_close_{close_pct:.1f}%"),
+                "gross_r": round(float(gross_r), 6),
+                "cost_r": round(float(cost_r), 6),
+                "net_r": round(float(net_r), 6),
+                "sized_r": round(float(net_r * float(trade.get("lane_size_mult", 1.0) or 1.0) * close_frac), 6),
+                "risk_usd_used": round(float(realized_risk_usd), 2),
+                "pnl_usd_gross": gross_usd,
+                "pnl_usd_cost": cost_usd,
+                "pnl_usd": net_usd,
+                "manual_close": False,
+                "engine": _infer_engine_from_payload(trade, session_id=state.session_id),
+                "manager_last_action": "partial_close",
+                "manager_last_action_ts": now_ms,
+            }
+        )
+        state.trades[int(child_id)] = child
+        state.trade_order.append(int(child_id))
+
+        old_risk_pct = float(trade.get("risk_pct_used", 0.0) or 0.0)
+        ratio = float(remaining_risk_usd / max(risk_usd_total, 1e-9))
+        trade["risk_usd_used"] = round(float(remaining_risk_usd), 2)
+        if old_risk_pct > 0.0:
+            trade["risk_pct_used"] = round(float(old_risk_pct * ratio), 6)
+        if trade.get("size_pct") is not None:
+            try:
+                trade["size_pct"] = round(float(float(trade.get("size_pct")) * ratio), 6)
+            except Exception:
+                pass
+        trade["partial_close_count"] = int(trade.get("partial_close_count", 0) or 0) + 1
+        trade["partial_realized_usd"] = round(float(trade.get("partial_realized_usd", 0.0) or 0.0) + float(net_usd), 2)
+        trade["partial_realized_r"] = round(float(trade.get("partial_realized_r", 0.0) or 0.0) + float(net_r * close_frac), 6)
+        trade["manager_last_action"] = action
+        trade["manager_last_action_ts"] = now_ms
+        trade["manager_last_action_note"] = str(payload.get("note") or f"partial_close_{close_pct:.1f}%")
+        state.updated_at_ms = now_ms
+        _refresh_session_engine_hint(state, trade)
+        _trim_dashboard_state(state)
+        return {
+            "ok": True,
+            "id": int(trade_id),
+            "session_id": state.session_id,
+            "trade": trade,
+            "action": action,
+            "close_pct": close_pct,
+            "partial_trade_id": int(child_id),
+            "partial_trade": child,
+        }
+
+    raise HTTPException(status_code=400, detail=f"Unsupported manager action: {action}")
 
 
 @app.get("/api/paper/settings")

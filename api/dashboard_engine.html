@@ -210,6 +210,41 @@
     .model-list { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 6px; }
     .model-pill { padding: 4px 8px; border-radius: 999px; border: 1px solid rgba(118, 165, 255, .35); background: rgba(8, 18, 35, .78); font-size: .72rem; color: #c9daf2; }
     .small { font-size: .74rem; color: #9ab0cf; }
+    .action-stack {
+      display: inline-flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .btn.xs {
+      height: 28px;
+      padding: 0 8px;
+      font-size: .66rem;
+      border-radius: 8px;
+    }
+    .trade-manager-panel {
+      margin-top: 9px;
+      border: 1px solid rgba(116, 163, 243, .24);
+      border-radius: 10px;
+      background: rgba(6, 16, 30, .66);
+      padding: 8px;
+    }
+    .trade-manager-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr 0.8fr 1fr;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .trade-manager-grid .setting-item {
+      margin: 0;
+      padding: 6px;
+    }
+    .trade-manager-actions {
+      display: flex;
+      gap: 7px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
     .market-toolbar {
       display: flex;
       gap: 8px;
@@ -430,6 +465,7 @@
       .metrics { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
       .grid-2 { grid-template-columns: 1fr; }
       .settings-grid { grid-template-columns: 1fr; }
+      .trade-manager-grid { grid-template-columns: 1fr; }
       .toolbar { justify-content: flex-start; }
       .market-tape { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
     }
@@ -594,6 +630,34 @@
             <thead><tr><th>ID</th><th>Session</th><th>Symbol</th><th>Side</th><th>Entry</th><th>SL</th><th>TP</th><th>Live R</th><th>Live USD</th><th>Lev</th><th>Risk USD</th><th>Action</th></tr></thead>
             <tbody id="openBody"></tbody>
           </table>
+        </div>
+        <div class="trade-manager-panel">
+          <h3 style="margin:0 0 8px;">Institutional Trade Manager</h3>
+          <div class="trade-manager-grid">
+            <div class="setting-item">
+              <label for="tmTradeSelect">Open Trade</label>
+              <select id="tmTradeSelect"></select>
+            </div>
+            <div class="setting-item">
+              <label for="tmClosePctInput">Partial Close %</label>
+              <input id="tmClosePctInput" type="number" min="1" max="100" step="1" value="25" />
+            </div>
+            <div class="setting-item">
+              <label for="tmNewSlInput">New Stop Loss</label>
+              <input id="tmNewSlInput" type="number" min="0" step="0.01" value="" />
+            </div>
+            <div class="setting-item">
+              <label for="tmNoteInput">Manager Note</label>
+              <input id="tmNoteInput" type="text" value="dashboard_trade_manager" />
+            </div>
+          </div>
+          <div class="trade-manager-actions">
+            <button id="tmBreakevenBtn" class="btn xs">Move SL to Breakeven</button>
+            <button id="tmMoveSlBtn" class="btn xs">Apply New SL</button>
+            <button id="tmPartialBtn" class="btn xs">Partial Close</button>
+            <button id="tmForceCloseBtn" class="btn xs warn">Force Close</button>
+            <span id="tmStatus" class="small">Trade manager ready.</span>
+          </div>
         </div>
         <div id="openVisuals" class="open-visual-grid"></div>
       </article>
@@ -2264,6 +2328,7 @@
       const cycleSeriesMap = buildCyclePriceSeries(cycles);
       const open = (trades || []).filter(t => String(t.status || "").toLowerCase() === "open").reverse();
       renderOpenTradeCandlePanel(open, cycles);
+      renderTradeManagerControls(open);
       $("openBody").innerHTML = open.length ? open.map(t => {
         const entry = Number(t.entry_price || t.entryPrice || 0);
         const sl = Number(t.stop_loss || t.stopLoss || t.initial_sl || entry);
@@ -2287,7 +2352,14 @@
             <td class="${klass(liveUsd)}">${fmt.usd(liveUsd)}</td>
             <td>x${fmt.n(lev, 2)}</td>
             <td>${fmt.usd(riskUsd)}</td>
-            <td><button class="btn mono" data-close-id="${t.id}" data-close-session="${sid}">Manual Close</button></td>
+            <td>
+              <div class="action-stack">
+                <button class="btn xs mono" data-action="breakeven" data-trade-id="${t.id}" data-session="${sid}">BE</button>
+                <button class="btn xs mono" data-action="partial25" data-trade-id="${t.id}" data-session="${sid}">25%</button>
+                <button class="btn xs mono" data-action="partial50" data-trade-id="${t.id}" data-session="${sid}">50%</button>
+                <button class="btn xs mono warn" data-close-id="${t.id}" data-close-session="${sid}">Close</button>
+              </div>
+            </td>
           </tr>`;
       }).join("") : `<tr><td colspan="12" class="small">No open positions.</td></tr>`;
       renderOpenExposure(open, cycles);
@@ -2415,6 +2487,67 @@
         },
       );
       await tick();
+    }
+
+    function parseTradeSelectorValue(raw) {
+      const text = String(raw || "");
+      const sep = text.indexOf("::");
+      if (sep <= 0) return null;
+      const id = Number(text.slice(0, sep));
+      const sid = text.slice(sep + 2);
+      if (!Number.isFinite(id) || !sid) return null;
+      return { id, sessionId: sid };
+    }
+
+    function selectedManagerTrade() {
+      const sel = $("tmTradeSelect");
+      return parseTradeSelectorValue(sel?.value || "");
+    }
+
+    async function runTradeManagerAction(action, extra = {}) {
+      const selected = selectedManagerTrade();
+      if (!selected) {
+        $("tmStatus").textContent = "Pick an open trade first.";
+        return;
+      }
+      const payload = {
+        action,
+        note: String($("tmNoteInput").value || "dashboard_trade_manager"),
+        ...extra,
+      };
+      $("tmStatus").textContent = `Executing ${action}...`;
+      await fetchJson(
+        `/api/paper/trade/${selected.id}/manager-action?session_id=${encodeURIComponent(selected.sessionId)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+      $("tmStatus").textContent = `Executed ${action}.`;
+      await tick();
+    }
+
+    function renderTradeManagerControls(openTrades) {
+      const sel = $("tmTradeSelect");
+      const rows = (openTrades || []).map((t) => {
+        const id = Number(t.id || 0);
+        const sid = String(t.session_id || state.sessionId || "default");
+        const sym = String(t.symbol || "-");
+        const side = String(t.side || "LONG").toUpperCase();
+        return { id, sid, label: `#${id} ${sym} ${side} • ${sid}` };
+      }).filter((r) => Number.isFinite(r.id) && r.id > 0 && r.sid);
+      if (!rows.length) {
+        sel.innerHTML = `<option value="">No open trades</option>`;
+        $("tmStatus").textContent = "No open trades to manage.";
+        return;
+      }
+      const current = parseTradeSelectorValue(sel.value || "");
+      const currentKey = current ? `${current.id}::${current.sessionId}` : "";
+      sel.innerHTML = rows.map((r) => `<option value="${r.id}::${r.sid}">${r.label}</option>`).join("");
+      const fallback = rows[0];
+      const match = rows.find((r) => `${r.id}::${r.sid}` === currentKey) || fallback;
+      sel.value = `${match.id}::${match.sid}`;
     }
 
     async function tick() {
@@ -2584,6 +2717,28 @@
       });
     });
     $("openBody").addEventListener("click", async (e) => {
+      const actBtn = e.target.closest("[data-action]");
+      if (actBtn) {
+        const action = String(actBtn.getAttribute("data-action") || "");
+        const tradeId = Number(actBtn.getAttribute("data-trade-id") || 0);
+        const sid = String(actBtn.getAttribute("data-session") || state.sessionId || "default");
+        if (Number.isFinite(tradeId) && tradeId > 0) {
+          $("tmTradeSelect").value = `${tradeId}::${sid}`;
+          actBtn.disabled = true;
+          try {
+            if (action === "breakeven") {
+              await runTradeManagerAction("breakeven");
+            } else if (action === "partial25") {
+              await runTradeManagerAction("partial_close", { close_pct: 25 });
+            } else if (action === "partial50") {
+              await runTradeManagerAction("partial_close", { close_pct: 50 });
+            }
+          } finally {
+            actBtn.disabled = false;
+          }
+        }
+        return;
+      }
       const btn = e.target.closest("[data-close-id]");
       if (!btn) return;
       const id = btn.getAttribute("data-close-id");
@@ -2595,6 +2750,44 @@
       } catch (err) {
         btn.disabled = false;
         btn.textContent = "Manual Close";
+      }
+    });
+    $("tmBreakevenBtn").addEventListener("click", async () => {
+      try {
+        await runTradeManagerAction("breakeven");
+      } catch (err) {
+        $("tmStatus").textContent = `Breakeven failed: ${err.message || err}`;
+      }
+    });
+    $("tmMoveSlBtn").addEventListener("click", async () => {
+      const newSl = Number($("tmNewSlInput").value || 0);
+      if (!Number.isFinite(newSl) || newSl <= 0) {
+        $("tmStatus").textContent = "Enter a valid new stop loss.";
+        return;
+      }
+      try {
+        await runTradeManagerAction("move_sl", { new_stop_loss: newSl });
+      } catch (err) {
+        $("tmStatus").textContent = `Move SL failed: ${err.message || err}`;
+      }
+    });
+    $("tmPartialBtn").addEventListener("click", async () => {
+      const pct = Number($("tmClosePctInput").value || 25);
+      if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
+        $("tmStatus").textContent = "Partial close % must be 1-100.";
+        return;
+      }
+      try {
+        await runTradeManagerAction("partial_close", { close_pct: pct });
+      } catch (err) {
+        $("tmStatus").textContent = `Partial close failed: ${err.message || err}`;
+      }
+    });
+    $("tmForceCloseBtn").addEventListener("click", async () => {
+      try {
+        await runTradeManagerAction("force_close");
+      } catch (err) {
+        $("tmStatus").textContent = `Force close failed: ${err.message || err}`;
       }
     });
     window.addEventListener("resize", () => {
