@@ -37,6 +37,7 @@ REQUIRED_CANDLES = 800
 MAX_CACHE_BARS = 2000
 RETRY_ATTEMPTS = 3
 RETRY_DELAY = 2.0
+OPEN_POSITION_MONITOR_INTERVAL_S = 4.0
 
 MIN_H1_BARS = 100
 MIN_H4_BARS = 50
@@ -1880,7 +1881,7 @@ class LiveRunner:
                 next_bar = (int(now) // interval_s + 1) * interval_s
                 wait = max(next_bar - now + 5, 10)
                 log.info(f"Next cycle in {wait:.0f}s...")
-                time.sleep(wait)
+                self._monitor_open_positions_during_wait(wait)
         except KeyboardInterrupt:
             log.info("Live runner stopped by user.")
             self._print_summary()
@@ -1919,6 +1920,58 @@ class LiveRunner:
                 self.cycle_count += 1
 
         self._print_summary()
+
+    def _fetch_live_prices_batch(self, symbols: List[str]) -> Dict[str, float]:
+        """Fetch latest prices for open-position symbols in one request."""
+        syms = [str(s or "").upper() for s in symbols if str(s or "").strip()]
+        if not syms:
+            return {}
+        url = "https://api.binance.com/api/v3/ticker/price"
+        params = {"symbols": json.dumps(sorted(set(syms)))}
+        try:
+            resp = requests.get(url, params=params, timeout=5)
+            if resp.status_code != 200:
+                return {}
+            payload = resp.json()
+        except Exception:
+            return {}
+        rows = payload if isinstance(payload, list) else [payload] if isinstance(payload, dict) else []
+        out: Dict[str, float] = {}
+        for row in rows:
+            try:
+                sym = str(row.get("symbol", "")).upper()
+                px = float(row.get("price", 0.0))
+                if sym and np.isfinite(px) and px > 0.0:
+                    out[sym] = px
+            except Exception:
+                continue
+        return out
+
+    def _monitor_open_positions_during_wait(self, wait_seconds: float):
+        """
+        During inter-cycle sleep, keep checking live price against SL/TP.
+        This allows auto-close soon after breach without waiting a full cycle.
+        """
+        if wait_seconds <= 0:
+            return
+        if self.execution_mode not in ("paper", "live") or not self.record_trades:
+            time.sleep(wait_seconds)
+            return
+        deadline = time.time() + float(wait_seconds)
+        while not self._should_stop:
+            now = time.time()
+            if now >= deadline:
+                break
+            open_symbols = list(self.portfolio.open_positions.keys())
+            if open_symbols:
+                prices = self._fetch_live_prices_batch(open_symbols)
+                if prices:
+                    self.portfolio.check_exits(prices)
+            remaining = max(deadline - time.time(), 0.0)
+            sleep_s = min(OPEN_POSITION_MONITOR_INTERVAL_S, remaining)
+            if sleep_s <= 0:
+                break
+            time.sleep(sleep_s)
 
     def _run_trade_manager(self, prices: Dict[str, float],
                            highs: Dict[str, float], lows: Dict[str, float]):
