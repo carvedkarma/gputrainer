@@ -6935,6 +6935,10 @@ Examples:
                         help="Max total portfolio risk %% (default: 10.0)")
     parser.add_argument("--risk-cap-symbol", type=float, default=5.0,
                         help="Max per-symbol risk %% (default: 5.0)")
+    parser.add_argument("--equity-floor-usd", type=float, default=0.0,
+                        help="Capital protection: block new entries when live equity <= this USD floor (default: 0 = disabled)")
+    parser.add_argument("--equity-hard-stop-usd", type=float, default=0.0,
+                        help="Emergency capital protection: when live equity <= this USD floor, flatten open risk and latch halt (default: 0 = disabled)")
     parser.add_argument("--exec-tf", type=str, default="3m", choices=["1m", "3m", "5m"],
                         help="Execution timeframe for improved fills (default: 3m)")
     parser.add_argument("--exec-window-min", type=int, default=15,
@@ -7140,6 +7144,8 @@ Examples:
             paper_session_id=args.paper_session_id,
             dashboard_engine=args.dashboard_engine,
             live_model=resolved_live_model,
+            equity_floor_usd=args.equity_floor_usd,
+            equity_hard_stop_usd=args.equity_hard_stop_usd,
         )
         runner.learning_manager = learning_mgr
 

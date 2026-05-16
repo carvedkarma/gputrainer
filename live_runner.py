@@ -1124,6 +1124,8 @@ class LiveRunner:
         paper_session_id: Optional[str] = None,
         dashboard_engine: str = "v5",
         live_model: str = "v5",
+        equity_floor_usd: float = 0.0,
+        equity_hard_stop_usd: float = 0.0,
     ):
         self.replit_url = replit_url
         self.symbols = symbols
@@ -1163,6 +1165,13 @@ class LiveRunner:
             )
             resolved_live_model = "mythos"
         self.live_model = resolved_live_model
+        self.equity_floor_usd = float(max(equity_floor_usd, 0.0))
+        self.equity_hard_stop_usd = float(max(equity_hard_stop_usd, 0.0))
+        if self.equity_hard_stop_usd > 0.0 and self.equity_floor_usd > 0.0 and self.equity_hard_stop_usd > self.equity_floor_usd:
+            self.equity_hard_stop_usd = self.equity_floor_usd
+        self._equity_hard_stop_latched: bool = False
+        self._equity_snapshot_cache_ts: float = 0.0
+        self._equity_snapshot_live_usd: Optional[float] = None
 
         # ── Regime-aware signal router ─────────────────────────────────────────
         # Tracks H4 SMA20 regime per symbol with 3-bar confirmation.
@@ -1226,6 +1235,11 @@ class LiveRunner:
             "[CONFIG] Halt switches: data_staleness=%s/%gs api_errors=%s/%d daily_loss_r=%s",
             self.halt_on_data_staleness, self.max_data_staleness_seconds,
             self.halt_on_api_errors, self.max_consecutive_api_errors, self.max_daily_loss_r,
+        )
+        log.info(
+            "[CONFIG] Equity guards: floor_usd=%s hard_stop_usd=%s",
+            self.equity_floor_usd,
+            self.equity_hard_stop_usd,
         )
 
         self.model = None
@@ -1834,6 +1848,80 @@ class LiveRunner:
         except Exception as e:
             log.warning(f"[PortfolioSync/{source}] Sync failed: {e}")
 
+    def _session_equity_live_usd(self, force_refresh: bool = False) -> Optional[float]:
+        """Read live paper equity from dashboard state for kill-switch checks."""
+        if not self.replit_url:
+            return None
+        now = time.time()
+        if (not force_refresh) and (now - self._equity_snapshot_cache_ts) <= 3.0:
+            return self._equity_snapshot_live_usd
+        try:
+            import requests as _req
+            resp = _req.get(
+                f"{self.replit_url.rstrip('/')}/api/dashboard/state",
+                params={
+                    "session_id": self.paper_session_id,
+                    "engine": self.dashboard_engine,
+                    "predictions_limit": 1,
+                    "cycles_limit": 1,
+                    "trades_limit": 1,
+                },
+                timeout=6,
+            )
+            if resp.status_code != 200:
+                return self._equity_snapshot_live_usd
+            data = resp.json() or {}
+            summary = data.get("summary", {}) if isinstance(data, dict) else {}
+            eq = float(summary.get("equity_live_usd", summary.get("paper_equity_usd", 0.0)))
+            if not np.isfinite(eq):
+                return self._equity_snapshot_live_usd
+            self._equity_snapshot_live_usd = eq
+            self._equity_snapshot_cache_ts = now
+            return eq
+        except Exception:
+            return self._equity_snapshot_live_usd
+
+    def _enforce_equity_hard_stop(self, prices: Optional[Dict[str, float]] = None):
+        """
+        Emergency capital protection:
+        if live equity breaches hard stop, flatten all open risk and latch halt.
+        """
+        if self._equity_hard_stop_latched:
+            return
+        if self.equity_hard_stop_usd <= 0.0:
+            return
+        eq = self._session_equity_live_usd(force_refresh=True)
+        if eq is None or eq > self.equity_hard_stop_usd:
+            return
+        open_positions = dict(self.portfolio.open_positions)
+        if not open_positions:
+            self._equity_hard_stop_latched = True
+            log.error(
+                "[EQUITY_HARD_STOP] Latched with equity=%.2f <= hard_stop=%.2f (no open positions)",
+                eq,
+                self.equity_hard_stop_usd,
+            )
+            return
+        price_map = dict(prices or {})
+        missing = [sym for sym in open_positions.keys() if sym not in price_map]
+        if missing:
+            fetched = self._fetch_live_prices_batch(missing)
+            price_map.update(fetched)
+        for sym in list(open_positions.keys()):
+            if sym not in self.portfolio.open_positions:
+                continue
+            px = price_map.get(sym)
+            if px is None or not np.isfinite(float(px)) or float(px) <= 0.0:
+                continue
+            self.portfolio.close_position(sym, float(px), "EQUITY_HARD_STOP")
+        self._equity_hard_stop_latched = True
+        log.error(
+            "[EQUITY_HARD_STOP] Triggered: equity=%.2f <= hard_stop=%.2f. "
+            "All reachable open positions flattened. New entries halted.",
+            eq,
+            self.equity_hard_stop_usd,
+        )
+
     def run(self):
         """Main loop — runs continuously until interrupted."""
         mode_label = {"signal_only": "SIGNAL_ONLY", "paper": "PAPER", "live": "LIVE"}.get(self.execution_mode, "UNKNOWN")
@@ -2001,6 +2089,7 @@ class LiveRunner:
                 prices = self._fetch_live_prices_batch(open_symbols)
                 if prices:
                     self.portfolio.check_exits(prices)
+                    self._enforce_equity_hard_stop(prices)
             remaining = max(deadline - time.time(), 0.0)
             sleep_s = min(OPEN_POSITION_MONITOR_INTERVAL_S, remaining)
             if sleep_s <= 0:
@@ -2114,6 +2203,7 @@ class LiveRunner:
                         self._consecutive_api_errors)
         if self.execution_mode in ("paper", "live") and self.record_trades:
             self.portfolio.check_exits(prices, highs=highs, lows=lows)
+            self._enforce_equity_hard_stop(prices)
             # Pure model isolation: TradeManager overlays are V5-specific.
             # Mythos sessions run with native signal+SL/TP flow only.
             if self.live_model != "mythos":
@@ -2801,6 +2891,16 @@ class LiveRunner:
                 and self._daily_closed_r <= -abs(self.max_daily_loss_r)):
             return (f"DAILY_LOSS_LIMIT cumulative_r={self._daily_closed_r:.2f} <= "
                     f"-{abs(self.max_daily_loss_r):.2f}")
+
+        if self._equity_hard_stop_latched:
+            return "EQUITY_HARD_STOP_LATCHED"
+
+        if self.equity_floor_usd > 0.0:
+            eq_live = self._session_equity_live_usd(force_refresh=False)
+            if eq_live is not None and eq_live <= self.equity_floor_usd:
+                return (
+                    f"EQUITY_FLOOR equity_live_usd={eq_live:.2f} <= floor={self.equity_floor_usd:.2f}"
+                )
 
         return None
 
