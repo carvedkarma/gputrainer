@@ -217,6 +217,18 @@
       flex-wrap: wrap;
       margin-bottom: 8px;
     }
+    .toolbar-inline {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn.icon {
+      width: 34px;
+      padding: 0;
+      font-size: .95rem;
+      font-weight: 700;
+      line-height: 1;
+    }
     .settings-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -323,6 +335,10 @@
       to { box-shadow: inset 0 0 0 0 rgba(255, 111, 141, 0); }
     }
     .chart-wrap.market { height: 330px; }
+    .chart-wrap.command {
+      height: 230px;
+      margin-bottom: 8px;
+    }
     .open-visual-grid {
       margin-top: 9px;
       display: grid;
@@ -477,10 +493,17 @@
           <label class="small" for="marketDepthSelect">Candles</label>
           <select id="marketDepthSelect">
             <option value="120">120</option>
+            <option value="180">180</option>
             <option value="240" selected>240</option>
             <option value="360">360</option>
             <option value="480">480</option>
+            <option value="720">720</option>
           </select>
+          <div class="toolbar-inline">
+            <button id="marketZoomIn" class="btn icon" title="Zoom in">+</button>
+            <button id="marketZoomOut" class="btn icon" title="Zoom out">-</button>
+            <span id="marketZoomLabel" class="small">zoom 240</span>
+          </div>
           <span class="small">Live candlesticks with entry/exit markers and open-trade TP/SL overlays.</span>
         </div>
         <div class="chart-wrap market">
@@ -546,6 +569,21 @@
     <section class="grid-2">
       <article class="card glass">
         <h3>Open Trades Live Command Center (Manual Close Enabled)</h3>
+        <div class="market-toolbar">
+          <label class="small" for="openTradeSymbolSelect">Focus Symbol</label>
+          <select id="openTradeSymbolSelect"></select>
+          <div class="toolbar-inline">
+            <button id="openZoomIn" class="btn icon" title="Zoom in">+</button>
+            <button id="openZoomOut" class="btn icon" title="Zoom out">-</button>
+            <span id="openZoomLabel" class="small">zoom 180</span>
+          </div>
+          <span class="small">Candle-focused live command chart for active positions with TP/SL overlays.</span>
+        </div>
+        <div class="chart-wrap command">
+          <canvas id="openTradeCandleCanvas"></canvas>
+          <div id="openTradeCandleEmpty" class="empty" hidden>No open-trade candle stream yet.</div>
+        </div>
+        <div id="openTradeCandleMeta" class="small" style="margin-bottom:8px">Open-trade candle panel booting...</div>
         <div class="chart-wrap small" style="margin-bottom:8px">
           <canvas id="openExposureCanvas"></canvas>
           <div id="openExposureEmpty" class="empty" hidden>No open-trade timeline yet.</div>
@@ -617,6 +655,8 @@
       marketCandleFetchTs: {},
       marketCandleSourceByKey: {},
       marketPrevCloseBySymbol: {},
+      openTradeSymbol: "BTCUSDT",
+      openTradeDepth: 180,
     };
     const $ = (id) => document.getElementById(id);
     const fmt = {
@@ -626,6 +666,7 @@
       usd: (x) => Number.isFinite(+x) ? `$${(+x).toFixed(2)}` : "$0.00",
     };
     const klass = (v) => Number(v || 0) > 0 ? "pos" : Number(v || 0) < 0 ? "neg" : "";
+    const DEPTH_STEPS = [120, 180, 240, 360, 480, 720];
 
     function setupRouteUI() {
       $("tabAll").classList.toggle("active", ENGINE_FILTER === "all");
@@ -934,6 +975,70 @@
         }
       } catch (_) {
         // fallback handled in drawMarketChart using synthetic candles
+      }
+    }
+
+    function nearestDepthStep(v) {
+      const val = Number(v || DEPTH_STEPS[0]);
+      let best = DEPTH_STEPS[0];
+      let bestD = Math.abs(best - val);
+      for (const d of DEPTH_STEPS) {
+        const dd = Math.abs(d - val);
+        if (dd < bestD) {
+          best = d;
+          bestD = dd;
+        }
+      }
+      return best;
+    }
+
+    function stepDepth(current, direction) {
+      const cur = nearestDepthStep(current);
+      const idx = DEPTH_STEPS.indexOf(cur);
+      if (direction < 0) return DEPTH_STEPS[Math.max(idx - 1, 0)];
+      return DEPTH_STEPS[Math.min(idx + 1, DEPTH_STEPS.length - 1)];
+    }
+
+    function getBestCachedCandles(symbol, interval) {
+      const prefix = `${String(symbol || "").toUpperCase()}|${String(interval || "1m").toLowerCase()}|`;
+      let best = [];
+      let bestSource = "synthetic";
+      for (const [key, rows] of Object.entries(state.marketCandlesByKey || {})) {
+        if (!key.startsWith(prefix)) continue;
+        const norm = normalizeCandles(rows || []);
+        if (norm.length > best.length) {
+          best = norm;
+          bestSource = String(state.marketCandleSourceByKey?.[key] || "cache");
+        }
+      }
+      return { candles: best, source: bestSource };
+    }
+
+    async function refreshOpenTradeCandles(summary, cycles, trades) {
+      const open = (trades || []).filter((t) => String(t.status || "").toLowerCase() === "open");
+      const openSymbols = Array.from(new Set(open.map((t) => String(t.symbol || "").toUpperCase()).filter(Boolean)));
+      if (!openSymbols.length) return;
+      if (!openSymbols.includes(state.openTradeSymbol)) {
+        state.openTradeSymbol = openSymbols[0];
+      }
+      const symbol = state.openTradeSymbol;
+      const tf = String(state.marketInterval || "1m");
+      const depth = Math.max(Number(state.marketDepth || 240), Number(state.openTradeDepth || 180));
+      const key = `${symbol}|${tf}|${depth}`;
+      const now = Date.now();
+      const minGapMs = 1200;
+      if ((now - Number(state.marketCandleFetchTs[key] || 0)) < minGapMs) return;
+      state.marketCandleFetchTs[key] = now;
+      try {
+        const url = `/api/market/candles?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(tf)}&limit=${encodeURIComponent(depth)}`;
+        const payload = await fetchJson(url);
+        const candles = normalizeCandles(payload?.candles || []);
+        if (candles.length) {
+          state.marketCandlesByKey[key] = candles;
+          state.marketCandleSourceByKey[key] = String(payload?.source || "unknown");
+        }
+      } catch (_) {
+        // open panel can render synthetic candles while endpoint is unavailable
       }
     }
 
@@ -1588,6 +1693,9 @@
         ? symList.map((s) => `<option value="${s}">${s}</option>`).join("")
         : `<option value="BTCUSDT">BTCUSDT</option>`;
       sel.value = state.marketSymbol;
+      $("marketTfSelect").value = String(state.marketInterval || "1m");
+      $("marketDepthSelect").value = String(nearestDepthStep(state.marketDepth || 240));
+      $("marketZoomLabel").textContent = `zoom ${Number(state.marketDepth || 240)}`;
 
       const symbol = state.marketSymbol;
       const tf = String(state.marketInterval || "1m");
@@ -1859,6 +1967,198 @@
         : "Open-trade live marks: no active position on this symbol.";
     }
 
+    function renderOpenTradeCandlePanel(openTrades, cycles) {
+      const canvas = $("openTradeCandleCanvas");
+      const empty = $("openTradeCandleEmpty");
+      const meta = $("openTradeCandleMeta");
+      const sel = $("openTradeSymbolSelect");
+      const symbols = Array.from(new Set((openTrades || []).map((t) => String(t.symbol || "").toUpperCase()).filter(Boolean)));
+      if (!symbols.length) {
+        sel.innerHTML = `<option value="BTCUSDT">BTCUSDT</option>`;
+        empty.hidden = false;
+        meta.textContent = "No open trades available for candle command panel.";
+        $("openZoomLabel").textContent = `zoom ${Number(state.openTradeDepth || 180)}`;
+        return;
+      }
+      if (!symbols.includes(state.openTradeSymbol)) {
+        state.openTradeSymbol = symbols[0];
+      }
+      sel.innerHTML = symbols.map((s) => `<option value="${s}">${s}</option>`).join("");
+      sel.value = state.openTradeSymbol;
+      $("openZoomLabel").textContent = `zoom ${Number(state.openTradeDepth || 180)}`;
+
+      const symbol = state.openTradeSymbol;
+      const tf = String(state.marketInterval || "1m");
+      const depth = Number(state.openTradeDepth || 180);
+      const { candles: bestCached, source } = getBestCachedCandles(symbol, tf);
+      const fallback = buildSyntheticCandlesFromPoints(buildSymbolTickPoints(symbol, cycles), intervalToMs(tf));
+      const candles = (bestCached.length ? bestCached : fallback).slice(-depth).map((c) => ({ ...c }));
+      const livePx = Number(state.livePrices?.[symbol]);
+      const liveTs = Number(state.livePriceTs || Date.now());
+      const intervalMs = intervalToMs(tf);
+      if (Number.isFinite(livePx) && livePx > 0) {
+        const b = bucketStart(liveTs, intervalMs);
+        if (!candles.length) {
+          candles.push({ ts: b, open: livePx, high: livePx, low: livePx, close: livePx, volume: 0 });
+        } else {
+          const last = candles[candles.length - 1];
+          if (Math.abs((last.ts || 0) - b) <= 1e-6) {
+            last.high = Math.max(last.high, livePx);
+            last.low = Math.min(last.low, livePx);
+            last.close = livePx;
+          } else if (b > (last.ts || 0)) {
+            candles.push({ ts: b, open: last.close, high: livePx, low: livePx, close: livePx, volume: 0 });
+          }
+        }
+      }
+
+      const parent = canvas.parentElement;
+      const w = parent.clientWidth;
+      const h = parent.clientHeight;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(w * dpr));
+      canvas.height = Math.max(1, Math.floor(h * dpr));
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+
+      if (candles.length < 2) {
+        empty.hidden = false;
+        meta.textContent = `No candle stream available for ${symbol}.`;
+        return;
+      }
+      empty.hidden = true;
+
+      const openForSym = (openTrades || []).filter((t) => String(t.symbol || "").toUpperCase() === symbol);
+      const guide = [];
+      openForSym.forEach((tr) => {
+        guide.push(Number(tr.entry_price || tr.entryPrice || 0));
+        guide.push(Number(tr.stop_loss || tr.stopLoss || tr.initial_sl || 0));
+        guide.push(Number(tr.take_profit || tr.tp2 || tr.take_profit_price || 0));
+      });
+      if (Number.isFinite(livePx) && livePx > 0) guide.push(livePx);
+      const lows = candles.map((c) => c.low);
+      const highs = candles.map((c) => c.high);
+      const minP = Math.min(...lows, ...guide.filter((x) => Number.isFinite(x) && x > 0));
+      const maxP = Math.max(...highs, ...guide.filter((x) => Number.isFinite(x) && x > 0));
+      const span = Math.max(maxP - minP, Math.abs(maxP) * 0.002, 1e-9);
+      const lo = minP - span * 0.1;
+      const hi = maxP + span * 0.1;
+      const padL = 12;
+      const padR = 72;
+      const padT = 12;
+      const padB = 16;
+      const chartW = Math.max(100, w - padL - padR);
+      const chartH = Math.max(80, h - padT - padB);
+      const xStep = chartW / Math.max(candles.length, 1);
+      const bodyW = clamp(xStep * 0.64, 2.2, 14);
+      const xAt = (i) => padL + (i + 0.5) * xStep;
+      const yAt = (p) => padT + ((hi - p) / Math.max(hi - lo, 1e-9)) * chartH;
+
+      ctx.strokeStyle = "rgba(120, 165, 235, .14)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = padT + (i / 4) * chartH;
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(padL + chartW, y);
+        ctx.stroke();
+      }
+
+      for (let i = 0; i < candles.length; i++) {
+        const c = candles[i];
+        const x = xAt(i);
+        const up = c.close >= c.open;
+        const color = up ? "rgba(42,226,173,.94)" : "rgba(255,111,141,.94)";
+        const wick = up ? "rgba(111,239,202,.95)" : "rgba(255,141,169,.95)";
+        const yO = yAt(c.open);
+        const yC = yAt(c.close);
+        const yH = yAt(c.high);
+        const yL = yAt(c.low);
+        ctx.strokeStyle = wick;
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.moveTo(x, yH);
+        ctx.lineTo(x, yL);
+        ctx.stroke();
+        const top = Math.min(yO, yC);
+        const bh = Math.max(Math.abs(yC - yO), 1.2);
+        ctx.fillStyle = color;
+        ctx.fillRect(x - bodyW / 2, top, bodyW, bh);
+      }
+
+      const tsRows = candles.map((c) => ({ ts: c.ts }));
+      for (const tr of openForSym) {
+        const entry = Number(tr.entry_price || tr.entryPrice || 0);
+        const sl = Number(tr.stop_loss || tr.stopLoss || tr.initial_sl || 0);
+        const tp = Number(tr.take_profit || tr.tp2 || tr.take_profit_price || 0);
+        const entryTs = tsMs(tr.entry_time || tr.entryTs || tr.entry_ts || 0);
+        const i0 = nearestIndexByTs(tsRows, entryTs);
+        const x0 = xAt(i0);
+        const xr = padL + chartW;
+        const side = String(tr.side || "LONG").toUpperCase();
+        const entryColor = side === "LONG" ? "rgba(42,226,173,.9)" : "rgba(255,111,141,.9)";
+        if (Number.isFinite(sl) && sl > 0 && Number.isFinite(tp) && tp > 0) {
+          ctx.fillStyle = side === "LONG" ? "rgba(42,226,173,.08)" : "rgba(255,111,141,.08)";
+          const yTop = Math.min(yAt(tp), yAt(sl));
+          const yBot = Math.max(yAt(tp), yAt(sl));
+          ctx.fillRect(x0, yTop, Math.max(xr - x0, 1), Math.max(yBot - yTop, 1));
+        }
+        ctx.strokeStyle = entryColor;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(x0, yAt(entry));
+        ctx.lineTo(xr, yAt(entry));
+        ctx.stroke();
+        ctx.setLineDash([5, 4]);
+        if (Number.isFinite(sl) && sl > 0) {
+          ctx.strokeStyle = "rgba(255,111,141,.92)";
+          ctx.beginPath();
+          ctx.moveTo(x0, yAt(sl));
+          ctx.lineTo(xr, yAt(sl));
+          ctx.stroke();
+        }
+        if (Number.isFinite(tp) && tp > 0) {
+          ctx.strokeStyle = "rgba(42,226,173,.92)";
+          ctx.beginPath();
+          ctx.moveTo(x0, yAt(tp));
+          ctx.lineTo(xr, yAt(tp));
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      }
+
+      const latest = candles[candles.length - 1];
+      const nowY = yAt(latest.close);
+      ctx.strokeStyle = "rgba(198, 224, 255, .5)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(padL, nowY);
+      ctx.lineTo(padL + chartW, nowY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(16, 33, 60, .92)";
+      ctx.strokeStyle = "rgba(170, 204, 255, .55)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.rect(padL + chartW + 6, nowY - 9, 62, 18);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "rgba(230, 242, 255, .95)";
+      ctx.font = "11px Inter, system-ui, sans-serif";
+      ctx.fillText(fmt.n(latest.close, latest.close > 1000 ? 2 : 4), padL + chartW + 10, nowY + 4);
+
+      const pnlUsd = openForSym.reduce((acc, tr) => {
+        const rr = rrAtPrice(tr, latest.close);
+        const riskUsd = Number(tr.risk_usd_used || 0);
+        if (!Number.isFinite(riskUsd) || riskUsd <= 0) return acc;
+        return acc + rr * riskUsd;
+      }, 0);
+      const pnlR = openForSym.reduce((acc, tr) => acc + rrAtPrice(tr, latest.close), 0);
+      meta.innerHTML = `${symbol} • TF <b>${tf}</b> • last <b>${fmt.n(latest.close, 3)}</b> • open trades <b>${openForSym.length}</b> • live <b class="${klass(pnlUsd)}">${fmt.usd(pnlUsd)} / ${fmt.r(pnlR, 3)}</b> • source <b>${source}</b>`;
+    }
+
     function renderOpenExposure(openTrades, cycles) {
       const rows = (cycles || []).slice(-1400).map(c => ({
         symbol: String(c.symbol || "").toUpperCase(),
@@ -1963,6 +2263,7 @@
       const latest = priceMapWithLive(cycles);
       const cycleSeriesMap = buildCyclePriceSeries(cycles);
       const open = (trades || []).filter(t => String(t.status || "").toLowerCase() === "open").reverse();
+      renderOpenTradeCandlePanel(open, cycles);
       $("openBody").innerHTML = open.length ? open.map(t => {
         const entry = Number(t.entry_price || t.entryPrice || 0);
         const sl = Number(t.stop_loss || t.stopLoss || t.initial_sl || entry);
@@ -2126,6 +2427,7 @@
         const trades = Array.isArray(payload.trades) ? payload.trades : [];
         await refreshLiveTicks(summary, cycles, trades);
         await refreshMarketCandles(summary, cycles, trades);
+        await refreshOpenTradeCandles(summary, cycles, trades);
         applyState();
         setStatus(true);
       } catch (err) {
@@ -2142,6 +2444,7 @@
       const assets = Array.isArray(payload.assets) ? payload.assets : [];
       await refreshLiveTicks(summary, cycles, trades);
       await refreshMarketCandles(summary, cycles, trades);
+      await refreshOpenTradeCandles(summary, cycles, trades);
       const liveSummary = summaryWithLiveMarkToMarket(summary, trades, cycles);
       renderMetrics(liveSummary);
       renderInsights(liveSummary, trades, cycles, assets);
@@ -2192,6 +2495,9 @@
       const summary = payload.summary || {};
       refreshMarketCandles(summary, cycles, trades).finally(() => {
         drawMarketChart(cycles, trades, summary);
+        refreshOpenTradeCandles(summary, cycles, trades).finally(() => {
+          renderOpenTradeCandlePanel((trades || []).filter(t => String(t.status || "").toLowerCase() === "open"), cycles);
+        });
       });
     });
     $("marketTfSelect").addEventListener("change", (e) => {
@@ -2203,10 +2509,13 @@
       const summary = payload.summary || {};
       refreshMarketCandles(summary, cycles, trades).finally(() => {
         drawMarketChart(cycles, trades, summary);
+        refreshOpenTradeCandles(summary, cycles, trades).finally(() => {
+          renderOpenTradeCandlePanel((trades || []).filter(t => String(t.status || "").toLowerCase() === "open"), cycles);
+        });
       });
     });
     $("marketDepthSelect").addEventListener("change", (e) => {
-      state.marketDepth = Number(e.target.value || 240);
+      state.marketDepth = nearestDepthStep(Number(e.target.value || 240));
       if (!state.data) return;
       const payload = state.data || {};
       const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
@@ -2214,6 +2523,64 @@
       const summary = payload.summary || {};
       refreshMarketCandles(summary, cycles, trades).finally(() => {
         drawMarketChart(cycles, trades, summary);
+        renderOpenTradeCandlePanel((trades || []).filter(t => String(t.status || "").toLowerCase() === "open"), cycles);
+      });
+    });
+    $("marketZoomIn").addEventListener("click", () => {
+      state.marketDepth = stepDepth(state.marketDepth, -1);
+      $("marketDepthSelect").value = String(state.marketDepth);
+      if (!state.data) return;
+      const payload = state.data || {};
+      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+      const trades = Array.isArray(payload.trades) ? payload.trades : [];
+      const summary = payload.summary || {};
+      refreshMarketCandles(summary, cycles, trades).finally(() => {
+        drawMarketChart(cycles, trades, summary);
+      });
+    });
+    $("marketZoomOut").addEventListener("click", () => {
+      state.marketDepth = stepDepth(state.marketDepth, +1);
+      $("marketDepthSelect").value = String(state.marketDepth);
+      if (!state.data) return;
+      const payload = state.data || {};
+      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+      const trades = Array.isArray(payload.trades) ? payload.trades : [];
+      const summary = payload.summary || {};
+      refreshMarketCandles(summary, cycles, trades).finally(() => {
+        drawMarketChart(cycles, trades, summary);
+      });
+    });
+    $("openTradeSymbolSelect").addEventListener("change", (e) => {
+      state.openTradeSymbol = String(e.target.value || "BTCUSDT").toUpperCase();
+      if (!state.data) return;
+      const payload = state.data || {};
+      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+      const trades = Array.isArray(payload.trades) ? payload.trades : [];
+      const summary = payload.summary || {};
+      refreshOpenTradeCandles(summary, cycles, trades).finally(() => {
+        renderOpenTradeCandlePanel((trades || []).filter(t => String(t.status || "").toLowerCase() === "open"), cycles);
+      });
+    });
+    $("openZoomIn").addEventListener("click", () => {
+      state.openTradeDepth = stepDepth(state.openTradeDepth, -1);
+      if (!state.data) return;
+      const payload = state.data || {};
+      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+      const trades = Array.isArray(payload.trades) ? payload.trades : [];
+      const summary = payload.summary || {};
+      refreshOpenTradeCandles(summary, cycles, trades).finally(() => {
+        renderOpenTradeCandlePanel((trades || []).filter(t => String(t.status || "").toLowerCase() === "open"), cycles);
+      });
+    });
+    $("openZoomOut").addEventListener("click", () => {
+      state.openTradeDepth = stepDepth(state.openTradeDepth, +1);
+      if (!state.data) return;
+      const payload = state.data || {};
+      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+      const trades = Array.isArray(payload.trades) ? payload.trades : [];
+      const summary = payload.summary || {};
+      refreshOpenTradeCandles(summary, cycles, trades).finally(() => {
+        renderOpenTradeCandlePanel((trades || []).filter(t => String(t.status || "").toLowerCase() === "open"), cycles);
       });
     });
     $("openBody").addEventListener("click", async (e) => {
@@ -2241,8 +2608,12 @@
       renderOpenTrades(trades, cycles);
     });
 
+    state.marketDepth = nearestDepthStep(state.marketDepth);
+    state.openTradeDepth = nearestDepthStep(state.openTradeDepth);
     $("marketTfSelect").value = state.marketInterval;
     $("marketDepthSelect").value = String(state.marketDepth);
+    $("marketZoomLabel").textContent = `zoom ${state.marketDepth}`;
+    $("openZoomLabel").textContent = `zoom ${state.openTradeDepth}`;
     setupRouteUI();
     tick();
     schedule();
