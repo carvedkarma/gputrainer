@@ -5780,6 +5780,77 @@ def _close_open_trade_record(
     return trade
 
 
+async def _auto_close_open_trades_from_market(state: _DashboardSessionState) -> List[Dict[str, Any]]:
+    """
+    Server-side safety net:
+    Auto-close open paper trades when live market price breaches SL/TP.
+    """
+    open_rows: List[tuple[int, Dict[str, Any]]] = []
+    symbols: List[str] = []
+    for tid in state.trade_order:
+        tr = state.trades.get(int(tid))
+        if not tr or str(tr.get("status", "open")).lower() != "open":
+            continue
+        sym = str(tr.get("symbol", "")).upper()
+        if not sym:
+            continue
+        open_rows.append((int(tid), tr))
+        symbols.append(sym)
+    if not open_rows:
+        return []
+
+    price_rows = await _resolve_market_prices(sorted(set(symbols)), force_refresh=False)
+    events: List[Dict[str, Any]] = []
+    for tid, tr in open_rows:
+        if str(tr.get("status", "open")).lower() != "open":
+            continue
+        sym = str(tr.get("symbol", "")).upper()
+        row = price_rows.get(sym)
+        if not row:
+            continue
+        try:
+            px = float(row.get("price", 0.0))
+            if not np.isfinite(px) or px <= 0.0:
+                continue
+            side = str(tr.get("side", "LONG")).upper()
+            sl = float(tr.get("stop_loss") or tr.get("stopLoss") or tr.get("initial_sl") or 0.0)
+            tp = float(tr.get("take_profit") or tr.get("tp2") or tr.get("take_profit_price") or 0.0)
+            sl_hit = False
+            tp_hit = False
+            if side == "LONG":
+                sl_hit = sl > 0.0 and px <= sl
+                tp_hit = tp > 0.0 and px >= tp
+            else:
+                sl_hit = sl > 0.0 and px >= sl
+                tp_hit = tp > 0.0 and px <= tp
+            if not sl_hit and not tp_hit:
+                continue
+            outcome = "SL" if sl_hit else "TP"
+            exit_px = float(sl if outcome == "SL" and sl > 0.0 else tp if tp > 0.0 else px)
+            _close_open_trade_record(
+                state=state,
+                trade=tr,
+                exit_price=exit_px,
+                outcome=outcome,
+                note="server_auto_barrier_close",
+                fee_bps=8.0,
+                explicit_cost_r=None,
+                manual_close=False,
+            )
+            events.append(
+                {
+                    "trade_id": int(tid),
+                    "symbol": sym,
+                    "outcome": outcome,
+                    "price": round(px, 6),
+                    "exit_price": round(exit_px, 6),
+                }
+            )
+        except Exception:
+            continue
+    return events
+
+
 @app.post("/api/live/trade")
 async def create_live_trade(payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
     sid = _resolve_session_id(payload, session_id=session_id)
@@ -6207,6 +6278,7 @@ async def dashboard_state(
     trades_limit: int = Query(default=1000, ge=1, le=5000),
 ):
     state = _get_dashboard_session(session_id)
+    await _auto_close_open_trades_from_market(state)
     summary = _session_summary(state)
     engine_filter = _normalize_engine_tag(engine) if engine else None
     if (
