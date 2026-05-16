@@ -1132,6 +1132,11 @@ class LiveRunner:
         mythos_tm_scale_out: bool = True,
         mythos_tm_time_adaptive: bool = True,
         mythos_tm_vol_trailing: bool = True,
+        exec_max_spread_bps: float = 14.0,
+        exec_spread_adaptive_enable: bool = True,
+        exec_spread_window: int = 80,
+        exec_spread_target_slippage_bps: float = 3.0,
+        exec_spread_min_bps: float = 4.0,
     ):
         self.replit_url = replit_url
         self.symbols = symbols
@@ -1182,6 +1187,13 @@ class LiveRunner:
         self.mythos_tm_scale_out = bool(mythos_tm_scale_out)
         self.mythos_tm_time_adaptive = bool(mythos_tm_time_adaptive)
         self.mythos_tm_vol_trailing = bool(mythos_tm_vol_trailing)
+        self.exec_max_spread_bps = float(max(exec_max_spread_bps, 0.0))
+        self.exec_spread_adaptive_enable = bool(exec_spread_adaptive_enable)
+        self.exec_spread_window = int(max(exec_spread_window, 5))
+        self.exec_spread_target_slippage_bps = float(max(exec_spread_target_slippage_bps, 0.1))
+        self.exec_spread_min_bps = float(max(exec_spread_min_bps, 0.1))
+        self._recent_entry_spread_bps: List[float] = []
+        self._recent_entry_slippage_bps: List[float] = []
         self._equity_hard_stop_latched: bool = False
         self._equity_snapshot_cache_ts: float = 0.0
         self._equity_snapshot_live_usd: Optional[float] = None
@@ -1251,6 +1263,14 @@ class LiveRunner:
             "[CONFIG] Equity guards: floor_usd=%s hard_stop_usd=%s",
             self.equity_floor_usd,
             self.equity_hard_stop_usd,
+        )
+        log.info(
+            "[CONFIG] Execution quality: max_spread_bps=%.2f adaptive=%s window=%d target_slippage_bps=%.2f min_spread_bps=%.2f",
+            self.exec_max_spread_bps,
+            self.exec_spread_adaptive_enable,
+            self.exec_spread_window,
+            self.exec_spread_target_slippage_bps,
+            self.exec_spread_min_bps,
         )
         if self.live_model == "mythos":
             log.info(
@@ -2216,6 +2236,65 @@ class LiveRunner:
             except Exception:
                 continue
         return out
+
+    def _fetch_symbol_microstructure(self, symbol: str) -> Dict[str, float]:
+        """Fetch bid/ask spread context for execution-quality gating."""
+        sym = str(symbol or "").upper().strip()
+        if not sym:
+            return {}
+        try:
+            resp = requests.get(
+                "https://api.binance.com/api/v3/ticker/bookTicker",
+                params={"symbol": sym},
+                timeout=5,
+            )
+            if resp.status_code != 200:
+                return {}
+            payload = resp.json()
+            bid = float(payload.get("bidPrice", 0.0))
+            ask = float(payload.get("askPrice", 0.0))
+            if not (np.isfinite(bid) and np.isfinite(ask) and bid > 0.0 and ask > 0.0):
+                return {}
+            mid = (bid + ask) * 0.5
+            if not np.isfinite(mid) or mid <= 0.0:
+                return {}
+            spread_bps = max(ask - bid, 0.0) / mid * 10000.0
+            return {
+                "bid": float(bid),
+                "ask": float(ask),
+                "mid": float(mid),
+                "spread_bps": float(max(spread_bps, 0.0)),
+            }
+        except Exception:
+            return {}
+
+    def _adaptive_spread_limit_bps(self) -> float:
+        base = float(max(self.exec_max_spread_bps, self.exec_spread_min_bps))
+        if (not self.exec_spread_adaptive_enable) or (len(self._recent_entry_slippage_bps) < 8):
+            return base
+        window = int(max(self.exec_spread_window, 5))
+        slips = self._recent_entry_slippage_bps[-window:]
+        avg_slip = float(np.mean(slips)) if slips else 0.0
+        target = float(max(self.exec_spread_target_slippage_bps, 0.1))
+        ratio = avg_slip / target
+        factor = 1.0
+        if ratio > 1.0:
+            factor = 1.0 / (1.0 + 0.60 * (ratio - 1.0))
+        elif ratio < 0.8:
+            factor = 1.0 + 0.20 * (0.8 - ratio)
+        factor = float(np.clip(factor, 0.50, 1.20))
+        return float(np.clip(base * factor, self.exec_spread_min_bps, max(base * 1.5, self.exec_spread_min_bps)))
+
+    def _record_execution_quality(self, spread_bps: Optional[float], slippage_bps: Optional[float]):
+        if spread_bps is not None and np.isfinite(float(spread_bps)):
+            self._recent_entry_spread_bps.append(float(max(spread_bps, 0.0)))
+        if slippage_bps is not None and np.isfinite(float(slippage_bps)):
+            self._recent_entry_slippage_bps.append(float(max(slippage_bps, 0.0)))
+        window = int(max(self.exec_spread_window, 5))
+        if len(self._recent_entry_spread_bps) > window:
+            self._recent_entry_spread_bps = self._recent_entry_spread_bps[-window:]
+        if len(self._recent_entry_slippage_bps) > window:
+            self._recent_entry_slippage_bps = self._recent_entry_slippage_bps[-window:]
 
     def _fetch_intrabar_high_low_batch(self, symbols: List[str], interval: str = "1m", limit: int = 2) -> Tuple[Dict[str, float], Dict[str, float]]:
         """Fetch short-horizon candle highs/lows for barrier-touch detection."""
@@ -3216,6 +3295,37 @@ class LiveRunner:
         htf_score = v5_info.get('htf_score', 0)
         lane_sl_mult = float(v5_info.get("sl_mult_used", self.sl_mult))
         lane_tp_mult = float(v5_info.get("tp_mult_used", self.tp_mult))
+        micro = self._fetch_symbol_microstructure(symbol)
+        spread_bps = float(micro.get("spread_bps", np.nan))
+        spread_limit_bps = self._adaptive_spread_limit_bps()
+        v5_info["micro_spread_limit_bps"] = round(float(spread_limit_bps), 4)
+        if np.isfinite(spread_bps):
+            v5_info["micro_spread_bps"] = round(spread_bps, 4)
+            v5_info["micro_bid"] = round(float(micro.get("bid", 0.0)), 6)
+            v5_info["micro_ask"] = round(float(micro.get("ask", 0.0)), 6)
+        if np.isfinite(spread_bps) and spread_bps > spread_limit_bps:
+            reason = (
+                f"SPREAD_GATE spread={spread_bps:.2f}bps>"
+                f"limit={spread_limit_bps:.2f}bps"
+            )
+            log.info("  %s: %s", symbol, reason)
+            try:
+                v5_info["hold_reason"] = reason
+                self._push_cycle_log(
+                    symbol=symbol,
+                    price=current_price,
+                    p_enter=p_enter,
+                    htf=htf,
+                    direction=side,
+                    decision="EXECUTION_SKIPPED",
+                    reasons=[reason],
+                    lane_info=v5_info,
+                    decision_stage="execution",
+                    execution_status="rejected",
+                )
+            except Exception:
+                pass
+            return
 
         if self.execution_mode == "signal_only" or not self.record_trades:
             sig_sl_dist = lane_sl_mult * atr
@@ -3284,6 +3394,12 @@ class LiveRunner:
                 return
 
             entry_price = exec_result.entry_price
+        entry_slippage_bps = abs(float(entry_price) - float(current_price)) / max(float(current_price), 1e-9) * 10000.0
+        self._record_execution_quality(
+            spread_bps=spread_bps if np.isfinite(spread_bps) else None,
+            slippage_bps=entry_slippage_bps,
+        )
+        v5_info["entry_slippage_bps"] = round(float(entry_slippage_bps), 4)
 
         v5_mae = v5_info.get('v5_mae', 0.0)
         v5_mfe = v5_info.get('v5_mfe', 0.0)

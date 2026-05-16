@@ -177,6 +177,64 @@ class LiveApiSyncIntegrationTests(unittest.TestCase):
         self.assertEqual(str(captured[0].get("decision_stage")), "execution")
         self.assertEqual(str(captured[0].get("execution_status")), "executed")
 
+    def test_adaptive_spread_limit_tightens_when_slippage_is_high(self):
+        portfolio = PortfolioManager(cooldown_bars=0)
+        with patch.object(LiveRunner, "_detect_gpu_self_url", return_value=None):
+            runner = LiveRunner(
+                replit_url="http://fake.local",
+                symbols=["BTCUSDT"],
+                device="cpu",
+                paper=True,
+                execution_mode="paper",
+                record_trades=True,
+                portfolio_manager=portfolio,
+                exec_max_spread_bps=14.0,
+                exec_spread_adaptive_enable=True,
+                exec_spread_window=20,
+                exec_spread_target_slippage_bps=2.0,
+                exec_spread_min_bps=4.0,
+            )
+        runner._recent_entry_slippage_bps = [4.0] * 20
+        limit_bps = runner._adaptive_spread_limit_bps()
+        self.assertLess(limit_bps, 14.0)
+        self.assertGreaterEqual(limit_bps, 4.0)
+
+    def test_execute_candidate_rejects_when_spread_gate_fails(self):
+        sid = "int-spread-gate"
+        portfolio = PortfolioManager(cooldown_bars=0)
+        with patch.object(LiveRunner, "_detect_gpu_self_url", return_value=None):
+            runner = LiveRunner(
+                replit_url="http://fake.local",
+                symbols=["BTCUSDT"],
+                device="cpu",
+                paper=True,
+                execution_mode="paper",
+                record_trades=True,
+                portfolio_manager=portfolio,
+                paper_session_id=sid,
+                exec_max_spread_bps=10.0,
+                exec_spread_adaptive_enable=False,
+            )
+        candidate = {
+            "symbol": "BTCUSDT",
+            "side": "LONG",
+            "current_price": 100.0,
+            "atr": 1.0,
+            "p_enter": 0.9,
+            "htf": {"h1_trend": 0, "h4_trend": 0},
+            "v5_info": {"v5_score": 1.0, "threshold_used": 0.5, "lane": "MYTHOS"},
+            "df_candles": None,
+        }
+        captured = []
+        with patch.object(
+            runner,
+            "_fetch_symbol_microstructure",
+            return_value={"bid": 99.8, "ask": 100.2, "spread_bps": 40.0},
+        ), patch.object(runner, "_push_cycle_log", side_effect=lambda **kwargs: captured.append(kwargs)):
+            runner._execute_candidate(candidate)
+        self.assertEqual(len(runner.portfolio.open_positions), 0)
+        self.assertTrue(any(str(x.get("decision")) == "EXECUTION_SKIPPED" for x in captured))
+
 
 if __name__ == "__main__":
     unittest.main()

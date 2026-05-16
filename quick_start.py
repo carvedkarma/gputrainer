@@ -6962,6 +6962,19 @@ Examples:
     parser.add_argument("--mythos-no-tm-vol-trailing", dest="mythos_tm_vol_trailing", action="store_false",
                         help="Disable volatility-aware trailing behavior for Mythos")
     parser.set_defaults(mythos_tm_vol_trailing=True)
+    parser.add_argument("--exec-max-spread-bps", type=float, default=14.0,
+                        help="Maximum allowed bid/ask spread (bps) for execution (default: 14.0)")
+    parser.add_argument("--exec-spread-adaptive", dest="exec_spread_adaptive", action="store_true",
+                        help="Adapt max spread gate based on rolling realized entry slippage (default: on)")
+    parser.add_argument("--no-exec-spread-adaptive", dest="exec_spread_adaptive", action="store_false",
+                        help="Disable adaptive spread gate")
+    parser.set_defaults(exec_spread_adaptive=True)
+    parser.add_argument("--exec-spread-window", type=int, default=80,
+                        help="Rolling window size for execution-quality calibration (default: 80)")
+    parser.add_argument("--exec-spread-target-slippage-bps", type=float, default=3.0,
+                        help="Target entry slippage in bps used by adaptive spread gate (default: 3.0)")
+    parser.add_argument("--exec-spread-min-bps", type=float, default=4.0,
+                        help="Minimum adaptive spread gate floor in bps (default: 4.0)")
     parser.add_argument("--exec-tf", type=str, default="3m", choices=["1m", "3m", "5m"],
                         help="Execution timeframe for improved fills (default: 3m)")
     parser.add_argument("--exec-window-min", type=int, default=15,
@@ -7174,6 +7187,11 @@ Examples:
             mythos_tm_scale_out=getattr(args, "mythos_tm_scale_out", True),
             mythos_tm_time_adaptive=getattr(args, "mythos_tm_time_adaptive", True),
             mythos_tm_vol_trailing=getattr(args, "mythos_tm_vol_trailing", True),
+            exec_max_spread_bps=getattr(args, "exec_max_spread_bps", 14.0),
+            exec_spread_adaptive_enable=getattr(args, "exec_spread_adaptive", True),
+            exec_spread_window=getattr(args, "exec_spread_window", 80),
+            exec_spread_target_slippage_bps=getattr(args, "exec_spread_target_slippage_bps", 3.0),
+            exec_spread_min_bps=getattr(args, "exec_spread_min_bps", 4.0),
         )
         runner.learning_manager = learning_mgr
 
