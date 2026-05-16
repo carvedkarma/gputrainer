@@ -17,6 +17,7 @@ Usage:
 import sys
 import time
 import json
+import copy
 import logging
 import traceback
 import requests
@@ -1191,36 +1192,34 @@ class LiveRunner:
         self._regime_history: Dict[str, list] = {}   # symbol -> last 3 regime readings
         self._regime_confirmed: Dict[str, str] = {}  # symbol -> 'BULL' | 'BEAR'
 
-        if self.live_model == "mythos":
-            _shared = None
-        else:
-            try:
-                from config.shared_v5_trade_config import load_shared_defaults
-                _shared = load_shared_defaults()
-            except Exception:
-                _shared = None
+        try:
+            from config.shared_v5_trade_config import load_shared_defaults
+            _shared_defaults = load_shared_defaults()
+        except Exception:
+            _shared_defaults = None
+        _shared_scoring = None if self.live_model == "mythos" else _shared_defaults
 
-        self.v5_score_lambda = V5_SCORE_LAMBDA if _shared is None else _shared.score_lambda
+        self.v5_score_lambda = V5_SCORE_LAMBDA if _shared_scoring is None else _shared_scoring.score_lambda
         self.v5_score_threshold = (
             v5_live_threshold if v5_live_threshold is not None
-            else (V5_SCORE_THRESHOLD if _shared is None else _shared.score_threshold)
+            else (V5_SCORE_THRESHOLD if _shared_scoring is None else _shared_scoring.score_threshold)
         )
-        self.v5_min_mu_r = V5_MIN_MU_R if _shared is None else _shared.min_mu_r_score
+        self.v5_min_mu_r = V5_MIN_MU_R if _shared_scoring is None else _shared_scoring.min_mu_r_score
         self.v5_mae_floor = v5_mae_floor if v5_mae_floor is not None else V5_MAE_FLOOR
-        self.v5_min_p_side: float = 0.0 if _shared is None else _shared.min_p_side
-        self.v5_min_p_short: float = 0.0 if _shared is None else _shared.min_p_short
-        self.v5_slippage_bps: float = 0.0 if _shared is None else _shared.slippage_base_bps
+        self.v5_min_p_side: float = 0.0 if _shared_scoring is None else _shared_scoring.min_p_side
+        self.v5_min_p_short: float = 0.0 if _shared_scoring is None else _shared_scoring.min_p_short
+        self.v5_slippage_bps: float = 0.0 if _shared_scoring is None else _shared_scoring.slippage_base_bps
         self.cooldown_bars = (
-            _shared.cooldown_bars
-            if (_shared is not None and cooldown_bars == 8)
+            _shared_scoring.cooldown_bars
+            if (_shared_scoring is not None and cooldown_bars == 8)
             else cooldown_bars
         )
 
-        self.halt_on_data_staleness: bool = _shared.halt_on_data_staleness if _shared else True
-        self.max_data_staleness_seconds: float = _shared.max_data_staleness_seconds if _shared else 300.0
-        self.halt_on_api_errors: bool = _shared.halt_on_api_errors if _shared else True
-        self.max_consecutive_api_errors: int = _shared.max_consecutive_api_errors if _shared else 5
-        self.max_daily_loss_r: Optional[float] = _shared.max_daily_loss_r if _shared else None
+        self.halt_on_data_staleness: bool = _shared_defaults.halt_on_data_staleness if _shared_defaults else True
+        self.max_data_staleness_seconds: float = _shared_defaults.max_data_staleness_seconds if _shared_defaults else 300.0
+        self.halt_on_api_errors: bool = _shared_defaults.halt_on_api_errors if _shared_defaults else True
+        self.max_consecutive_api_errors: int = _shared_defaults.max_consecutive_api_errors if _shared_defaults else 5
+        self.max_daily_loss_r: Optional[float] = _shared_defaults.max_daily_loss_r if _shared_defaults else None
 
         log.info(f"[INIT] LiveRunner {SYSTEM_VERSION} execution_mode={execution_mode} "
                  f"record_trades={record_trades} symbols={symbols} session={self.paper_session_id} "
@@ -1677,6 +1676,7 @@ class LiveRunner:
             if result:
                 self._sync_portfolio_from_web(source=f"tm_partial_{pos.symbol}")
                 return True
+            return False
 
         # Fallback path for non-dashboard contexts: keep the position open but
         # reduce risk and effective size so manager behavior still matches.
@@ -1877,6 +1877,7 @@ class LiveRunner:
             for sym in stale:
                 pos = self.portfolio.open_positions.pop(sym, None)
                 if pos:
+                    self.trade_manager.clear_position(sym)
                     log.info(f"[PortfolioSync/{source}] Removed stale in-memory position for {sym} (closed in web app)")
 
             # Update existing in-memory positions with latest web stop/TP/risk state.
@@ -1934,6 +1935,7 @@ class LiveRunner:
                 except Exception:
                     restored_horizon = 96
                 restored_horizon = int(max(restored_horizon, 1))
+                self.trade_manager.clear_position(sym)
 
                 pos = _Pos(
                     symbol=sym, side=side,
@@ -2031,10 +2033,22 @@ class LiveRunner:
             if px is None or not np.isfinite(float(px)) or float(px) <= 0.0:
                 continue
             self.portfolio.close_position(sym, float(px), "EQUITY_HARD_STOP")
+        if self.execution_mode == "paper" and self.record_trades:
+            self._sync_portfolio_from_web(source="equity_hard_stop")
+        remaining = list(self.portfolio.open_positions.keys())
+        if remaining:
+            log.error(
+                "[EQUITY_HARD_STOP] Triggered but not fully flattened (missing prices/sync): "
+                "equity=%.2f <= hard_stop=%.2f remaining=%s",
+                eq,
+                self.equity_hard_stop_usd,
+                ",".join(sorted(remaining)),
+            )
+            return
         self._equity_hard_stop_latched = True
         log.error(
             "[EQUITY_HARD_STOP] Triggered: equity=%.2f <= hard_stop=%.2f. "
-            "All reachable open positions flattened. New entries halted.",
+            "All open positions flattened. New entries halted.",
             eq,
             self.equity_hard_stop_usd,
         )
@@ -2241,6 +2255,7 @@ class LiveRunner:
             price = prices.get(symbol)
             if price is None:
                 continue
+            tm_state_before = copy.deepcopy(self.trade_manager.get_state(symbol))
 
             candle_high = highs.get(symbol)
             candle_low = lows.get(symbol)
@@ -2283,7 +2298,22 @@ class LiveRunner:
                             close_pct,
                             action.reason,
                         )
+                    else:
+                        if tm_state_before is None:
+                            self.trade_manager.clear_position(symbol)
+                        else:
+                            self.trade_manager.position_state[symbol] = tm_state_before
+                        log.warning(
+                            "[TM_PARTIAL] sym=%s pct=%.1f reason=%s not applied; reverted TM state",
+                            symbol,
+                            close_pct,
+                            action.reason,
+                        )
                 except Exception as e:
+                    if tm_state_before is None:
+                        self.trade_manager.clear_position(symbol)
+                    else:
+                        self.trade_manager.position_state[symbol] = tm_state_before
                     log.warning(f"Failed partial-close TM action for {symbol}: {e}")
 
             elif action.action == "CLOSE_FULL":

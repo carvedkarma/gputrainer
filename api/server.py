@@ -6173,6 +6173,7 @@ async def update_paper_settings(payload: Dict[str, Any], session_id: Optional[st
 @app.get("/api/paper/open-positions-summary")
 async def open_positions_summary(session_id: str = Query(default="default")):
     state = _get_dashboard_session(session_id)
+    await _auto_close_open_trades_from_market(state)
     positions: List[Dict[str, Any]] = []
     for tid in state.trade_order:
         tr = state.trades.get(tid)
