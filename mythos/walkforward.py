@@ -1856,6 +1856,9 @@ def _precision_selective_quality_score(
     confidence: float,
     uncertainty: float,
     conviction: float,
+    support_score: float,
+    reliability_score: float,
+    stress_score: float,
     cfg: MythosConfig,
 ) -> float:
     edge_unit = float(max(getattr(cfg, "min_expected_r", 0.01), 1e-6))
@@ -1868,15 +1871,131 @@ def _precision_selective_quality_score(
     w_unc = float(max(getattr(cfg, "precision_selective_uncertainty_weight", 0.20), 0.0))
     w_conv = float(max(getattr(cfg, "precision_selective_conviction_weight", 0.25), 0.0))
     denom = float(max(w_edge + w_conf + w_unc + w_conv, 1e-6))
-    raw = (w_edge * edge_n) + (w_conf * conf_n) + (w_conv * conv_n) - (w_unc * unc_n)
+    core_score = float(np.clip((w_edge * edge_n + w_conf * conf_n + w_conv * conv_n - w_unc * unc_n) / denom, 0.0, 1.0))
+    support_n = float(np.clip(support_score, 0.0, 1.0))
+    reliability_n = float(np.clip(reliability_score, 0.0, 1.0))
+    stress_n = float(np.clip(stress_score, 0.0, 1.0))
+    support_w = float(np.clip(getattr(cfg, "precision_selective_support_weight", 0.22), 0.0, 2.0))
+    reliability_w = float(np.clip(getattr(cfg, "precision_selective_reliability_weight", 0.28), 0.0, 2.0))
+    stress_w = float(np.clip(getattr(cfg, "precision_selective_stress_weight", 0.24), 0.0, 2.0))
+    adjusted = float(
+        core_score
+        + support_w * (support_n - 0.5)
+        + reliability_w * (reliability_n - 0.5)
+        - stress_w * stress_n
+    )
+    adjusted = float(np.clip(adjusted, 0.0, 1.0))
     # map to roughly [-1, 1] for stable quantile gating
-    return float(np.clip((raw / denom) * 2.0 - 1.0, -1.0, 1.0))
+    return float(np.clip(2.0 * adjusted - 1.0, -1.0, 1.0))
+
+
+def _precision_selective_support_score(
+    *,
+    meta_p: float,
+    analog_hits: float,
+    side_recent_stats: Dict[str, float],
+    cfg: MythosConfig,
+) -> float:
+    meta_n = float(np.clip(abs(float(meta_p) - 0.5) * 2.0, 0.0, 1.0))
+    analog_n = float(
+        np.clip(float(analog_hits) / max(float(getattr(cfg, "analog_k", 48)), 1.0), 0.0, 1.0)
+    )
+    side_n = 0.5
+    if float(side_recent_stats.get("ready", 0.0)) > 0.5:
+        hit_rate = float(side_recent_stats.get("hit_rate", 0.0))
+        expectancy = float(side_recent_stats.get("expectancy", 0.0))
+        edge_unit = float(max(getattr(cfg, "min_expected_r", 0.01), 1e-6))
+        hit_signal = float(np.clip((hit_rate - 0.5) / 0.20, -1.0, 1.0))
+        exp_signal = float(np.clip(expectancy / max(2.0 * edge_unit, 1e-6), -1.0, 1.0))
+        side_n = float(np.clip(0.5 + 0.30 * hit_signal + 0.20 * exp_signal, 0.0, 1.0))
+    w_meta = float(max(getattr(cfg, "precision_selective_meta_support_weight", 0.34), 0.0))
+    w_analog = float(max(getattr(cfg, "precision_selective_analog_support_weight", 0.24), 0.0))
+    w_side = float(max(getattr(cfg, "precision_selective_side_support_weight", 0.42), 0.0))
+    denom = float(max(w_meta + w_analog + w_side, 1e-6))
+    return float(np.clip((w_meta * meta_n + w_analog * analog_n + w_side * side_n) / denom, 0.0, 1.0))
+
+
+def _precision_selective_reliability_score(
+    *,
+    calibration_adj: Dict[str, float],
+    cfg: MythosConfig,
+) -> float:
+    if float(calibration_adj.get("ready", 0.0)) < 0.5:
+        return 0.5
+    abs_err = float(calibration_adj.get("abs_error", 0.0))
+    brier = float(calibration_adj.get("brier", 0.0))
+    conf_gap = float(calibration_adj.get("confidence_gap", 0.0))
+    mode_score = float(calibration_adj.get("mode_score", 0.0))
+    target_abs = float(np.clip(getattr(cfg, "calibration_target_abs_error", 0.16), 0.01, 0.60))
+    target_brier = float(np.clip(getattr(cfg, "calibration_target_brier", 0.22), 0.01, 0.80))
+    abs_quality = float(np.clip(1.0 - max(abs_err - target_abs, 0.0) / max(2.0 * target_abs, 1e-6), 0.0, 1.0))
+    brier_quality = float(np.clip(1.0 - max(brier - target_brier, 0.0) / max(2.0 * target_brier, 1e-6), 0.0, 1.0))
+    gap_quality = float(np.clip(1.0 - max(conf_gap, 0.0) / 0.35, 0.0, 1.0))
+    mode_quality = float(np.clip(0.5 + 0.25 * mode_score, 0.0, 1.0))
+    score = float(
+        0.35 * abs_quality
+        + 0.25 * brier_quality
+        + 0.25 * gap_quality
+        + 0.15 * mode_quality
+    )
+    return float(np.clip(score, 0.0, 1.0))
+
+
+def _precision_selective_stress_score(
+    *,
+    uncertainty: float,
+    calibration_adj: Dict[str, float],
+    side_recent_stats: Dict[str, float],
+    cfg: MythosConfig,
+) -> float:
+    unc_n = float(np.clip(float(uncertainty), 0.0, 2.0) / 2.0)
+    conf_gap = float(calibration_adj.get("confidence_gap", 0.0))
+    overconf_n = float(np.clip(max(conf_gap, 0.0) / 0.35, 0.0, 1.0))
+    side_drag = 0.0
+    if float(side_recent_stats.get("ready", 0.0)) > 0.5:
+        hit_rate = float(side_recent_stats.get("hit_rate", 0.0))
+        expectancy = float(side_recent_stats.get("expectancy", 0.0))
+        edge_unit = float(max(getattr(cfg, "min_expected_r", 0.01), 1e-6))
+        hit_shortfall = float(np.clip(max(0.5 - hit_rate, 0.0) / 0.5, 0.0, 1.0))
+        exp_shortfall = float(np.clip(max(-expectancy, 0.0) / max(2.0 * edge_unit, 1e-6), 0.0, 1.0))
+        side_drag = float(0.55 * hit_shortfall + 0.45 * exp_shortfall)
+    return float(np.clip(0.40 * unc_n + 0.35 * overconf_n + 0.25 * side_drag, 0.0, 1.0))
+
+
+def _precision_selective_quality_lift(
+    *,
+    accepted_scores: List[float],
+    recent_rr: List[float],
+    cfg: MythosConfig,
+) -> Dict[str, float]:
+    n = int(min(len(accepted_scores), len(recent_rr)))
+    min_eval = int(max(getattr(cfg, "precision_selective_quality_eval_min_trades", 32), 4))
+    if n < min_eval:
+        return {"ready": 0.0, "lift": 0.0, "high_win_rate": 0.0, "low_win_rate": 0.0}
+    scores = np.asarray(accepted_scores[-n:], dtype=np.float64)
+    rr = np.asarray(recent_rr[-n:], dtype=np.float64)
+    split_q = float(np.clip(getattr(cfg, "precision_selective_quality_eval_quantile", 0.65), 0.50, 0.99))
+    split = float(np.quantile(scores, split_q))
+    high_mask = scores >= split
+    low_mask = ~high_mask
+    min_group = int(max(min_eval // 4, 4))
+    if int(np.sum(high_mask)) < min_group or int(np.sum(low_mask)) < min_group:
+        return {"ready": 0.0, "lift": 0.0, "high_win_rate": 0.0, "low_win_rate": 0.0}
+    high_wr = float(np.mean(rr[high_mask] > 0.0))
+    low_wr = float(np.mean(rr[low_mask] > 0.0))
+    return {
+        "ready": 1.0,
+        "lift": float(high_wr - low_wr),
+        "high_win_rate": high_wr,
+        "low_win_rate": low_wr,
+    }
 
 
 def _precision_selective_gate(
     *,
     quality: float,
     candidate_scores: List[float],
+    accepted_scores: List[float],
     recent_rr: List[float],
     total_trades: int,
     cfg: MythosConfig,
@@ -1902,6 +2021,28 @@ def _precision_selective_gate(
     adapt_gain = float(np.clip(getattr(cfg, "precision_selective_adapt_gain", 0.40), 0.0, 2.0))
     recent_wr = float(np.mean(np.asarray(rr, dtype=np.float64) > 0.0)) if rr else target_wr
     dynamic_q = float(np.clip(base_q + adapt_gain * (target_wr - recent_wr), base_q, max_q))
+    quality_lift = _precision_selective_quality_lift(
+        accepted_scores=accepted_scores,
+        recent_rr=rr,
+        cfg=cfg,
+    )
+    quality_lift_ready = float(quality_lift.get("ready", 0.0))
+    quality_lift_val = float(quality_lift.get("lift", 0.0))
+    quality_lift_adjust = 0.0
+    if quality_lift_ready > 0.5:
+        target_lift = float(np.clip(getattr(cfg, "precision_selective_quality_min_lift", 0.015), 0.0, 0.5))
+        relax_gain = float(np.clip(getattr(cfg, "precision_selective_quality_relax_gain", 0.35), 0.0, 3.0))
+        tighten_gain = float(np.clip(getattr(cfg, "precision_selective_quality_tighten_gain", 0.20), 0.0, 3.0))
+        relax_cap = float(np.clip(getattr(cfg, "precision_selective_quality_relax_cap", 0.08), 0.0, 0.5))
+        tighten_cap = float(np.clip(getattr(cfg, "precision_selective_quality_tighten_cap", 0.04), 0.0, 0.5))
+        if quality_lift_val < target_lift:
+            lift_gap = float(target_lift - quality_lift_val)
+            quality_lift_adjust = float(-np.clip(relax_gain * lift_gap, 0.0, relax_cap))
+        else:
+            lift_excess = float(quality_lift_val - target_lift)
+            quality_lift_adjust = float(np.clip(tighten_gain * lift_excess, 0.0, tighten_cap))
+        min_q = float(np.clip(base_q - relax_cap, 0.50, base_q))
+        dynamic_q = float(np.clip(dynamic_q + quality_lift_adjust, min_q, max_q))
     precision_pressure = float(
         np.clip((target_wr - recent_wr) / max(target_wr, 1e-6), 0.0, 1.0)
     )
@@ -1918,12 +2059,20 @@ def _precision_selective_gate(
     edge_floor_boost = float(np.clip(0.015 * precision_pressure, 0.0, 0.020))
     unc_base = float(np.clip(getattr(cfg, "risk_cap_override_max_uncertainty", 0.70), 0.10, 2.0))
     uncertainty_cap = float(np.clip(unc_base - 0.28 * precision_pressure, 0.30, unc_base))
+    if quality_lift_ready > 0.5 and quality_lift_val < 0.0:
+        weak = float(np.clip(abs(quality_lift_val) / 0.20, 0.0, 1.0))
+        conf_floor_boost *= float(1.0 - 0.60 * weak)
+        edge_floor_boost *= float(1.0 - 0.60 * weak)
+        uncertainty_cap = float(np.clip(uncertainty_cap + 0.20 * weak, 0.30, 2.0))
     return {
         "pass": float(1.0 if allowed else 0.0),
         "ready": 1.0,
         "threshold": threshold,
         "quality": float(quality),
         "dynamic_quantile": dynamic_q,
+        "quality_lift": quality_lift_val,
+        "quality_lift_ready": quality_lift_ready,
+        "quality_lift_adjust": quality_lift_adjust,
         "recent_win_rate": recent_wr,
         "precision_pressure": precision_pressure,
         "conf_floor_boost": conf_floor_boost,
@@ -3082,12 +3231,15 @@ def _run_fold(
     time_adaptive_conf_adjust_sum = 0.0
     precision_selective_scores: List[float] = []
     precision_selective_recent_rr: List[float] = []
+    precision_selective_recent_scores: List[float] = []
     precision_selective_mode_bars = 0
     precision_selective_ready_bars = 0
     precision_selective_rejects = 0
     precision_selective_threshold_sum = 0.0
     precision_selective_quality_sum = 0.0
     precision_selective_quantile_sum = 0.0
+    precision_selective_quality_lift_sum = 0.0
+    precision_selective_quality_lift_checks = 0
     month_shield_mode_bars = 0
     last_trade_bar = -1
     opportunity_rescue_bars = 0
@@ -3429,21 +3581,48 @@ def _run_fold(
         precision_conf_floor_boost = 0.0
         precision_edge_floor_boost = 0.0
         precision_uncertainty_cap: Optional[float] = None
+        precision_quality = 0.0
         if side != 0:
             score_window = int(max(getattr(cfg, "precision_selective_score_window", 512), 32))
+            side_stats = _recent_quality_stats(
+                side_quality_rr.get(int(side), []),
+                window=int(max(getattr(cfg, "precision_selective_side_window", 96), 8)),
+                min_trades=int(max(getattr(cfg, "precision_selective_side_min_trades", 12), 1)),
+            )
+            support_score = _precision_selective_support_score(
+                meta_p=meta_p,
+                analog_hits=analog_hits,
+                side_recent_stats=side_stats,
+                cfg=cfg,
+            )
+            reliability_score = _precision_selective_reliability_score(
+                calibration_adj=calibration_adj,
+                cfg=cfg,
+            )
+            stress_score = _precision_selective_stress_score(
+                uncertainty=uncertainty,
+                calibration_adj=calibration_adj,
+                side_recent_stats=side_stats,
+                cfg=cfg,
+            )
             quality = _precision_selective_quality_score(
                 edge=edge,
                 confidence=confidence,
                 uncertainty=uncertainty,
                 conviction=conviction,
+                support_score=support_score,
+                reliability_score=reliability_score,
+                stress_score=stress_score,
                 cfg=cfg,
             )
+            precision_quality = float(quality)
             precision_selective_scores.append(float(quality))
             if len(precision_selective_scores) > score_window:
                 del precision_selective_scores[0 : len(precision_selective_scores) - score_window]
             precision_gate = _precision_selective_gate(
                 quality=float(quality),
                 candidate_scores=precision_selective_scores,
+                accepted_scores=precision_selective_recent_scores,
                 recent_rr=precision_selective_recent_rr,
                 total_trades=len(trades),
                 cfg=cfg,
@@ -3455,6 +3634,9 @@ def _run_fold(
                 precision_selective_threshold_sum += float(precision_gate.get("threshold", 0.0))
                 precision_selective_quality_sum += float(precision_gate.get("quality", quality))
                 precision_selective_quantile_sum += float(precision_gate.get("dynamic_quantile", 0.0))
+                if float(precision_gate.get("quality_lift_ready", 0.0)) > 0.5:
+                    precision_selective_quality_lift_checks += 1
+                    precision_selective_quality_lift_sum += float(precision_gate.get("quality_lift", 0.0))
                 precision_conf_floor_boost = float(
                     max(precision_gate.get("conf_floor_boost", 0.0), 0.0)
                 )
@@ -3810,6 +3992,9 @@ def _run_fold(
         ps_window = int(max(getattr(cfg, "precision_selective_score_window", 512), 32))
         if len(precision_selective_recent_rr) > ps_window:
             del precision_selective_recent_rr[0 : len(precision_selective_recent_rr) - ps_window]
+        precision_selective_recent_scores.append(float(precision_quality))
+        if len(precision_selective_recent_scores) > ps_window:
+            del precision_selective_recent_scores[0 : len(precision_selective_recent_scores) - ps_window]
         last_trade_bar = int(i)
         if rr > 0.0:
             winner_nonconformity_scores.append(float(nonconf_score))
@@ -4049,6 +4234,10 @@ def _run_fold(
         ),
         "precision_selective_avg_quantile": round(
             float(precision_selective_quantile_sum / max(precision_selective_ready_bars, 1)), 6
+        ),
+        "precision_selective_quality_lift_checks": int(precision_selective_quality_lift_checks),
+        "precision_selective_avg_quality_lift": round(
+            float(precision_selective_quality_lift_sum / max(precision_selective_quality_lift_checks, 1)), 6
         ),
         "month_shield_mode_bars": int(month_shield_mode_bars),
         "time_bucket_day_side": day_report,
@@ -4402,9 +4591,22 @@ def run_mythos_walk_forward(
             for r in reports
         )
     )
+    total_precision_quality_lift_checks = int(
+        sum(int(r.get("precision_selective_quality_lift_checks", 0)) for r in reports)
+    )
+    weighted_precision_quality_lift = float(
+        sum(
+            float(r.get("precision_selective_avg_quality_lift", 0.0))
+            * int(r.get("precision_selective_quality_lift_checks", 0))
+            for r in reports
+        )
+    )
     aggregate_precision_threshold = float(weighted_precision_threshold / max(total_precision_ready_bars, 1))
     aggregate_precision_quality = float(weighted_precision_quality / max(total_precision_ready_bars, 1))
     aggregate_precision_quantile = float(weighted_precision_quantile / max(total_precision_ready_bars, 1))
+    aggregate_precision_quality_lift = float(
+        weighted_precision_quality_lift / max(total_precision_quality_lift_checks, 1)
+    )
     total_opportunity_rescue_bars = int(sum(int(r.get("opportunity_rescue_bars", 0)) for r in reports))
     total_opportunity_override_counterfactual = int(
         sum(int(r.get("opportunity_override_counterfactual", 0)) for r in reports)
@@ -4624,6 +4826,8 @@ def run_mythos_walk_forward(
         "precision_selective_avg_threshold": round(aggregate_precision_threshold, 6),
         "precision_selective_avg_quality": round(aggregate_precision_quality, 6),
         "precision_selective_avg_quantile": round(aggregate_precision_quantile, 6),
+        "precision_selective_quality_lift_checks": total_precision_quality_lift_checks,
+        "precision_selective_avg_quality_lift": round(aggregate_precision_quality_lift, 6),
         "time_bucket_day_side": aggregate_day_buckets,
         "time_bucket_hour_side": aggregate_hour_buckets,
         "time_bucket_best_short_hours": agg_best_short_hours,

@@ -133,6 +133,21 @@ class MythosConfig:
     precision_selective_conf_weight: float = 0.35
     precision_selective_uncertainty_weight: float = 0.20
     precision_selective_conviction_weight: float = 0.25
+    precision_selective_meta_support_weight: float = 0.34
+    precision_selective_analog_support_weight: float = 0.24
+    precision_selective_side_support_weight: float = 0.42
+    precision_selective_support_weight: float = 0.22
+    precision_selective_reliability_weight: float = 0.28
+    precision_selective_stress_weight: float = 0.24
+    precision_selective_side_window: int = 96
+    precision_selective_side_min_trades: int = 12
+    precision_selective_quality_eval_min_trades: int = 32
+    precision_selective_quality_eval_quantile: float = 0.65
+    precision_selective_quality_min_lift: float = 0.015
+    precision_selective_quality_relax_gain: float = 0.35
+    precision_selective_quality_tighten_gain: float = 0.20
+    precision_selective_quality_relax_cap: float = 0.08
+    precision_selective_quality_tighten_cap: float = 0.04
     robust_validation_enable: bool = True
     robust_validation_min_folds: int = 5
     robust_validation_metric: str = "expectancy_r"
@@ -644,6 +659,51 @@ class MythosConfig:
         )
         self.precision_selective_conviction_weight = float(
             np.clip(getattr(self, "precision_selective_conviction_weight", 0.25), 0.0, 5.0)
+        )
+        self.precision_selective_meta_support_weight = float(
+            np.clip(getattr(self, "precision_selective_meta_support_weight", 0.34), 0.0, 5.0)
+        )
+        self.precision_selective_analog_support_weight = float(
+            np.clip(getattr(self, "precision_selective_analog_support_weight", 0.24), 0.0, 5.0)
+        )
+        self.precision_selective_side_support_weight = float(
+            np.clip(getattr(self, "precision_selective_side_support_weight", 0.42), 0.0, 5.0)
+        )
+        self.precision_selective_support_weight = float(
+            np.clip(getattr(self, "precision_selective_support_weight", 0.22), 0.0, 2.0)
+        )
+        self.precision_selective_reliability_weight = float(
+            np.clip(getattr(self, "precision_selective_reliability_weight", 0.28), 0.0, 2.0)
+        )
+        self.precision_selective_stress_weight = float(
+            np.clip(getattr(self, "precision_selective_stress_weight", 0.24), 0.0, 2.0)
+        )
+        self.precision_selective_side_window = int(
+            max(getattr(self, "precision_selective_side_window", 96), 8)
+        )
+        self.precision_selective_side_min_trades = int(
+            max(getattr(self, "precision_selective_side_min_trades", 12), 1)
+        )
+        self.precision_selective_quality_eval_min_trades = int(
+            max(getattr(self, "precision_selective_quality_eval_min_trades", 32), 4)
+        )
+        self.precision_selective_quality_eval_quantile = float(
+            np.clip(getattr(self, "precision_selective_quality_eval_quantile", 0.65), 0.50, 0.99)
+        )
+        self.precision_selective_quality_min_lift = float(
+            np.clip(getattr(self, "precision_selective_quality_min_lift", 0.015), 0.0, 0.5)
+        )
+        self.precision_selective_quality_relax_gain = float(
+            np.clip(getattr(self, "precision_selective_quality_relax_gain", 0.35), 0.0, 3.0)
+        )
+        self.precision_selective_quality_tighten_gain = float(
+            np.clip(getattr(self, "precision_selective_quality_tighten_gain", 0.20), 0.0, 3.0)
+        )
+        self.precision_selective_quality_relax_cap = float(
+            np.clip(getattr(self, "precision_selective_quality_relax_cap", 0.08), 0.0, 0.5)
+        )
+        self.precision_selective_quality_tighten_cap = float(
+            np.clip(getattr(self, "precision_selective_quality_tighten_cap", 0.04), 0.0, 0.5)
         )
         self.robust_validation_enable = bool(getattr(self, "robust_validation_enable", True))
         self.robust_validation_min_folds = int(
