@@ -24,6 +24,7 @@ import requests
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
+from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
@@ -63,6 +64,25 @@ def _normalize_dashboard_engine(engine: Optional[str]) -> str:
     if raw in {"v5", "v5_forecaster", "forecaster"}:
         return "v5"
     return raw
+
+
+def _is_exchange_api_url(url: Optional[str]) -> bool:
+    txt = str(url or "").strip()
+    if not txt:
+        return False
+    parsed = urlparse(txt if "://" in txt else f"https://{txt}")
+    host = str(parsed.netloc or parsed.path or "").strip().lower()
+    if not host:
+        return False
+    exchange_hosts = (
+        "api.binance.com",
+        "api-gcp.binance.com",
+        "api1.binance.com",
+        "api2.binance.com",
+        "api3.binance.com",
+        "binance.vision",
+    )
+    return any(token in host for token in exchange_hosts)
 
 
 def _retry_request(method: str, url: str, **kwargs) -> Optional[requests.Response]:
@@ -1149,6 +1169,17 @@ class LiveRunner:
         self.paper = paper
         self.execution_mode = execution_mode
         self.record_trades = record_trades
+        self._exchange_api_url = _is_exchange_api_url(replit_url)
+        self._web_api_enabled = bool(replit_url) and (not self._exchange_api_url)
+        self._web_api_disable_reason = ""
+        self._web_api_404_count = 0
+        if self.execution_mode == "paper" and self.record_trades and not self._web_api_enabled:
+            self._web_api_disable_reason = "exchange-api-url"
+            log.warning(
+                "[PAPER_LOCAL] URL looks like exchange API (%s). "
+                "Running local paper engine without web sync (/api/paper/*, /api/live/*).",
+                replit_url,
+            )
         self.portfolio = portfolio_manager
         self.execution = execution_module
         self.dry_run = dry_run
@@ -1320,6 +1351,25 @@ class LiveRunner:
                 "Wire an execution adapter via execution_module= to place real orders."
             )
 
+    def _disable_web_api(self, reason: str) -> None:
+        if not self._web_api_enabled:
+            return
+        self._web_api_enabled = False
+        self._web_api_disable_reason = str(reason or "unknown")
+        log.warning(
+            "[PAPER_LOCAL] Disabling web sync/telemetry endpoints: %s. "
+            "Paper engine will continue locally.",
+            self._web_api_disable_reason,
+        )
+
+    def _note_web_api_status(self, source: str, status_code: int) -> None:
+        if status_code == 404:
+            self._web_api_404_count += 1
+            if self.execution_mode == "paper" and self._web_api_404_count >= 2:
+                self._disable_web_api(f"{source} returned HTTP 404 repeatedly")
+        else:
+            self._web_api_404_count = 0
+
     @staticmethod
     def _detect_gpu_self_url() -> Optional[str]:
         """Detect the GPU trainer's own public URL (e.g. ngrok tunnel)."""
@@ -1348,6 +1398,8 @@ class LiveRunner:
 
     def _register_gpu_url(self):
         """Register GPU trainer URL with the Replit dashboard."""
+        if not self._web_api_enabled:
+            return
         if not self.gpu_self_url:
             return
         try:
@@ -1362,6 +1414,9 @@ class LiveRunner:
 
     def _start_execution_service(self):
         """Start the Bybit execution service push loop if API keys are available."""
+        if not self._web_api_enabled:
+            log.info("[Execution Service] Web backend disabled — skipping execution service push loop")
+            return
         import os
         api_key = os.environ.get("BYBIT_API_KEY", "")
         api_secret = os.environ.get("BYBIT_API_SECRET", "")
@@ -1384,10 +1439,13 @@ class LiveRunner:
 
     def _init_fetcher(self):
         from data.pipeline import BinanceDataFetcher
+        proxy_url = self.replit_url.rstrip('/') if self._web_api_enabled else None
+        if proxy_url is None:
+            log.info("[DATA_FETCH] Using direct Binance fetch path only (proxy disabled)")
         self.fetcher = BinanceDataFetcher(
             symbols=self.symbols,
             timeframes=[self.interval],
-            replit_proxy_url=self.replit_url.rstrip('/'),
+            replit_proxy_url=proxy_url,
             use_sync=True,
         )
         if self.execution and self.execution.fetcher is None:
@@ -1523,6 +1581,8 @@ class LiveRunner:
             log.warning(f"Failed to update trade record {pos.dashboard_trade_id}: {e}")
 
     def _push_prediction(self, prediction: dict):
+        if not self._web_api_enabled:
+            return
         from quick_start import push_prediction
         if not isinstance(prediction, dict):
             prediction = {}
@@ -1537,6 +1597,8 @@ class LiveRunner:
                         temperature_used: float = None,
                         decision_stage: str = "candidate",
                         execution_status: Optional[str] = None):
+        if not self._web_api_enabled:
+            return
         url = f"{self.replit_url.rstrip('/')}/api/live/cycle-log"
         li = lane_info or {}
         stage = str(decision_stage or "candidate").strip().lower()
@@ -1586,6 +1648,8 @@ class LiveRunner:
     def _push_trade_record(self, symbol: str, side: str, entry_price: float,
                            sl_price: float, tp_price: float, p_enter: float,
                            size_pct: float, lane_info: Optional[dict] = None) -> Optional[int]:
+        if not self._web_api_enabled:
+            return None
         url = f"{self.replit_url.rstrip('/')}/api/live/trade"
         li = lane_info or {}
         payload = {
@@ -1629,6 +1693,8 @@ class LiveRunner:
                              gross_usd: float = 0.0,
                              cost_usd: float = 0.0,
                              net_usd: float = 0.0):
+        if not self._web_api_enabled:
+            return
         url = f"{self.replit_url.rstrip('/')}/api/live/trade/{trade_id}"
         payload = {
             "session_id": self.paper_session_id,
@@ -1662,6 +1728,8 @@ class LiveRunner:
 
     def _update_trade_sl(self, trade_id: int, new_sl: float):
         """Update stop loss on an open trade record in the dashboard."""
+        if not self._web_api_enabled:
+            return
         url = f"{self.replit_url.rstrip('/')}/api/live/trade/{trade_id}"
         payload = {"stop_loss": new_sl, "session_id": self.paper_session_id}
         _retry_request("PATCH", url, json=payload)
@@ -1672,6 +1740,8 @@ class LiveRunner:
         action: str,
         extra_payload: Optional[Dict[str, object]] = None,
     ) -> Optional[Dict[str, object]]:
+        if not self._web_api_enabled:
+            return None
         if not self.replit_url or trade_id <= 0:
             return None
         payload: Dict[str, object] = {"action": str(action)}
@@ -1882,6 +1952,8 @@ class LiveRunner:
         This prevents phantom "portfolio full" blocks caused by stale in-memory
         state after web-app SL/TP closes or trainer restarts.
         """
+        if not self._web_api_enabled:
+            return
         if not self.replit_url:
             return
         try:
@@ -1893,7 +1965,9 @@ class LiveRunner:
             )
             if resp.status_code != 200:
                 log.warning(f"[PortfolioSync/{source}] HTTP {resp.status_code}")
+                self._note_web_api_status(f"PortfolioSync/{source}", int(resp.status_code))
                 return
+            self._web_api_404_count = 0
 
             data = resp.json()
             web_positions = {p["symbol"]: p for p in data.get("positions", [])}
@@ -1997,6 +2071,8 @@ class LiveRunner:
 
     def _session_equity_live_usd(self, force_refresh: bool = False) -> Optional[float]:
         """Read live paper equity from dashboard state for kill-switch checks."""
+        if not self._web_api_enabled:
+            return self._equity_snapshot_live_usd
         if not self.replit_url:
             return None
         now = time.time()
@@ -2016,7 +2092,9 @@ class LiveRunner:
                 timeout=6,
             )
             if resp.status_code != 200:
+                self._note_web_api_status("dashboard/state", int(resp.status_code))
                 return self._equity_snapshot_live_usd
+            self._web_api_404_count = 0
             data = resp.json() or {}
             summary = data.get("summary", {}) if isinstance(data, dict) else {}
             eq = float(summary.get("equity_live_usd", summary.get("paper_equity_usd", 0.0)))
@@ -2061,7 +2139,7 @@ class LiveRunner:
             if px is None or not np.isfinite(float(px)) or float(px) <= 0.0:
                 continue
             self.portfolio.close_position(sym, float(px), "EQUITY_HARD_STOP")
-        if self.execution_mode == "paper" and self.record_trades:
+        if self.execution_mode == "paper" and self.record_trades and self._web_api_enabled:
             self._sync_portfolio_from_web(source="equity_hard_stop")
         remaining = list(self.portfolio.open_positions.keys())
         if remaining:
@@ -2144,7 +2222,7 @@ class LiveRunner:
         # Restore portfolio state from the web app so the in-memory portfolio
         # reflects any positions that were opened in previous runs or by the
         # web app's paper engine while the trainer was offline.
-        if self.execution_mode == "paper" and self.record_trades:
+        if self.execution_mode == "paper" and self.record_trades and self._web_api_enabled:
             self._sync_portfolio_from_web(source="startup")
 
         if self.dry_run:
@@ -2352,7 +2430,7 @@ class LiveRunner:
                 break
             # Keep in-memory positions in sync with dashboard/manual actions
             # between main cycles so manual closes are reflected quickly.
-            if self.execution_mode == "paper" and self.record_trades:
+            if self.execution_mode == "paper" and self.record_trades and self._web_api_enabled:
                 self._sync_portfolio_from_web(source="wait_loop")
             open_symbols = list(self.portfolio.open_positions.keys())
             if open_symbols:
@@ -2457,7 +2535,7 @@ class LiveRunner:
         # Sync portfolio state from web app every cycle in paper mode so that
         # positions closed by the web app engine (SL/TP) are removed from
         # the in-memory portfolio and don't phantom-block new entries.
-        if self.execution_mode == "paper" and self.record_trades:
+        if self.execution_mode == "paper" and self.record_trades and self._web_api_enabled:
             self._sync_portfolio_from_web(source=f"cycle_{self.cycle_count}")
 
         timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
