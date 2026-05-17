@@ -186,18 +186,18 @@ def _mythos_strategy_candidates(search_objective: str = "balanced") -> list:
             "name": "ultra_precision_selective",
             "overrides": {
                 "precision_selective_enable": True,
-                "precision_selective_min_trades": 40,
-                "precision_selective_score_window": 640,
-                "precision_selective_score_min_samples": 120,
-                "precision_selective_base_quantile": 0.78,
-                "precision_selective_max_quantile": 0.94,
-                "precision_selective_target_win_rate": 0.56,
-                "precision_selective_adapt_gain": 0.55,
-                "min_confidence": 0.57,
-                "min_edge_threshold": 0.021,
-                "time_adaptive_switch_min_gap_r": 0.035,
-                "nonconformity_target_reject_rate": 0.44,
-                "counterfactual_target_reject_rate": 0.72,
+                "precision_selective_min_trades": 48,
+                "precision_selective_score_window": 896,
+                "precision_selective_score_min_samples": 160,
+                "precision_selective_base_quantile": 0.88,
+                "precision_selective_max_quantile": 0.985,
+                "precision_selective_target_win_rate": 0.60,
+                "precision_selective_adapt_gain": 0.90,
+                "min_confidence": 0.64,
+                "min_edge_threshold": 0.030,
+                "time_adaptive_switch_min_gap_r": 0.045,
+                "nonconformity_target_reject_rate": 0.62,
+                "counterfactual_target_reject_rate": 0.82,
             },
         },
         {
@@ -219,16 +219,20 @@ def _mythos_strategy_candidates(search_objective: str = "balanced") -> list:
                 "side_rebalance_short_target": 0.42,
                 "short_boost_edge": 0.006,
                 "short_boost_confidence": 0.04,
-                "nonconformity_target_reject_rate": 0.52,
-                "counterfactual_target_reject_rate": 0.62,
+                "nonconformity_target_reject_rate": 0.62,
+                "counterfactual_target_reject_rate": 0.82,
                 "time_adaptive_min_bucket_trades": 6,
-                "time_adaptive_switch_min_gap_r": 0.025,
+                "time_adaptive_switch_min_gap_r": 0.045,
                 "precision_selective_enable": True,
-                "precision_selective_min_trades": 40,
-                "precision_selective_score_min_samples": 96,
-                "precision_selective_base_quantile": 0.72,
-                "precision_selective_max_quantile": 0.90,
-                "precision_selective_target_win_rate": 0.54,
+                "precision_selective_min_trades": 52,
+                "precision_selective_score_window": 896,
+                "precision_selective_score_min_samples": 160,
+                "precision_selective_base_quantile": 0.90,
+                "precision_selective_max_quantile": 0.99,
+                "precision_selective_target_win_rate": 0.60,
+                "precision_selective_adapt_gain": 0.95,
+                "min_confidence": 0.65,
+                "min_edge_threshold": 0.031,
             },
         },
         {
@@ -451,7 +455,7 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
         score = (
             0.020 * total_r
             + 0.005 * short_r
-            + 140.0 * (win_rate - 0.5)
+            + 220.0 * (win_rate - 0.55)
             + 95.0 * (pf - 1.0)
             - 0.24 * dd_abs
             + 32.0 * positive_fold_ratio
@@ -466,7 +470,7 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
             - 650.0 * max(calib_abs - 0.20, 0.0)
             - 600.0 * max(calib_gap - 0.15, 0.0)
             - 300.0 * max(calib_brier - 0.25, 0.0)
-            - 420.0 * max(0.50 - win_rate, 0.0)
+            - 900.0 * max(0.55 - win_rate, 0.0)
             + (35.0 if precision_mode_enabled else -90.0)
             + (3.0 if robust_ready else 0.0)
             + (4.0 if robust_sig95 else 0.0)
@@ -588,18 +592,18 @@ def _mythos_strategy_eligibility(metrics: dict, objective: str = "balanced") -> 
         reasons: list[str] = []
         if not bool(metrics.get("precision_selective_enable", False)):
             reasons.append("precision_selective_enable=false")
-        if _safe_float(metrics.get("win_rate", 0.0), 0.0) < 0.44:
-            reasons.append("win_rate<0.44")
+        if _safe_float(metrics.get("win_rate", 0.0), 0.0) < 0.50:
+            reasons.append("win_rate<0.50")
         if _safe_float(metrics.get("profit_factor", 0.0), 0.0) < 1.30:
             reasons.append("profit_factor<1.30")
         if _safe_float(metrics.get("positive_fold_ratio", 0.0), 0.0) < 0.75:
             reasons.append("positive_fold_ratio<0.75")
-        if _safe_float(metrics.get("precision_selective_reject_rate", 0.0), 0.0) < 0.75:
-            reasons.append("precision_selective_reject_rate<0.75")
-        if _safe_float(metrics.get("calibration_avg_abs_error", 1.0), 1.0) > 0.60:
-            reasons.append("calibration_avg_abs_error>0.60")
-        if _safe_float(metrics.get("calibration_avg_confidence_gap", 1.0), 1.0) > 0.50:
-            reasons.append("calibration_avg_confidence_gap>0.50")
+        if _safe_float(metrics.get("precision_selective_reject_rate", 0.0), 0.0) < 0.85:
+            reasons.append("precision_selective_reject_rate<0.85")
+        if _safe_float(metrics.get("calibration_avg_abs_error", 1.0), 1.0) > 0.55:
+            reasons.append("calibration_avg_abs_error>0.55")
+        if _safe_float(metrics.get("calibration_avg_confidence_gap", 1.0), 1.0) > 0.45:
+            reasons.append("calibration_avg_confidence_gap>0.45")
         if _safe_float(metrics.get("counterfactual_reject_rate", 1.0), 1.0) > 0.80:
             reasons.append("counterfactual_reject_rate>0.80")
         if _safe_float(metrics.get("nonconformity_reject_rate", 1.0), 1.0) > 0.75:
@@ -7933,6 +7937,11 @@ Examples:
                     key=lambda x: float(x.get("selection_score", x.get("score", float("-inf")))),
                     reverse=True,
                 )
+                if search_objective == "precision" and ultra_eligible_candidates == 0:
+                    log.warning(
+                        "[MYTHOS][SEARCH] objective=precision found no candidates meeting precision eligibility "
+                        "(win-rate/calibration/selectivity floors); selected best fallback by penalized score"
+                    )
                 if search_objective == "ultra" and ultra_eligible_candidates == 0:
                     log.warning(
                         "[MYTHOS][SEARCH] objective=ultra found no fully eligible candidates; selected best fallback by penalized score"

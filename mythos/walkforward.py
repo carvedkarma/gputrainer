@@ -1895,14 +1895,22 @@ def _precision_selective_gate(
     adapt_gain = float(np.clip(getattr(cfg, "precision_selective_adapt_gain", 0.40), 0.0, 2.0))
     recent_wr = float(np.mean(np.asarray(rr, dtype=np.float64) > 0.0)) if rr else target_wr
     dynamic_q = float(np.clip(base_q + adapt_gain * (target_wr - recent_wr), base_q, max_q))
+    precision_pressure = float(
+        np.clip((target_wr - recent_wr) / max(target_wr, 1e-6), 0.0, 1.0)
+    )
     if bool(stress_mode):
-        # When local quality is degrading, slightly relax quantile strictness to
-        # avoid complete lockout and let adaptive modules recover participation.
-        stress_relax = float(np.clip((target_wr - recent_wr) - 0.04, 0.0, 0.20))
-        if stress_relax > 0.0:
-            dynamic_q = float(np.clip(dynamic_q - min(0.10, 0.80 * stress_relax), 0.55, max_q))
+        # Preserve stricter behavior for high-precision targets (>=55%).
+        if target_wr < 0.55:
+            # For lower precision targets only, allow slight anti-lockout relaxation.
+            stress_relax = float(np.clip((target_wr - recent_wr) - 0.06, 0.0, 0.14))
+            if stress_relax > 0.0:
+                dynamic_q = float(np.clip(dynamic_q - min(0.06, 0.55 * stress_relax), 0.60, max_q))
     threshold = float(np.quantile(np.asarray(scores, dtype=np.float64), dynamic_q))
     allowed = bool(float(quality) >= threshold)
+    conf_floor_boost = float(np.clip(0.14 * precision_pressure, 0.0, 0.16))
+    edge_floor_boost = float(np.clip(0.015 * precision_pressure, 0.0, 0.020))
+    unc_base = float(np.clip(getattr(cfg, "risk_cap_override_max_uncertainty", 0.70), 0.10, 2.0))
+    uncertainty_cap = float(np.clip(unc_base - 0.28 * precision_pressure, 0.30, unc_base))
     return {
         "pass": float(1.0 if allowed else 0.0),
         "ready": 1.0,
@@ -1910,6 +1918,10 @@ def _precision_selective_gate(
         "quality": float(quality),
         "dynamic_quantile": dynamic_q,
         "recent_win_rate": recent_wr,
+        "precision_pressure": precision_pressure,
+        "conf_floor_boost": conf_floor_boost,
+        "edge_floor_boost": edge_floor_boost,
+        "uncertainty_cap": uncertainty_cap,
     }
 
 
@@ -2954,6 +2966,7 @@ def _run_fold(
         "edge_below_floor": 0,
         "streak_pause": 0,
         "precision_selective_reject": 0,
+        "precision_uncertainty_cap": 0,
         "counterfactual_reject": 0,
         "bayes_quality_reject": 0,
         "nonconformity_reject": 0,
@@ -3388,6 +3401,9 @@ def _run_fold(
         if side != 0 and conviction < adaptive_min_conv:
             skip_counts["low_conviction"] += 1
             continue
+        precision_conf_floor_boost = 0.0
+        precision_edge_floor_boost = 0.0
+        precision_uncertainty_cap: Optional[float] = None
         if side != 0:
             score_window = int(max(getattr(cfg, "precision_selective_score_window", 512), 32))
             quality = _precision_selective_quality_score(
@@ -3414,6 +3430,15 @@ def _run_fold(
                 precision_selective_threshold_sum += float(precision_gate.get("threshold", 0.0))
                 precision_selective_quality_sum += float(precision_gate.get("quality", quality))
                 precision_selective_quantile_sum += float(precision_gate.get("dynamic_quantile", 0.0))
+                precision_conf_floor_boost = float(
+                    max(precision_gate.get("conf_floor_boost", 0.0), 0.0)
+                )
+                precision_edge_floor_boost = float(
+                    max(precision_gate.get("edge_floor_boost", 0.0), 0.0)
+                )
+                precision_uncertainty_cap = float(
+                    np.clip(precision_gate.get("uncertainty_cap", 2.0), 0.05, 2.0)
+                )
                 if float(precision_gate.get("pass", 1.0)) < 0.5:
                     precision_selective_rejects += 1
                     skip_counts["precision_selective_reject"] += 1
@@ -3463,6 +3488,14 @@ def _run_fold(
             dynamic_conf_floor = max(dynamic_conf_floor - conf_relax, min_conf_floor)
             dynamic_edge_floor = max(dynamic_edge_floor - edge_relax, min_edge_floor)
             participation_relaxed_bars += 1
+        if side != 0 and bool(getattr(cfg, "precision_selective_enable", False)):
+            # Precision controller: when recent precision lags target, harden floors
+            # after rescue/participation relaxations to prioritize hit quality.
+            dynamic_conf_floor = min(dynamic_conf_floor + precision_conf_floor_boost, 0.92)
+            dynamic_edge_floor = dynamic_edge_floor + precision_edge_floor_boost
+            if precision_uncertainty_cap is not None and uncertainty > precision_uncertainty_cap:
+                skip_counts["precision_uncertainty_cap"] += 1
+                continue
         if meta_soft_block:
             meta_hard_conf_floor = min(dynamic_conf_floor + 0.04, 1.0)
             meta_hard_edge_floor = dynamic_edge_floor + 0.0015
@@ -4167,6 +4200,9 @@ def run_mythos_walk_forward(
         "streak_pause": int(sum(int(r.get("skip_reasons", {}).get("streak_pause", 0)) for r in reports)),
         "precision_selective_reject": int(
             sum(int(r.get("skip_reasons", {}).get("precision_selective_reject", 0)) for r in reports)
+        ),
+        "precision_uncertainty_cap": int(
+            sum(int(r.get("skip_reasons", {}).get("precision_uncertainty_cap", 0)) for r in reports)
         ),
         "counterfactual_reject": int(sum(int(r.get("skip_reasons", {}).get("counterfactual_reject", 0)) for r in reports)),
         "bayes_quality_reject": int(sum(int(r.get("skip_reasons", {}).get("bayes_quality_reject", 0)) for r in reports)),
