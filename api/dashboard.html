@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mythos Neural Paper Dashboard</title>
+  <style>
+    :root {
+      --bg: #040812;
+      --bg2: #08111f;
+      --card: rgba(14, 26, 47, 0.72);
+      --card-border: rgba(105, 170, 255, 0.24);
+      --text: #e8f2ff;
+      --muted: #97abc9;
+      --pos: #28e0a7;
+      --neg: #ff6579;
+      --warn: #ffd166;
+      --accent: #68a2ff;
+      --accent2: #8d6bff;
+      --glow: 0 0 0 1px rgba(110, 168, 255, 0.15), 0 12px 30px rgba(10, 26, 52, 0.55);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 10% 10%, #0e2a58 0%, transparent 30%),
+        radial-gradient(circle at 85% 0%, #3c1f64 0%, transparent 35%),
+        linear-gradient(180deg, var(--bg), #02050d 70%);
+      font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+      overflow-x: hidden;
+    }
+
+    .animated-grid::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(112,162,255,0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(112,162,255,0.06) 1px, transparent 1px);
+      background-size: 36px 36px;
+      mask-image: radial-gradient(circle at center, black 20%, transparent 85%);
+      animation: drift 24s linear infinite;
+      z-index: 0;
+    }
+
+    @keyframes drift {
+      from { transform: translate3d(0,0,0); }
+      to { transform: translate3d(36px,36px,0); }
+    }
+
+    .shell {
+      position: relative;
+      z-index: 2;
+      max-width: 1600px;
+      margin: 0 auto;
+      padding: 18px 18px 32px;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 14px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .pulse {
+      width: 11px;
+      height: 11px;
+      border-radius: 999px;
+      background: var(--pos);
+      box-shadow: 0 0 0 0 rgba(40,224,167,.7);
+      animation: pulse 1.8s infinite;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(40,224,167,.7); }
+      70% { box-shadow: 0 0 0 12px rgba(40,224,167,0); }
+      100% { box-shadow: 0 0 0 0 rgba(40,224,167,0); }
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.06rem;
+      letter-spacing: .03em;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: .82rem;
+      letter-spacing: .02em;
+      margin-top: 4px;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+      align-items: center;
+    }
+
+    .glass {
+      border: 1px solid var(--card-border);
+      background: linear-gradient(160deg, rgba(15, 33, 61, 0.85), rgba(8, 18, 37, 0.85));
+      border-radius: 14px;
+      box-shadow: var(--glow);
+      backdrop-filter: blur(8px);
+    }
+
+    .btn, select, input {
+      border: 1px solid rgba(113, 165, 255, 0.32);
+      background: rgba(9, 22, 44, 0.9);
+      color: var(--text);
+      border-radius: 10px;
+      height: 36px;
+      padding: 0 12px;
+      outline: none;
+      font-size: .82rem;
+      letter-spacing: .02em;
+    }
+
+    .btn { cursor: pointer; transition: .2s ease; }
+    .btn:hover { transform: translateY(-1px); border-color: rgba(145, 187, 255, .65); }
+    .btn.primary {
+      background: linear-gradient(135deg, #3f75ff, #8d6bff);
+      border-color: transparent;
+      font-weight: 600;
+    }
+    .btn.warn { background: linear-gradient(135deg, #7a4f03, #9e6f08); border-color: rgba(255,209,102,.35); }
+
+    .status-pill {
+      height: 36px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(130,170,228,.35);
+      background: rgba(10,22,44,.85);
+      font-size: .8rem;
+      color: #b2c5e0;
+    }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--warn);
+      box-shadow: 0 0 0 0 rgba(255,209,102,.6);
+      animation: pulse 2.2s infinite;
+    }
+
+    .metrics {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      margin-bottom: 12px;
+    }
+
+    .metric {
+      padding: 12px 12px 10px;
+      min-height: 94px;
+      position: relative;
+      overflow: hidden;
+    }
+    .metric::after {
+      content: "";
+      position: absolute;
+      inset: auto -30% -40% -30%;
+      height: 70px;
+      background: radial-gradient(circle at 50% 30%, rgba(95, 145, 255, .25), transparent 70%);
+      pointer-events: none;
+    }
+    .metric .label { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .07em; }
+    .metric .value { margin-top: 6px; font-size: 1.2rem; font-weight: 700; }
+    .metric .subv { margin-top: 4px; color: #9fb3cf; font-size: .75rem; }
+    .value.pos { color: var(--pos); }
+    .value.neg { color: var(--neg); }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 2.1fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .card { padding: 12px; }
+    .card h3 {
+      margin: 0 0 10px;
+      font-size: .83rem;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: #9db0ca;
+    }
+
+    .chart-wrap { height: 290px; position: relative; }
+    .chart-wrap canvas { width: 100%; height: 100%; display: block; }
+    .chart-empty {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: #70829f;
+      font-size: .82rem;
+    }
+
+    .mini-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .distribution {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 8px;
+      align-items: center;
+      min-height: 150px;
+    }
+
+    .ring {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      background: conic-gradient(var(--accent) 0 40%, var(--accent2) 40% 70%, var(--warn) 70% 100%);
+      display: grid;
+      place-items: center;
+      margin: 0 auto;
+      box-shadow: inset 0 0 0 1px rgba(146, 186, 255, .25), 0 0 30px rgba(70, 112, 188, 0.35);
+    }
+    .ring::after {
+      content: "";
+      width: 78px;
+      height: 78px;
+      border-radius: 50%;
+      background: rgba(6, 13, 25, .95);
+      border: 1px solid rgba(123, 172, 255, .35);
+    }
+
+    .legend { font-size: .82rem; color: #b4c6de; display: grid; gap: 8px; }
+    .legend-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+
+    .table-card { overflow: hidden; }
+    .table-scroll { max-height: 290px; overflow: auto; border-radius: 10px; border: 1px solid rgba(111, 162, 243, .18); }
+    table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+    th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid rgba(104, 144, 214, .12); white-space: nowrap; }
+    th { position: sticky; top: 0; background: rgba(8, 19, 37, 0.98); color: #93a9c7; font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; z-index: 1; }
+    tr:hover { background: rgba(24, 44, 80, .35); }
+
+    .tag {
+      font-size: .68rem;
+      padding: 3px 7px;
+      border-radius: 999px;
+      border: 1px solid rgba(120, 160, 219, .35);
+      color: #b8c9e2;
+      background: rgba(13, 26, 52, .8);
+    }
+    .tag.long { color: #8ef7ca; border-color: rgba(40,224,167,.35); }
+    .tag.short { color: #ffa3ae; border-color: rgba(255,101,121,.35); }
+    .tag.open { color: #ffd88f; border-color: rgba(255,209,102,.5); }
+    .tag.closed { color: #8cc0ff; border-color: rgba(104,162,255,.5); }
+
+    .small { color: #8fa4c3; font-size: .74rem; }
+    .insights { display: grid; gap: 8px; }
+    .insight {
+      padding: 9px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(117, 162, 235, .2);
+      background: rgba(10, 22, 42, .8);
+      font-size: .8rem;
+      color: #c7d7ee;
+      line-height: 1.35;
+    }
+
+    @media (max-width: 1300px) {
+      .metrics { grid-template-columns: repeat(3, minmax(140px, 1fr)); }
+      .main-grid { grid-template-columns: 1fr; }
+      .mini-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 760px) {
+      .metrics { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
+      .toolbar { justify-content: flex-start; }
+      .distribution { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="animated-grid"></div>
+  <div class="shell">
+    <div class="topbar">
+      <div class="title-wrap">
+        <div class="pulse"></div>
+        <div>
+          <h1>Mythos Advanced Paper Trading Command Center</h1>
+          <div id="runMeta" class="sub">Initializing...</div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <span id="liveState" class="status-pill"><span class="status-dot"></span><span>Connecting...</span></span>
+        <label class="small" for="sessionSelect">Session</label>
+        <select id="sessionSelect"></select>
+        <button id="refreshBtn" class="btn">Refresh</button>
+        <button id="autoBtn" class="btn primary">Auto: ON</button>
+      </div>
+    </div>
+
+    <section class="metrics">
+      <article class="metric glass"><div class="label">Open Positions</div><div id="mOpen" class="value">0</div><div class="subv">currently active</div></article>
+      <article class="metric glass"><div class="label">Closed Trades</div><div id="mClosed" class="value">0</div><div class="subv">session total</div></article>
+      <article class="metric glass"><div class="label">Win Rate</div><div id="mWinRate" class="value">0%</div><div class="subv">closed trades only</div></article>
+      <article class="metric glass"><div class="label">Expectancy</div><div id="mExpect" class="value">0R</div><div class="subv">per closed trade</div></article>
+      <article class="metric glass"><div class="label">Profit Factor</div><div id="mPF" class="value">0.00</div><div class="subv">gross profit / gross loss</div></article>
+      <article class="metric glass"><div class="label">Realized / Unrealized</div><div id="mRTotal" class="value">0R</div><div id="mRUnreal" class="subv">0R unrealized</div></article>
+    </section>
+
+    <section class="main-grid">
+      <article class="card glass">
+        <h3>Equity Curve (R-Multiples)</h3>
+        <div class="chart-wrap">
+          <canvas id="equityCanvas"></canvas>
+          <div id="equityEmpty" class="chart-empty" hidden>No closed trades yet.</div>
+        </div>
+      </article>
+      <article class="card glass">
+        <h3>System Insights</h3>
+        <div class="insights" id="insights"></div>
+      </article>
+    </section>
+
+    <section class="mini-grid">
+      <article class="card glass">
+        <h3>Side Distribution (Closed Trades)</h3>
+        <div class="distribution">
+          <div id="sideRing" class="ring"></div>
+          <div id="sideLegend" class="legend"></div>
+        </div>
+      </article>
+      <article class="card glass">
+        <h3>Drawdown Timeline</h3>
+        <div class="chart-wrap" style="height:150px">
+          <canvas id="ddCanvas"></canvas>
+          <div id="ddEmpty" class="chart-empty" hidden>No drawdown data yet.</div>
+        </div>
+      </article>
+    </section>
+
+    <section class="mini-grid">
+      <article class="card glass table-card">
+        <h3>Open Positions</h3>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>ID</th><th>Symbol</th><th>Side</th><th>Entry</th><th>SL</th><th>TP</th><th>Lane</th></tr></thead>
+            <tbody id="openBody"></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="card glass table-card">
+        <h3>Latest Signals</h3>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>ID</th><th>Symbol</th><th>Action</th><th>Conf</th><th>Edge</th><th>Model</th></tr></thead>
+            <tbody id="signalBody"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section class="mini-grid">
+      <article class="card glass table-card">
+        <h3>Trades</h3>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>ID</th><th>Symbol</th><th>Side</th><th>Status</th><th>Entry</th><th>Exit</th><th>Net R</th><th>Lane</th></tr></thead>
+            <tbody id="tradeBody"></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="card glass table-card">
+        <h3>Cycle Log</h3>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>ID</th><th>Symbol</th><th>Decision</th><th>Side</th><th>P Enter</th><th>Price</th><th>Reason</th></tr></thead>
+            <tbody id="cycleBody"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      sessionId: "default",
+      auto: true,
+      timer: null,
+      data: null,
+      sessions: [],
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    const fmt = {
+      num: (x, d = 2) => Number.isFinite(+x) ? (+x).toFixed(d) : "0.00",
+      pct: (x, d = 2) => Number.isFinite(+x) ? `${(+x * 100).toFixed(d)}%` : "0.00%",
+      r: (x, d = 3) => Number.isFinite(+x) ? `${(+x).toFixed(d)}R` : "0.000R",
+      ts: (ms) => ms ? new Date(Number(ms)).toLocaleTimeString() : "-",
+    };
+
+    function metricClass(v) {
+      const n = Number(v || 0);
+      if (n > 0) return "pos";
+      if (n < 0) return "neg";
+      return "";
+    }
+
+    async function fetchJson(url) {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return await res.json();
+    }
+
+    async function loadSessions() {
+      try {
+        const payload = await fetchJson("/api/dashboard/sessions");
+        state.sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+      } catch {
+        state.sessions = [];
+      }
+      if (!state.sessions.find(s => s.session_id === state.sessionId)) {
+        state.sessionId = state.sessions[0]?.session_id || "default";
+      }
+      renderSessionSelect();
+    }
+
+    function renderSessionSelect() {
+      const sel = $("sessionSelect");
+      const list = state.sessions.length ? state.sessions : [{ session_id: "default" }];
+      sel.innerHTML = list.map(s => `<option value="${s.session_id}">${s.session_id}</option>`).join("");
+      sel.value = state.sessionId;
+    }
+
+    async function loadState() {
+      const url = `/api/dashboard/state?session_id=${encodeURIComponent(state.sessionId)}&predictions_limit=250&cycles_limit=600&trades_limit=1200`;
+      state.data = await fetchJson(url);
+    }
+
+    function renderSummary(summary) {
+      const m = summary || {};
+      $("mOpen").textContent = m.open_positions ?? 0;
+      $("mClosed").textContent = m.closed_trades ?? 0;
+      $("mWinRate").textContent = fmt.pct(m.win_rate || 0, 1);
+      $("mExpect").textContent = fmt.r(m.expectancy_r || 0, 3);
+      $("mPF").textContent = fmt.num(m.profit_factor || 0, 2);
+      $("mRTotal").textContent = fmt.r(m.realized_net_r || 0, 3);
+      $("mRTotal").className = `value ${metricClass(m.realized_net_r)}`;
+      $("mRUnreal").textContent = `${fmt.r(m.unrealized_r || 0, 3)} unrealized`;
+    }
+
+    function renderInsights(summary, trades, preds, cycles) {
+      const cards = [];
+      const closed = trades.filter(t => String(t.status || "").toLowerCase() === "closed");
+      const open = trades.filter(t => String(t.status || "").toLowerCase() === "open");
+      const shorts = closed.filter(t => String(t.side || "").toUpperCase() === "SHORT");
+      const longs = closed.filter(t => String(t.side || "").toUpperCase() === "LONG");
+      const avgConf = preds.length ? preds.reduce((a, p) => a + Number(p.confidence || p.p_enter || 0), 0) / preds.length : 0;
+      const skipCycles = cycles.filter(c => String(c.decision || "").toUpperCase().includes("HOLD")).length;
+      const holdPct = cycles.length ? skipCycles / cycles.length : 0;
+
+      cards.push(`Session <b>${summary.session_id || state.sessionId}</b> has <b>${open.length}</b> open and <b>${closed.length}</b> closed trades.`);
+      cards.push(`Average signal confidence over latest ${preds.length} predictions is <b>${fmt.pct(avgConf, 2)}</b>.`);
+      cards.push(`Direction mix (closed): <b>${longs.length} LONG</b> / <b>${shorts.length} SHORT</b>.`);
+      cards.push(`Cycle hold ratio: <b>${fmt.pct(holdPct, 1)}</b> (${skipCycles}/${cycles.length}).`);
+      cards.push(`Realized PnL is <b class="${metricClass(summary.realized_net_r)}">${fmt.r(summary.realized_net_r || 0, 3)}</b> with max drawdown <b>${fmt.r(summary.max_drawdown_r || 0, 3)}</b>.`);
+
+      $("insights").innerHTML = cards.map(c => `<div class="insight">${c}</div>`).join("");
+    }
+
+    function renderOpenPositions(trades) {
+      const open = trades.filter(t => String(t.status || "").toLowerCase() === "open").reverse();
+      $("openBody").innerHTML = open.length ? open.map(t => `
+        <tr>
+          <td>${t.id ?? "-"}</td>
+          <td>${t.symbol ?? "-"}</td>
+          <td><span class="tag ${String(t.side || "").toLowerCase()}">${t.side ?? "-"}</span></td>
+          <td>${fmt.num(t.entry_price ?? t.entryPrice, 2)}</td>
+          <td>${fmt.num(t.stop_loss ?? t.stopLoss, 2)}</td>
+          <td>${fmt.num(t.take_profit ?? t.tp2 ?? t.take_profit_price, 2)}</td>
+          <td>${t.lane ?? "-"}</td>
+        </tr>`).join("") : `<tr><td colspan="7" class="small">No open positions.</td></tr>`;
+    }
+
+    function renderSignals(preds) {
+      const rows = preds.slice().reverse().slice(0, 120);
+      $("signalBody").innerHTML = rows.length ? rows.map(p => `
+        <tr>
+          <td>${p.id ?? "-"}</td>
+          <td>${p.symbol ?? "-"}</td>
+          <td><span class="tag ${String(p.action || "").toLowerCase()}">${p.action ?? "-"}</span></td>
+          <td>${fmt.pct(p.confidence ?? p.p_enter ?? 0, 2)}</td>
+          <td>${fmt.num(p.edge ?? p.expected_return ?? 0, 4)}</td>
+          <td>${p.model_name ?? "-"}</td>
+        </tr>`).join("") : `<tr><td colspan="6" class="small">No signals yet.</td></tr>`;
+    }
+
+    function renderTrades(trades) {
+      const rows = trades.slice().reverse().slice(0, 250);
+      $("tradeBody").innerHTML = rows.length ? rows.map(t => `
+        <tr>
+          <td>${t.id ?? "-"}</td>
+          <td>${t.symbol ?? "-"}</td>
+          <td><span class="tag ${String(t.side || "").toLowerCase()}">${t.side ?? "-"}</span></td>
+          <td><span class="tag ${String(t.status || "").toLowerCase()}">${t.status ?? "-"}</span></td>
+          <td>${fmt.num(t.entry_price ?? t.entryPrice, 2)}</td>
+          <td>${t.exit_price != null ? fmt.num(t.exit_price, 2) : "-"}</td>
+          <td class="${metricClass(t.net_r ?? t.gross_r)}">${fmt.num(t.net_r ?? t.gross_r ?? 0, 4)}</td>
+          <td>${t.lane ?? "-"}</td>
+        </tr>`).join("") : `<tr><td colspan="8" class="small">No trades yet.</td></tr>`;
+    }
+
+    function renderCycle(cycles) {
+      const rows = cycles.slice().reverse().slice(0, 200);
+      $("cycleBody").innerHTML = rows.length ? rows.map(c => `
+        <tr>
+          <td>${c.id ?? "-"}</td>
+          <td>${c.symbol ?? "-"}</td>
+          <td>${c.decision ?? "-"}</td>
+          <td>${c.direction ?? "-"}</td>
+          <td>${fmt.pct(c.p_enter ?? 0, 2)}</td>
+          <td>${fmt.num(c.price ?? 0, 2)}</td>
+          <td title="${(Array.isArray(c.reasons) ? c.reasons.join(" | ") : (c.hold_reason || ""))}">${c.hold_reason || (Array.isArray(c.reasons) ? c.reasons[0] : "-") || "-"}</td>
+        </tr>`).join("") : `<tr><td colspan="7" class="small">No cycle logs yet.</td></tr>`;
+    }
+
+    function drawLineCanvas(canvasId, emptyId, series, opts = {}) {
+      const canvas = $(canvasId);
+      const empty = $(emptyId);
+      const parent = canvas.parentElement;
+      const w = parent.clientWidth;
+      const h = parent.clientHeight;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(w * dpr));
+      canvas.height = Math.max(1, Math.floor(h * dpr));
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+
+      if (!series.length) {
+        empty.hidden = false;
+        return;
+      }
+      empty.hidden = true;
+
+      const pad = 24;
+      const xs = series.map((_, i) => i);
+      const ys = series.map(v => Number(v) || 0);
+      const minY = Math.min(...ys, 0);
+      const maxY = Math.max(...ys, 0);
+      const span = Math.max(maxY - minY, 1e-6);
+      const xSpan = Math.max(xs.length - 1, 1);
+
+      const y0 = pad + (maxY / span) * (h - pad * 2);
+      ctx.strokeStyle = "rgba(130,170,230,0.25)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pad, y0);
+      ctx.lineTo(w - pad, y0);
+      ctx.stroke();
+
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = opts.color || "rgba(91, 164, 255, 0.95)";
+      ctx.beginPath();
+      ys.forEach((yv, i) => {
+        const x = pad + (i / xSpan) * (w - pad * 2);
+        const y = pad + ((maxY - yv) / span) * (h - pad * 2);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      if (opts.fill) {
+        ctx.lineTo(w - pad, h - pad);
+        ctx.lineTo(pad, h - pad);
+        ctx.closePath();
+        const g = ctx.createLinearGradient(0, pad, 0, h - pad);
+        g.addColorStop(0, opts.fillTop || "rgba(94, 152, 255, 0.30)");
+        g.addColorStop(1, opts.fillBottom || "rgba(16, 32, 62, 0.03)");
+        ctx.fillStyle = g;
+        ctx.fill();
+      }
+    }
+
+    function renderSideDistribution(trades) {
+      const closed = trades.filter(t => String(t.status || "").toLowerCase() === "closed");
+      const longN = closed.filter(t => String(t.side || "").toUpperCase() === "LONG").length;
+      const shortN = closed.filter(t => String(t.side || "").toUpperCase() === "SHORT").length;
+      const total = Math.max(longN + shortN, 1);
+      const longP = (longN / total) * 100;
+      const shortP = (shortN / total) * 100;
+      const holdP = Math.max(0, 100 - longP - shortP);
+      $("sideRing").style.background = `conic-gradient(
+        #47d6a8 0% ${longP}%,
+        #ff6a7f ${longP}% ${longP + shortP}%,
+        #8fa8cc ${longP + shortP}% 100%
+      )`;
+      $("sideLegend").innerHTML = `
+        <div class="legend-row"><span><span class="dot" style="background:#47d6a8"></span>LONG</span><b>${longN}</b></div>
+        <div class="legend-row"><span><span class="dot" style="background:#ff6a7f"></span>SHORT</span><b>${shortN}</b></div>
+        <div class="legend-row"><span><span class="dot" style="background:#8fa8cc"></span>OTHER</span><b>${Math.max(0, closed.length - longN - shortN)}</b></div>
+      `;
+    }
+
+    function renderCharts(equityCurve) {
+      const eq = equityCurve.map(p => Number(p.equity_r || 0));
+      const dd = equityCurve.map(p => Number(p.drawdown_r || 0));
+      drawLineCanvas("equityCanvas", "equityEmpty", eq, { color: "rgba(86, 173, 255, 0.95)", fill: true });
+      drawLineCanvas("ddCanvas", "ddEmpty", dd, { color: "rgba(255, 110, 128, 0.95)", fill: true, fillTop: "rgba(255,102,126,0.26)" });
+    }
+
+    function applyData() {
+      const payload = state.data || {};
+      const summary = payload.summary || {};
+      const preds = Array.isArray(payload.predictions) ? payload.predictions : [];
+      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+      const trades = Array.isArray(payload.trades) ? payload.trades : [];
+      const eq = Array.isArray(payload.equity_curve) ? payload.equity_curve : [];
+
+      renderSummary(summary);
+      renderInsights(summary, trades, preds, cycles);
+      renderOpenPositions(trades);
+      renderSignals(preds);
+      renderTrades(trades);
+      renderCycle(cycles);
+      renderSideDistribution(trades);
+      renderCharts(eq);
+
+      const now = new Date();
+      $("runMeta").textContent = `Session ${summary.session_id || state.sessionId} • Updated ${now.toLocaleTimeString()} • Predictions ${summary.predictions ?? preds.length} • Trades ${trades.length}`;
+    }
+
+    function setConnected(ok, err = "") {
+      const pill = $("liveState");
+      const label = ok ? "Live" : "Disconnected";
+      pill.innerHTML = `<span class="status-dot" style="background:${ok ? "var(--pos)" : "var(--neg)"}"></span><span>${label}${err ? ` • ${err}` : ""}</span>`;
+    }
+
+    async function tick() {
+      try {
+        await loadSessions();
+        await loadState();
+        applyData();
+        setConnected(true);
+      } catch (e) {
+        setConnected(false, e.message || "fetch error");
+      }
+    }
+
+    function schedule() {
+      if (state.timer) clearInterval(state.timer);
+      if (!state.auto) return;
+      state.timer = setInterval(tick, 5000);
+    }
+
+    $("refreshBtn").addEventListener("click", () => tick());
+    $("autoBtn").addEventListener("click", () => {
+      state.auto = !state.auto;
+      $("autoBtn").textContent = `Auto: ${state.auto ? "ON" : "OFF"}`;
+      $("autoBtn").classList.toggle("warn", !state.auto);
+      schedule();
+    });
+    $("sessionSelect").addEventListener("change", (e) => {
+      state.sessionId = e.target.value || "default";
+      tick();
+    });
+    window.addEventListener("resize", () => {
+      if (state.data) {
+        const eq = Array.isArray(state.data.equity_curve) ? state.data.equity_curve : [];
+        renderCharts(eq);
+      }
+    });
+
+    tick();
+    schedule();
+  </script>
+</body>
+</html>
