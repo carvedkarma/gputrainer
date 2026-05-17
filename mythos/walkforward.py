@@ -1671,6 +1671,13 @@ def _apply_calibration_intelligence(
 
     conf2 = float(np.clip(confidence + conf_adj, 0.0, 1.0))
     edge2 = float(max(edge + edge_adj, 0.0))
+    stress_n = float(np.clip(stress / 2.0, 0.0, 1.0))
+    # Reliability-aware shrink: when confidence is overestimating realized hit-rate,
+    # cap confidence and edge so selection pressure favors truly repeatable setups.
+    if conf_gap > 0.0:
+        conf_ceiling = float(np.clip(hit_rate + max(0.06 - under_margin, 0.02), 0.30, 0.88))
+        conf2 = float(min(conf2, conf_ceiling))
+        edge2 = float(max(edge2 * (1.0 - 0.45 * stress_n), 0.0))
     # In protective mode, avoid oversizing from stale conviction bursts.
     if mode_score < -0.15 and float(conviction) > 0.75:
         edge2 = float(max(edge2 - 0.25 * max_edge_adj, 0.0))
@@ -2183,6 +2190,8 @@ def _counterfactual_pass(
     x: np.ndarray,
     side: int,
     edge: float,
+    confidence: float,
+    conviction: float,
     uncertainty: float,
     cfg: MythosConfig,
 ) -> bool:
@@ -2214,11 +2223,17 @@ def _counterfactual_pass(
         + unc_drag
     )
     analog_adv = float(choose_score - alt_score)
+    quality = float(
+        np.clip(0.55 * float(np.clip(confidence, 0.0, 1.0)) + 0.45 * float(np.clip(conviction, 0.0, 1.0)), 0.0, 1.0)
+    )
     combo = float(adjusted_edge + analog_adv)
     # Allow strong live-edge trades to pass unless counterfactual evidence is decisively negative.
     if adjusted_edge >= (0.75 * min_adv) and analog_adv >= (-0.5 * min_adv):
         return True
-    return combo >= min_adv
+    if quality >= 0.80 and adjusted_edge >= (0.90 * min_adv) and analog_adv >= (-0.90 * min_adv):
+        return True
+    combo_adj = float(combo + max(quality - 0.50, 0.0) * 0.50 * min_adv)
+    return combo_adj >= min_adv
 
 
 def _adaptive_counterfactual_pass(
@@ -2227,12 +2242,18 @@ def _adaptive_counterfactual_pass(
     x: np.ndarray,
     side: int,
     edge: float,
+    confidence: float,
+    conviction: float,
     uncertainty: float,
     cfg: MythosConfig,
     accepted_trades: int,
     cf_rejects: int,
 ) -> bool:
     target = float(np.clip(getattr(cfg, "counterfactual_target_reject_rate", 0.70), 0.0, 0.99))
+    if bool(getattr(cfg, "precision_selective_enable", False)):
+        precision_target = float(np.clip(getattr(cfg, "precision_selective_target_win_rate", 0.52), 0.0, 1.0))
+        if precision_target >= 0.55:
+            target = min(target, 0.72)
     tol = float(np.clip(getattr(cfg, "counterfactual_reject_tolerance", 0.10), 0.0, 0.5))
     relax_gain = float(np.clip(getattr(cfg, "counterfactual_adaptive_relax", 0.35), 0.0, 1.0))
     min_floor = float(np.clip(getattr(cfg, "counterfactual_adaptive_min_adv_floor", 0.25), 0.05, 1.0))
@@ -2244,6 +2265,8 @@ def _adaptive_counterfactual_pass(
             x=x,
             side=side,
             edge=edge,
+            confidence=confidence,
+            conviction=conviction,
             uncertainty=uncertainty,
             cfg=cfg,
         )
@@ -2266,6 +2289,8 @@ def _adaptive_counterfactual_pass(
             x=x,
             side=side,
             edge=edge,
+            confidence=confidence,
+            conviction=conviction,
             uncertainty=uncertainty,
             cfg=cfg,
         )
@@ -3545,6 +3570,8 @@ def _run_fold(
             x=x,
             side=side,
             edge=edge,
+            confidence=confidence,
+            conviction=conviction,
             uncertainty=uncertainty,
             cfg=cfg,
             accepted_trades=len(trades),
