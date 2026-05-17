@@ -422,6 +422,10 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
     robust_psr = _safe_float(agg.get("robust_validation_psr", 0.0), 0.0)
     robust_spa_p = _safe_float(agg.get("robust_validation_spa_p_value", 1.0), 1.0)
     robust_sig95 = bool(agg.get("robust_validation_significant_edge_95", False))
+    calib_abs = _safe_float(agg.get("calibration_avg_abs_error", 0.0), 0.0)
+    calib_gap = _safe_float(agg.get("calibration_avg_confidence_gap", 0.0), 0.0)
+    calib_brier = _safe_float(agg.get("calibration_avg_brier", 0.0), 0.0)
+    precision_mode_enabled = bool(agg.get("precision_selective_enable", False))
     total_trades = max(int(_safe_float(agg.get("total_trades", 0), 0.0)), 1)
     short_trades = max(int(_safe_float(agg.get("short_trades", 0), 0.0)), 0)
     short_share = float(short_trades / max(total_trades, 1))
@@ -445,21 +449,25 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
     objective = str(objective or "balanced").strip().lower()
     if objective == "precision":
         score = (
-            1.00 * total_r
-            + 130.0 * expectancy
-            + 0.50 * short_r
-            + 16.0 * (win_rate - 0.5)
-            + 10.0 * (pf - 1.0)
-            - 0.90 * dd_abs
-            + 18.0 * positive_fold_ratio
-            + 6.0 * max(short_share - 0.20, 0.0)
-            + 0.14 * robust
-            + 24.0 * robust_dsr
+            0.020 * total_r
+            + 0.005 * short_r
+            + 140.0 * (win_rate - 0.5)
+            + 95.0 * (pf - 1.0)
+            - 0.24 * dd_abs
+            + 32.0 * positive_fold_ratio
+            + 0.010 * robust
+            + 25.0 * robust_dsr
             + 10.0 * robust_psr
-            - 14.0 * robust_pbo
+            - 15.0 * robust_pbo
             - 8.0 * max(robust_spa_p - 0.05, 0.0)
-            - 6.0 * precision_reject
-            - 3.0 * cf_reject
+            - 8.0 * cf_reject
+            - 6.0 * nonconf_reject
+            - 8.0 * max(precision_reject - 0.95, 0.0)
+            - 650.0 * max(calib_abs - 0.20, 0.0)
+            - 600.0 * max(calib_gap - 0.15, 0.0)
+            - 300.0 * max(calib_brier - 0.25, 0.0)
+            - 420.0 * max(0.50 - win_rate, 0.0)
+            + (35.0 if precision_mode_enabled else -90.0)
             + (3.0 if robust_ready else 0.0)
             + (4.0 if robust_sig95 else 0.0)
         )
@@ -564,6 +572,10 @@ def _mythos_strategy_score(report: dict, objective: str = "balanced") -> tuple:
         "robust_validation_psr": round(robust_psr, 6),
         "robust_validation_spa_p_value": round(robust_spa_p, 6),
         "robust_validation_significant_edge_95": robust_sig95,
+        "calibration_avg_abs_error": round(calib_abs, 6),
+        "calibration_avg_confidence_gap": round(calib_gap, 6),
+        "calibration_avg_brier": round(calib_brier, 6),
+        "precision_selective_enable": precision_mode_enabled,
     }
     return float(score), parts
 
@@ -572,6 +584,27 @@ def _mythos_strategy_eligibility(metrics: dict, objective: str = "balanced") -> 
     if not isinstance(metrics, dict):
         return False, ["metrics_missing"]
     objective = str(objective or "balanced").strip().lower()
+    if objective == "precision":
+        reasons: list[str] = []
+        if not bool(metrics.get("precision_selective_enable", False)):
+            reasons.append("precision_selective_enable=false")
+        if _safe_float(metrics.get("win_rate", 0.0), 0.0) < 0.44:
+            reasons.append("win_rate<0.44")
+        if _safe_float(metrics.get("profit_factor", 0.0), 0.0) < 1.30:
+            reasons.append("profit_factor<1.30")
+        if _safe_float(metrics.get("positive_fold_ratio", 0.0), 0.0) < 0.75:
+            reasons.append("positive_fold_ratio<0.75")
+        if _safe_float(metrics.get("precision_selective_reject_rate", 0.0), 0.0) < 0.75:
+            reasons.append("precision_selective_reject_rate<0.75")
+        if _safe_float(metrics.get("calibration_avg_abs_error", 1.0), 1.0) > 0.60:
+            reasons.append("calibration_avg_abs_error>0.60")
+        if _safe_float(metrics.get("calibration_avg_confidence_gap", 1.0), 1.0) > 0.50:
+            reasons.append("calibration_avg_confidence_gap>0.50")
+        if _safe_float(metrics.get("counterfactual_reject_rate", 1.0), 1.0) > 0.80:
+            reasons.append("counterfactual_reject_rate>0.80")
+        if _safe_float(metrics.get("nonconformity_reject_rate", 1.0), 1.0) > 0.75:
+            reasons.append("nonconformity_reject_rate>0.75")
+        return len(reasons) == 0, reasons
     if objective != "ultra":
         return True, []
     reasons: list[str] = []
