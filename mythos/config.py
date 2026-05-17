@@ -141,7 +141,7 @@ class MythosConfig:
     precision_selective_stress_weight: float = 0.24
     precision_selective_side_window: int = 96
     precision_selective_side_min_trades: int = 12
-    precision_selective_quality_eval_min_trades: int = 32
+    precision_selective_quality_eval_min_trades: int = 16
     precision_selective_quality_eval_quantile: float = 0.65
     precision_selective_quality_min_lift: float = 0.015
     precision_selective_quality_relax_gain: float = 0.35
@@ -685,7 +685,7 @@ class MythosConfig:
             max(getattr(self, "precision_selective_side_min_trades", 12), 1)
         )
         self.precision_selective_quality_eval_min_trades = int(
-            max(getattr(self, "precision_selective_quality_eval_min_trades", 32), 4)
+            max(getattr(self, "precision_selective_quality_eval_min_trades", 16), 4)
         )
         self.precision_selective_quality_eval_quantile = float(
             np.clip(getattr(self, "precision_selective_quality_eval_quantile", 0.65), 0.50, 0.99)

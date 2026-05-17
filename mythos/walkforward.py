@@ -1969,7 +1969,7 @@ def _precision_selective_quality_lift(
     cfg: MythosConfig,
 ) -> Dict[str, float]:
     n = int(min(len(accepted_scores), len(recent_rr)))
-    min_eval = int(max(getattr(cfg, "precision_selective_quality_eval_min_trades", 32), 4))
+    min_eval = int(max(getattr(cfg, "precision_selective_quality_eval_min_trades", 16), 4))
     if n < min_eval:
         return {"ready": 0.0, "lift": 0.0, "high_win_rate": 0.0, "low_win_rate": 0.0}
     scores = np.asarray(accepted_scores[-n:], dtype=np.float64)
