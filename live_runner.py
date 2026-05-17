@@ -2280,12 +2280,20 @@ class LiveRunner:
                 end_idx = REQUIRED_CANDLES + i
                 df_slice = df_full.iloc[end_idx - REQUIRED_CANDLES:end_idx].copy().reset_index(drop=True)
 
+                self.cycle_count += 1
                 self.portfolio.set_bar(self.cycle_count)
                 prices = {symbol: float(df_slice.iloc[-1]['close'])}
-                self.portfolio.check_exits(prices)
+                if self.execution_mode in ("paper", "live") and self.record_trades:
+                    self.portfolio.check_exits(prices)
 
-                self._process_symbol(symbol, df_candles=df_slice)
-                self.cycle_count += 1
+                candidate = self._process_symbol(symbol, df_candles=df_slice)
+                if not candidate:
+                    continue
+                accepted = self.portfolio.filter_and_rank([candidate])
+                if not accepted:
+                    continue
+                for accepted_candidate in accepted:
+                    self._execute_candidate(accepted_candidate)
 
         self._print_summary()
 
@@ -3450,28 +3458,39 @@ class LiveRunner:
             )
 
             if not exec_result.executed:
-                log.info(f"  {symbol}: execution module skipped trade — {exec_result.reason}")
-                try:
-                    v5_info = dict(candidate.get("v5_info", {}) or {})
-                    skip_reason = str(exec_result.reason or "execution_module_skipped")
-                    v5_info["hold_reason"] = skip_reason
-                    self._push_cycle_log(
-                        symbol=symbol,
-                        price=current_price,
-                        p_enter=p_enter,
-                        htf=htf,
-                        direction=side,
-                        decision="EXECUTION_SKIPPED",
-                        reasons=[skip_reason],
-                        lane_info=v5_info,
-                        decision_stage="execution",
-                        execution_status="rejected",
+                skip_reason = str(exec_result.reason or "execution_module_skipped")
+                log.info(f"  {symbol}: execution module skipped trade — {skip_reason}")
+                if self.execution_mode == "paper":
+                    # In paper mode we preserve signal-level behavior even when
+                    # pullback execution misses, so diagnostics still produce trades.
+                    log.info(
+                        "  [PAPER_EXEC_FALLBACK] %s using signal price entry after execution skip",
+                        symbol,
                     )
-                except Exception:
-                    pass
-                return
+                    v5_info["execution_skip_reason"] = skip_reason
+                    v5_info["execution_fallback"] = "signal_price"
+                    exec_result = None
+                else:
+                    v5_info["hold_reason"] = skip_reason
+                    try:
+                        self._push_cycle_log(
+                            symbol=symbol,
+                            price=current_price,
+                            p_enter=p_enter,
+                            htf=htf,
+                            direction=side,
+                            decision="EXECUTION_SKIPPED",
+                            reasons=[skip_reason],
+                            lane_info=v5_info,
+                            decision_stage="execution",
+                            execution_status="rejected",
+                        )
+                    except Exception:
+                        pass
+                    return
 
-            entry_price = exec_result.entry_price
+            if exec_result is not None:
+                entry_price = exec_result.entry_price
         entry_slippage_bps = abs(float(entry_price) - float(current_price)) / max(float(current_price), 1e-9) * 10000.0
         self._record_execution_quality(
             spread_bps=spread_bps if np.isfinite(spread_bps) else None,
