@@ -3,33 +3,35 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dual Engine Paper Trading Dashboard</title>
+  <title>Mythos Command Dashboard</title>
   <style>
     :root {
-      --bg: #030812;
-      --bg2: #0a1324;
-      --card: rgba(11, 24, 44, 0.78);
-      --line: rgba(118, 165, 255, 0.24);
-      --txt: #e5efff;
-      --muted: #9eb0cd;
-      --pos: #2ae2ad;
-      --neg: #ff6f8d;
+      --bg: #050914;
+      --bg-soft: #0a1327;
+      --panel: rgba(10, 22, 44, 0.82);
+      --panel-soft: rgba(8, 18, 35, 0.72);
+      --line: rgba(131, 173, 244, 0.24);
+      --text: #e8f1ff;
+      --muted: #9fb4d3;
+      --positive: #2ee4b3;
+      --negative: #ff6f8f;
       --warn: #ffd166;
-      --blue: #63a6ff;
-      --violet: #9a7bff;
-      --cyan: #62e5ff;
-      --shadow: 0 14px 38px rgba(8, 20, 40, 0.55);
+      --primary: #66a7ff;
+      --violet: #9a7dff;
+      --cyan: #64e6ff;
+      --shadow: 0 16px 42px rgba(5, 12, 25, 0.58);
     }
+
     * { box-sizing: border-box; }
     html, body { height: 100%; }
     body {
       margin: 0;
-      color: var(--txt);
+      color: var(--text);
       font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
       background:
-        radial-gradient(circle at 12% 12%, rgba(64, 122, 214, 0.28), transparent 36%),
-        radial-gradient(circle at 90% 0%, rgba(112, 76, 189, 0.32), transparent 38%),
-        linear-gradient(180deg, var(--bg), #02050c 70%);
+        radial-gradient(circle at 12% 4%, rgba(67, 122, 225, 0.28), transparent 36%),
+        radial-gradient(circle at 88% 0, rgba(126, 84, 233, 0.30), transparent 38%),
+        linear-gradient(185deg, var(--bg), #02040a 72%);
       overflow-x: hidden;
     }
     body::before {
@@ -38,55 +40,75 @@
       inset: 0;
       pointer-events: none;
       background-image:
-        linear-gradient(rgba(130, 170, 255, 0.06) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(130, 170, 255, 0.06) 1px, transparent 1px);
-      background-size: 34px 34px;
-      mask-image: radial-gradient(circle at 50% 28%, #000 15%, transparent 80%);
-      animation: drift 24s linear infinite;
+        linear-gradient(rgba(128, 170, 245, 0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(128, 170, 245, 0.06) 1px, transparent 1px);
+      background-size: 38px 38px;
+      mask-image: radial-gradient(circle at 50% 25%, #000 12%, transparent 78%);
+      animation: bg-drift 26s linear infinite;
+      z-index: 0;
     }
-    @keyframes drift { from { transform: translate3d(0,0,0);} to { transform: translate3d(34px,34px,0);} }
+    @keyframes bg-drift {
+      from { transform: translate3d(0, 0, 0); }
+      to { transform: translate3d(38px, 38px, 0); }
+    }
 
-    .shell { max-width: 1680px; margin: 0 auto; padding: 16px 16px 30px; position: relative; z-index: 2; }
+    .shell {
+      max-width: 1680px;
+      margin: 0 auto;
+      padding: 16px 16px 30px;
+      position: relative;
+      z-index: 2;
+    }
     .glass {
-      background: linear-gradient(165deg, rgba(13, 30, 58, 0.9), rgba(7, 17, 34, 0.9));
       border: 1px solid var(--line);
+      background: linear-gradient(160deg, rgba(13, 31, 60, 0.86), rgba(6, 15, 31, 0.88));
       border-radius: 14px;
       box-shadow: var(--shadow);
-      backdrop-filter: blur(7px);
+      backdrop-filter: blur(8px);
     }
 
-    .top {
+    .topbar {
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 12px;
       align-items: center;
       margin-bottom: 10px;
     }
-    .title {
+    .title-wrap {
       display: flex;
-      gap: 10px;
       align-items: center;
+      gap: 10px;
+      min-width: 0;
     }
     .pulse {
-      width: 10px;
-      height: 10px;
+      width: 11px;
+      height: 11px;
       border-radius: 50%;
-      background: var(--pos);
-      box-shadow: 0 0 0 0 rgba(42, 226, 173, 0.7);
+      background: var(--positive);
+      box-shadow: 0 0 0 0 rgba(46, 228, 179, 0.75);
       animation: pulse 1.9s infinite;
+      flex-shrink: 0;
     }
     @keyframes pulse {
-      0% { box-shadow: 0 0 0 0 rgba(42, 226, 173, 0.75); }
-      70% { box-shadow: 0 0 0 12px rgba(42, 226, 173, 0); }
-      100% { box-shadow: 0 0 0 0 rgba(42, 226, 173, 0); }
+      0% { box-shadow: 0 0 0 0 rgba(46, 228, 179, 0.7); }
+      70% { box-shadow: 0 0 0 12px rgba(46, 228, 179, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(46, 228, 179, 0); }
     }
     h1 {
       margin: 0;
-      font-size: 1.02rem;
-      letter-spacing: .08em;
+      font-size: 1.06rem;
       text-transform: uppercase;
+      letter-spacing: .09em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-    .sub { margin-top: 2px; font-size: .81rem; color: var(--muted); }
+    .sub {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: .8rem;
+      letter-spacing: .02em;
+    }
 
     .toolbar {
       display: flex;
@@ -95,400 +117,345 @@
       flex-wrap: wrap;
       justify-content: flex-end;
     }
-    .btn, select, input {
-      height: 35px;
+    .btn, select {
+      height: 36px;
       border-radius: 10px;
-      border: 1px solid rgba(133, 178, 255, 0.34);
-      background: rgba(9, 21, 44, 0.92);
-      color: var(--txt);
+      border: 1px solid rgba(130, 176, 250, 0.36);
+      background: rgba(10, 21, 42, 0.92);
+      color: var(--text);
       padding: 0 12px;
-      font-size: .8rem;
+      font-size: .78rem;
+      letter-spacing: .02em;
     }
-    .btn { cursor: pointer; transition: .15s ease; }
-    .btn:hover { transform: translateY(-1px); border-color: rgba(169, 201, 255, 0.6); }
-    .btn.primary { background: linear-gradient(135deg, #437cff, #8f6fff); border-color: transparent; font-weight: 600; }
-    .btn.warn { background: linear-gradient(135deg, #875803, #b17707); border-color: rgba(255, 209, 102, .4); }
+    .btn {
+      cursor: pointer;
+      transition: .18s ease;
+    }
+    .btn:hover {
+      transform: translateY(-1px);
+      border-color: rgba(170, 201, 255, 0.65);
+    }
+    .btn.primary {
+      background: linear-gradient(135deg, #4b82ff, #9071ff);
+      border-color: transparent;
+      font-weight: 600;
+    }
+    .btn.warn {
+      background: linear-gradient(135deg, #875703, #b37609);
+      border-color: rgba(255, 209, 102, 0.45);
+    }
     .chip {
-      height: 35px;
       display: inline-flex;
       align-items: center;
       gap: 8px;
+      height: 36px;
+      padding: 0 12px;
       border-radius: 999px;
-      padding: 0 11px;
-      border: 1px solid rgba(130, 170, 235, 0.35);
-      background: rgba(8, 19, 37, 0.85);
-      color: #b9cbe4;
+      border: 1px solid rgba(130, 170, 235, 0.36);
+      background: rgba(8, 18, 35, 0.86);
       font-size: .79rem;
+      color: #bdd1ee;
+    }
+    .chip-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--warn);
     }
 
     .engine-tabs {
-      margin-bottom: 10px;
       display: flex;
       gap: 8px;
+      margin-bottom: 10px;
       flex-wrap: wrap;
     }
     .engine-tab {
       padding: 8px 12px;
       border-radius: 10px;
       border: 1px solid var(--line);
-      background: rgba(9, 20, 39, .8);
-      color: #bdd2f1;
+      background: rgba(10, 21, 40, 0.8);
+      color: #bdd1ef;
       text-decoration: none;
       font-size: .8rem;
       letter-spacing: .03em;
     }
     .engine-tab.active {
-      background: linear-gradient(135deg, rgba(67,124,255,0.33), rgba(141,107,255,0.35));
       color: #fff;
-      border-color: rgba(156, 192, 255, .55);
+      border-color: rgba(153, 191, 255, 0.58);
+      background: linear-gradient(135deg, rgba(73, 127, 255, 0.34), rgba(141, 111, 255, 0.36));
     }
 
-    .metrics {
+    .kpi-grid {
       display: grid;
-      grid-template-columns: repeat(10, minmax(130px, 1fr));
-      gap: 9px;
+      grid-template-columns: repeat(8, minmax(140px, 1fr));
+      gap: 10px;
       margin-bottom: 10px;
     }
-    .metric {
-      padding: 10px 11px;
-      min-height: 88px;
+    .kpi {
+      padding: 11px 12px;
+      min-height: 92px;
       position: relative;
       overflow: hidden;
+      transition: border-color .25s ease, transform .15s ease;
     }
-    .metric::after {
+    .kpi:hover { transform: translateY(-1px); }
+    .kpi::after {
       content: "";
       position: absolute;
-      inset: auto -35% -50% -35%;
-      height: 72px;
-      background: radial-gradient(circle at 50% 15%, rgba(96, 148, 243, .24), transparent 65%);
+      inset: auto -30% -52% -30%;
+      height: 78px;
+      background: radial-gradient(circle at 50% 0, rgba(100, 153, 248, 0.26), transparent 70%);
       pointer-events: none;
     }
-    .metric .k { font-size: .68rem; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
-    .metric .v { margin-top: 5px; font-size: 1.11rem; font-weight: 700; }
-    .metric .s { margin-top: 4px; font-size: .74rem; color: #99adca; }
-    .pos { color: var(--pos); } .neg { color: var(--neg); }
+    .kpi .k {
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      font-size: .66rem;
+      color: var(--muted);
+    }
+    .kpi .v {
+      margin-top: 6px;
+      font-size: 1.17rem;
+      font-weight: 700;
+    }
+    .kpi .s {
+      margin-top: 4px;
+      font-size: .74rem;
+      color: #9cb0ce;
+    }
+    .pos { color: var(--positive); }
+    .neg { color: var(--negative); }
+    .flash-up { animation: metricUp .7s ease; }
+    .flash-down { animation: metricDown .7s ease; }
+    @keyframes metricUp {
+      from { box-shadow: inset 0 0 0 999px rgba(46, 228, 179, 0.18); }
+      to { box-shadow: inset 0 0 0 0 rgba(46, 228, 179, 0); }
+    }
+    @keyframes metricDown {
+      from { box-shadow: inset 0 0 0 999px rgba(255, 111, 143, 0.16); }
+      to { box-shadow: inset 0 0 0 0 rgba(255, 111, 143, 0); }
+    }
 
-    .grid-main {
+    .main-grid {
       display: grid;
-      grid-template-columns: 2fr 1.05fr;
+      grid-template-columns: 2fr 1fr;
       gap: 10px;
       margin-bottom: 10px;
     }
     .card { padding: 12px; }
     .card h3 {
-      margin: 0 0 10px;
-      font-size: .8rem;
+      margin: 0 0 9px;
+      font-size: .79rem;
       text-transform: uppercase;
       letter-spacing: .08em;
-      color: #9fb4d2;
+      color: #9db5d8;
     }
-    .chart-wrap { height: 280px; position: relative; }
-    .chart-wrap.small { height: 170px; }
-    canvas { width: 100%; height: 100%; display: block; }
+    .chart {
+      height: 285px;
+      border-radius: 12px;
+      border: 1px solid rgba(115, 165, 246, 0.2);
+      background: rgba(5, 13, 27, 0.82);
+      position: relative;
+      overflow: hidden;
+    }
+    .chart.small { height: 150px; margin-top: 8px; }
+    .chart canvas { width: 100%; height: 100%; display: block; }
     .empty {
       position: absolute;
       inset: 0;
       display: grid;
       place-items: center;
-      color: #7184a1;
+      color: #7386a5;
       font-size: .8rem;
+      background: rgba(6, 15, 30, 0.45);
     }
-    .insight { padding: 9px 10px; border: 1px solid rgba(118, 165, 255, 0.2); border-radius: 10px; background: rgba(8, 19, 36, 0.78); font-size: .79rem; color: #cad9ee; line-height: 1.35; margin-bottom: 8px; }
 
-    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
-    .table-wrap { max-height: 295px; overflow: auto; border: 1px solid rgba(117, 162, 245, .2); border-radius: 10px; }
-    table { width: 100%; border-collapse: collapse; font-size: .77rem; }
-    th, td { padding: 7px 9px; text-align: left; border-bottom: 1px solid rgba(103, 145, 214, .12); white-space: nowrap; }
-    th { position: sticky; top: 0; z-index: 1; background: rgba(8, 19, 36, 0.97); color: #95a8c6; font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; }
-    tr:hover { background: rgba(20, 39, 70, .34); }
-    .tag { font-size: .66rem; border-radius: 999px; padding: 3px 7px; border: 1px solid rgba(127, 166, 224, .35); background: rgba(11, 23, 45, .84); color: #c7d7ed; }
-    .tag.long { color: #8bf0c5; border-color: rgba(42,226,173,.45); }
-    .tag.short { color: #ffb0be; border-color: rgba(255,111,141,.45); }
-    .tag.open { color: #ffe2a8; border-color: rgba(255, 209, 102, .5); }
-    .tag.closed { color: #9dcbff; border-color: rgba(98, 167, 255, .55); }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .model-list { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 6px; }
-    .model-pill { padding: 4px 8px; border-radius: 999px; border: 1px solid rgba(118, 165, 255, .35); background: rgba(8, 18, 35, .78); font-size: .72rem; color: #c9daf2; }
-    .small { font-size: .74rem; color: #9ab0cf; }
-    .action-stack {
-      display: inline-flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      align-items: center;
+    .insights {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 9px;
     }
-    .btn.xs {
-      height: 28px;
-      padding: 0 8px;
-      font-size: .66rem;
-      border-radius: 8px;
-    }
-    .trade-manager-panel {
-      margin-top: 9px;
-      border: 1px solid rgba(116, 163, 243, .24);
+    .insight {
       border-radius: 10px;
-      background: rgba(6, 16, 30, .66);
-      padding: 8px;
+      border: 1px solid rgba(115, 163, 245, 0.2);
+      background: rgba(8, 19, 36, 0.76);
+      padding: 9px 10px;
+      line-height: 1.35;
+      font-size: .79rem;
+      color: #cadbf4;
     }
-    .trade-manager-grid {
+    .quality-grid {
       display: grid;
-      grid-template-columns: 1.2fr 0.8fr 0.8fr 1fr;
+      grid-template-columns: 1fr 1fr;
       gap: 8px;
       margin-bottom: 8px;
     }
-    .trade-manager-grid .setting-item {
-      margin: 0;
-      padding: 6px;
+    .quality-cell {
+      border-radius: 10px;
+      border: 1px solid rgba(115, 164, 243, 0.22);
+      background: rgba(7, 17, 34, 0.72);
+      padding: 8px 9px;
     }
-    .trade-manager-actions {
-      display: flex;
-      gap: 7px;
-      flex-wrap: wrap;
-      align-items: center;
+    .quality-cell .k {
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      font-size: .64rem;
+      color: #91a8cc;
     }
-    .market-toolbar {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      flex-wrap: wrap;
-      margin-bottom: 8px;
-    }
-    .toolbar-inline {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .btn.icon {
-      width: 34px;
-      padding: 0;
-      font-size: .95rem;
+    .quality-cell .v {
+      margin-top: 4px;
+      font-size: .9rem;
       font-weight: 700;
-      line-height: 1;
     }
-    .settings-grid {
+    .pill-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+    .pill {
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: 1px solid rgba(118, 165, 244, 0.32);
+      background: rgba(9, 20, 40, 0.8);
+      font-size: .72rem;
+      color: #c5d8f4;
+    }
+
+    .split-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
       margin-bottom: 10px;
     }
-    .setting-item {
-      border: 1px solid rgba(113, 157, 234, .22);
+    .market-list {
+      max-height: 164px;
+      overflow: auto;
+      display: grid;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .market-row {
+      border: 1px solid rgba(115, 163, 245, 0.2);
       border-radius: 9px;
-      background: rgba(7, 17, 33, .66);
-      padding: 6px;
-    }
-    .setting-item label {
-      display: block;
-      margin-bottom: 4px;
-      font-size: .66rem;
-      text-transform: uppercase;
-      letter-spacing: .04em;
-      color: #95a9c8;
-    }
-    .setting-item input, .setting-item select {
-      width: 100%;
-      height: 34px;
-      border-radius: 8px;
-      border: 1px solid rgba(123, 167, 244, .35);
-      background: rgba(8, 19, 38, .92);
-      color: var(--txt);
-      padding: 0 9px;
-    }
-    .switch-row {
-      display: flex;
+      background: rgba(7, 16, 33, 0.68);
+      padding: 7px 8px;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
       align-items: center;
       gap: 8px;
-      padding-top: 3px;
+      font-size: .77rem;
     }
-    .switch-row input { width: 16px; height: 16px; }
-    .switch-row span { font-size: .74rem; color: #c1d3ec; }
-    .market-meta {
-      margin-top: 7px;
-      font-size: .76rem;
-      color: #a6bbda;
-      line-height: 1.3;
+    .market-row .sym {
+      font-weight: 700;
+      letter-spacing: .03em;
+      color: #cce0ff;
     }
-    .market-tape {
-      margin-top: 8px;
+    .market-row .px {
+      justify-self: end;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .market-row .delta { font-size: .72rem; }
+
+    .table-grid {
       display: grid;
-      grid-template-columns: repeat(6, minmax(120px, 1fr));
-      gap: 7px;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 10px;
+      margin-bottom: 10px;
     }
-    .tape-cell {
-      border: 1px solid rgba(120, 168, 248, .2);
-      border-radius: 9px;
-      background: linear-gradient(180deg, rgba(9, 21, 40, .88), rgba(6, 15, 30, .76));
-      padding: 6px 8px;
-      min-height: 52px;
-      position: relative;
-      overflow: hidden;
+    .table-grid.compact {
+      grid-template-columns: 1fr 1fr;
     }
-    .tape-cell::after {
-      content: "";
-      position: absolute;
-      inset: auto -20% -65% -20%;
-      height: 42px;
-      background: radial-gradient(circle at 50% 0, rgba(96, 148, 243, .22), transparent 70%);
-      pointer-events: none;
+    .table-wrap {
+      max-height: 292px;
+      overflow: auto;
+      border: 1px solid rgba(114, 161, 238, 0.2);
+      border-radius: 10px;
+      background: rgba(5, 14, 27, 0.8);
     }
-    .tape-cell .k {
-      font-size: .62rem;
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .75rem;
+    }
+    th, td {
+      padding: 7px 9px;
+      text-align: left;
+      border-bottom: 1px solid rgba(104, 146, 214, 0.11);
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: rgba(7, 17, 33, 0.97);
+      color: #93a9c8;
+      font-size: .68rem;
       text-transform: uppercase;
       letter-spacing: .06em;
-      color: #91a8c8;
     }
-    .tape-cell .v {
-      margin-top: 4px;
-      font-size: .86rem;
-      font-weight: 700;
-    }
-    .market-open-pnl {
-      margin-top: 8px;
-      font-size: .76rem;
-      color: #c3d7f4;
-      line-height: 1.35;
-    }
-    .market-open-pnl .pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
+    tr:hover { background: rgba(21, 41, 74, 0.34); }
+    .tag {
+      font-size: .66rem;
       border-radius: 999px;
-      border: 1px solid rgba(122, 168, 245, .35);
-      background: rgba(9, 22, 44, .72);
-      padding: 3px 8px;
-      margin-right: 7px;
-      margin-bottom: 5px;
-      font-size: .7rem;
+      padding: 3px 7px;
+      border: 1px solid rgba(123, 167, 240, 0.36);
+      color: #bfd4f2;
+      background: rgba(11, 23, 43, 0.84);
     }
-    .blink-up { animation: blinkUp .7s ease; }
-    .blink-down { animation: blinkDown .7s ease; }
-    @keyframes blinkUp {
-      from { box-shadow: inset 0 0 0 999px rgba(42, 226, 173, .22); }
-      to { box-shadow: inset 0 0 0 0 rgba(42, 226, 173, 0); }
-    }
-    @keyframes blinkDown {
-      from { box-shadow: inset 0 0 0 999px rgba(255, 111, 141, .2); }
-      to { box-shadow: inset 0 0 0 0 rgba(255, 111, 141, 0); }
-    }
-    .chart-wrap.market { height: 330px; }
-    .chart-wrap.command {
-      height: 230px;
-      margin-bottom: 8px;
-    }
-    .open-visual-grid {
-      margin-top: 9px;
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-      gap: 8px;
-      max-height: 260px;
-      overflow: auto;
-      padding-right: 2px;
-    }
-    .trade-visual-card {
-      border: 1px solid rgba(122, 168, 246, .24);
-      border-radius: 10px;
-      background: rgba(8, 19, 37, .78);
-      padding: 8px;
-    }
-    .trade-visual-top {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 6px;
-    }
-    .trade-visual-title { font-size: .77rem; font-weight: 600; letter-spacing: .02em; }
-    .trade-visual-meta { font-size: .69rem; color: #9db0cf; }
-    .trade-visual-stats {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 6px;
-      margin-bottom: 7px;
-    }
-    .trade-visual-stat {
-      border: 1px solid rgba(111, 158, 235, .18);
-      background: rgba(6, 16, 30, .6);
-      border-radius: 8px;
-      padding: 5px 6px;
-    }
-    .trade-visual-stat .k { font-size: .62rem; text-transform: uppercase; letter-spacing: .04em; color: #92a7c7; }
-    .trade-visual-stat .v { font-size: .76rem; font-weight: 700; margin-top: 2px; }
-    .risk-rail {
-      position: relative;
+    .tag.long { color: #8bf0c8; border-color: rgba(46, 228, 179, 0.45); }
+    .tag.short { color: #ffb3c3; border-color: rgba(255, 111, 143, 0.45); }
+    .tag.buy { color: #8bf0c8; border-color: rgba(46, 228, 179, 0.45); }
+    .tag.sell { color: #ffb3c3; border-color: rgba(255, 111, 143, 0.45); }
+    .tag.closed { color: #9fd0ff; border-color: rgba(108, 165, 255, 0.52); }
+    .tag.open { color: #ffe2a5; border-color: rgba(255, 209, 102, 0.5); }
+    .btn.xs {
       height: 28px;
-      border: 1px solid rgba(119, 166, 244, .25);
-      background: linear-gradient(90deg, rgba(255,111,141,.18), rgba(98,167,255,.08), rgba(42,226,173,.18));
-      border-radius: 999px;
-      margin-bottom: 7px;
-      overflow: hidden;
-    }
-    .risk-marker {
-      position: absolute;
-      top: 3px;
-      width: 2px;
-      bottom: 3px;
-      background: rgba(195, 221, 255, .95);
-    }
-    .risk-dot {
-      position: absolute;
-      top: 50%;
-      width: 9px;
-      height: 9px;
-      border-radius: 50%;
-      transform: translate(-50%, -50%);
-      background: var(--cyan);
-      box-shadow: 0 0 0 0 rgba(98, 229, 255, .7);
-      animation: pulse 1.5s infinite;
-    }
-    .risk-label {
-      position: absolute;
-      top: 1px;
-      transform: translateX(-50%);
-      font-size: .58rem;
-      color: #d4e4ff;
-      letter-spacing: .04em;
-      text-transform: uppercase;
-      pointer-events: none;
-    }
-    .sparkline-wrap {
-      height: 62px;
-      border: 1px solid rgba(117, 160, 234, .2);
       border-radius: 8px;
-      background: rgba(5, 13, 27, .72);
-      overflow: hidden;
+      padding: 0 9px;
+      font-size: .66rem;
+    }
+    .small { color: #95abcc; font-size: .74rem; }
+
+    .animate-in {
+      animation: fadeIn .42s ease both;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
     }
 
     @media (max-width: 1450px) {
-      .metrics { grid-template-columns: repeat(5, minmax(130px, 1fr)); }
-      .grid-main { grid-template-columns: 1fr; }
+      .kpi-grid { grid-template-columns: repeat(4, minmax(130px, 1fr)); }
+      .main-grid { grid-template-columns: 1fr; }
+      .table-grid { grid-template-columns: 1fr; }
+      .split-grid { grid-template-columns: 1fr; }
     }
-    @media (max-width: 860px) {
-      .metrics { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
-      .grid-2 { grid-template-columns: 1fr; }
-      .settings-grid { grid-template-columns: 1fr; }
-      .trade-manager-grid { grid-template-columns: 1fr; }
+    @media (max-width: 820px) {
+      .kpi-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
       .toolbar { justify-content: flex-start; }
-      .market-tape { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      .topbar { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
   <div class="shell">
-    <div class="top">
-      <div class="title">
+    <header class="topbar">
+      <div class="title-wrap">
         <div class="pulse"></div>
         <div>
-          <h1 id="mainTitle">Advanced Paper Trading Dashboard</h1>
+          <h1 id="mainTitle">Professional Trading Dashboard</h1>
           <div id="runMeta" class="sub">Booting dashboard...</div>
         </div>
       </div>
       <div class="toolbar">
-        <span id="liveState" class="chip"><span style="width:8px;height:8px;border-radius:50%;background:var(--warn);display:inline-block"></span>Connecting...</span>
+        <span id="liveState" class="chip"><span class="chip-dot"></span><span>Connecting...</span></span>
         <label class="small" for="sessionSelect">Session</label>
         <select id="sessionSelect"></select>
         <button id="refreshBtn" class="btn">Refresh</button>
         <button id="autoBtn" class="btn primary">Auto: ON</button>
       </div>
-    </div>
+    </header>
 
     <div class="engine-tabs">
       <a id="tabAll" class="engine-tab" href="/dashboard">All Sessions</a>
@@ -496,197 +463,121 @@
       <a id="tabMythos" class="engine-tab" href="/dashboard/mythos">Mythos</a>
     </div>
 
-    <section class="metrics">
-      <article class="metric glass"><div class="k">Open</div><div id="mOpen" class="v">0</div><div class="s">active positions</div></article>
-      <article class="metric glass"><div class="k">Closed</div><div id="mClosed" class="v">0</div><div class="s">history count</div></article>
-      <article class="metric glass"><div class="k">Win Rate</div><div id="mWR" class="v">0%</div><div class="s">net close basis</div></article>
-      <article class="metric glass"><div class="k">Expectancy</div><div id="mExp" class="v">0R</div><div class="s">per closed trade</div></article>
-      <article class="metric glass"><div class="k">Profit Factor</div><div id="mPF" class="v">0.00</div><div class="s">net PF</div></article>
-      <article class="metric glass"><div class="k">Net Realized</div><div id="mNet" class="v">0R</div><div id="mUnreal" class="s">0R unrealized</div></article>
-      <article class="metric glass"><div class="k">Gross / Fees</div><div id="mGrossFee" class="v">0R / 0R</div><div id="mFeeUsd" class="s">$0.00 fees</div></article>
-      <article class="metric glass"><div class="k">LONG</div><div id="mLong" class="v">0 / 0</div><div id="mLongRate" class="s">0% successful</div></article>
-      <article class="metric glass"><div class="k">SHORT</div><div id="mShort" class="v">0 / 0</div><div id="mShortRate" class="s">0% successful</div></article>
-      <article class="metric glass"><div class="k">Engine</div><div id="mEngine" class="v">-</div><div id="mAssets" class="s">0 assets</div></article>
-      <article class="metric glass"><div class="k">Equity (USD)</div><div id="mEqUsd" class="v">$0.00</div><div id="mEqDelta" class="s">$0.00 live PnL</div></article>
-      <article class="metric glass"><div class="k">Leverage</div><div id="mLev" class="v">x1.00</div><div id="mLevMode" class="s">manual</div></article>
+    <section class="kpi-grid">
+      <article class="kpi glass animate-in"><div class="k">Open Positions</div><div id="mOpen" class="v">0</div><div class="s">live exposure</div></article>
+      <article class="kpi glass animate-in"><div class="k">Closed Trades</div><div id="mClosed" class="v">0</div><div class="s">completed trades</div></article>
+      <article class="kpi glass animate-in"><div class="k">Win Rate</div><div id="mWr" class="v">0%</div><div id="mWrSub" class="s">closed only</div></article>
+      <article class="kpi glass animate-in"><div class="k">Expectancy</div><div id="mExp" class="v">0R</div><div class="s">per closed trade</div></article>
+      <article class="kpi glass animate-in"><div class="k">Profit Factor</div><div id="mPf" class="v">0.00</div><div class="s">gross+/gross-</div></article>
+      <article class="kpi glass animate-in"><div class="k">Net R</div><div id="mNet" class="v">0R</div><div id="mUnreal" class="s">0R unrealized</div></article>
+      <article class="kpi glass animate-in"><div class="k">Live Equity</div><div id="mEq" class="v">$0.00</div><div id="mEqSub" class="s">paper + pnl</div></article>
+      <article class="kpi glass animate-in"><div class="k">Max Drawdown</div><div id="mDd" class="v">0R</div><div id="mEngine" class="s">engine -</div></article>
     </section>
 
-    <section class="grid-main">
-      <article class="card glass">
-        <h3>Institutional Market Terminal (Candles + Trade Risk Lanes)</h3>
-        <div class="market-toolbar">
-          <label class="small" for="marketSymbolSelect">Symbol</label>
-          <select id="marketSymbolSelect"></select>
-          <label class="small" for="marketTfSelect">TF</label>
-          <select id="marketTfSelect">
-            <option value="1m">1m</option>
-            <option value="3m">3m</option>
-            <option value="5m">5m</option>
-            <option value="15m">15m</option>
-            <option value="30m">30m</option>
-            <option value="1h">1h</option>
-          </select>
-          <label class="small" for="marketDepthSelect">Candles</label>
-          <select id="marketDepthSelect">
-            <option value="120">120</option>
-            <option value="180">180</option>
-            <option value="240" selected>240</option>
-            <option value="360">360</option>
-            <option value="480">480</option>
-            <option value="720">720</option>
-          </select>
-          <div class="toolbar-inline">
-            <button id="marketZoomIn" class="btn icon" title="Zoom in">+</button>
-            <button id="marketZoomOut" class="btn icon" title="Zoom out">-</button>
-            <span id="marketZoomLabel" class="small">zoom 240</span>
-          </div>
-          <span class="small">Live candlesticks with entry/exit markers and open-trade TP/SL overlays.</span>
+    <section class="main-grid">
+      <article class="card glass animate-in">
+        <h3>Performance Curve</h3>
+        <div class="chart">
+          <canvas id="equityCanvas"></canvas>
+          <div id="equityEmpty" class="empty" hidden>No closed trades yet.</div>
         </div>
-        <div class="chart-wrap market">
-          <canvas id="marketCanvas"></canvas>
-          <div id="marketEmpty" class="empty" hidden>No live market series yet.</div>
+        <div class="chart small">
+          <canvas id="drawdownCanvas"></canvas>
+          <div id="drawdownEmpty" class="empty" hidden>No drawdown data yet.</div>
         </div>
-        <div id="marketMeta" class="market-meta">Waiting for BTC/ETH cycle prices...</div>
-        <div id="marketTape" class="market-tape"></div>
-        <div id="marketOpenPnl" class="market-open-pnl"></div>
       </article>
-      <article class="card glass">
-        <h3>Paper Engine Account + Leverage Controls</h3>
-        <div class="settings-grid">
-          <div class="setting-item">
-            <label for="equityInput">Account Equity (USD)</label>
-            <input id="equityInput" type="number" min="0" step="50" value="10000" />
+
+      <article class="card glass animate-in">
+        <h3>System Intelligence</h3>
+        <div id="insights" class="insights"></div>
+        <div class="quality-grid">
+          <div class="quality-cell">
+            <div class="k">Avg Signal Confidence</div>
+            <div id="qConf" class="v">0%</div>
           </div>
-          <div class="setting-item">
-            <label for="riskPctInput">Risk / Trade (%)</label>
-            <input id="riskPctInput" type="number" min="0.01" max="100" step="0.01" value="1.0" />
+          <div class="quality-cell">
+            <div class="k">Avg Model Edge</div>
+            <div id="qEdge" class="v">0.0000</div>
           </div>
-          <div class="setting-item">
-            <label for="baseLevInput">Base Leverage</label>
-            <input id="baseLevInput" type="number" min="1" max="250" step="0.1" value="1.0" />
+          <div class="quality-cell">
+            <div class="k">Cycle Hold Ratio</div>
+            <div id="qHold" class="v">0%</div>
           </div>
-          <div class="setting-item">
-            <label for="maxLevInput">Max Leverage</label>
-            <input id="maxLevInput" type="number" min="1" max="250" step="0.1" value="200.0" />
-          </div>
-          <div class="setting-item" style="grid-column: 1 / -1;">
-            <div class="switch-row">
-              <input id="autoLevInput" type="checkbox" checked />
-              <span>Auto leverage by confidence/edge (higher-confidence setups get higher allowed leverage)</span>
-            </div>
+          <div class="quality-cell">
+            <div class="k">Avg Leverage Used</div>
+            <div id="qLev" class="v">x1.00</div>
           </div>
         </div>
-        <button id="savePaperBtn" class="btn primary">Save Paper Settings</button>
-        <div id="paperStatus" class="small" style="margin-top:8px">Select a session and save to apply account equity/risk/leverage.</div>
+        <h3>Models Active</h3>
+        <div id="modelList" class="pill-list"></div>
+        <h3 style="margin-top:10px">Market Pulse</h3>
+        <div id="marketList" class="market-list"></div>
       </article>
     </section>
 
-    <section class="grid-main">
-      <article class="card glass">
-        <h3>Equity Curve (Net R) + PnL Components</h3>
-        <div class="chart-wrap"><canvas id="equityCanvas"></canvas><div id="eqEmpty" class="empty" hidden>No closed trades yet.</div></div>
-        <div class="chart-wrap small" style="margin-top:8px"><canvas id="grossCanvas"></canvas><div id="grossEmpty" class="empty" hidden>No fee/gross data yet.</div></div>
+    <section class="split-grid">
+      <article class="card glass animate-in">
+        <h3>Rolling Win Rate (20-trade window)</h3>
+        <div class="chart">
+          <canvas id="qualityCanvas"></canvas>
+          <div id="qualityEmpty" class="empty" hidden>Not enough closed trades yet.</div>
+        </div>
       </article>
-      <article class="card glass">
-        <h3>Live Insights</h3>
-        <div id="insights"></div>
-        <h3 style="margin-top:10px">Models Active</h3>
-        <div id="modelList" class="model-list"></div>
-        <h3 style="margin-top:10px">Assets Running</h3>
-        <div class="table-wrap" style="max-height:210px">
-          <table>
-            <thead><tr><th>Asset</th><th>Open</th><th>Closed</th><th>Net R</th><th>WR</th><th>Last Price</th></tr></thead>
-            <tbody id="assetBody"></tbody>
-          </table>
+      <article class="card glass animate-in">
+        <h3>Recent Net R Distribution</h3>
+        <div class="chart">
+          <canvas id="pnlCanvas"></canvas>
+          <div id="pnlEmpty" class="empty" hidden>No closed trades yet.</div>
         </div>
       </article>
     </section>
 
-    <section class="grid-2">
-      <article class="card glass">
-        <h3>Open Trades Live Command Center (Manual Close Enabled)</h3>
-        <div class="market-toolbar">
-          <label class="small" for="openTradeSymbolSelect">Focus Symbol</label>
-          <select id="openTradeSymbolSelect"></select>
-          <div class="toolbar-inline">
-            <button id="openZoomIn" class="btn icon" title="Zoom in">+</button>
-            <button id="openZoomOut" class="btn icon" title="Zoom out">-</button>
-            <span id="openZoomLabel" class="small">zoom 180</span>
-          </div>
-          <span class="small">Candle-focused live command chart for active positions with TP/SL overlays.</span>
-        </div>
-        <div class="chart-wrap command">
-          <canvas id="openTradeCandleCanvas"></canvas>
-          <div id="openTradeCandleEmpty" class="empty" hidden>No open-trade candle stream yet.</div>
-        </div>
-        <div id="openTradeCandleMeta" class="small" style="margin-bottom:8px">Open-trade candle panel booting...</div>
-        <div class="chart-wrap small" style="margin-bottom:8px">
-          <canvas id="openExposureCanvas"></canvas>
-          <div id="openExposureEmpty" class="empty" hidden>No open-trade timeline yet.</div>
-        </div>
-        <div id="openExposureMeta" class="small" style="margin-bottom:8px">Open exposure graph booting...</div>
+    <section class="table-grid">
+      <article class="card glass animate-in">
+        <h3>Open Positions</h3>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Session</th><th>Symbol</th><th>Side</th><th>Entry</th><th>SL</th><th>TP</th><th>Live R</th><th>Live USD</th><th>Lev</th><th>Risk USD</th><th>Action</th></tr></thead>
+            <thead>
+              <tr><th>ID</th><th>Session</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Price</th><th>SL</th><th>TP</th><th>Live R</th><th>Live USD</th><th>Action</th></tr>
+            </thead>
             <tbody id="openBody"></tbody>
           </table>
         </div>
-        <div class="trade-manager-panel">
-          <h3 style="margin:0 0 8px;">Institutional Trade Manager</h3>
-          <div class="trade-manager-grid">
-            <div class="setting-item">
-              <label for="tmTradeSelect">Open Trade</label>
-              <select id="tmTradeSelect"></select>
-            </div>
-            <div class="setting-item">
-              <label for="tmClosePctInput">Partial Close %</label>
-              <input id="tmClosePctInput" type="number" min="1" max="100" step="1" value="25" />
-            </div>
-            <div class="setting-item">
-              <label for="tmNewSlInput">New Stop Loss</label>
-              <input id="tmNewSlInput" type="number" min="0" step="0.01" value="" />
-            </div>
-            <div class="setting-item">
-              <label for="tmNoteInput">Manager Note</label>
-              <input id="tmNoteInput" type="text" value="dashboard_trade_manager" />
-            </div>
-          </div>
-          <div class="trade-manager-actions">
-            <button id="tmBreakevenBtn" class="btn xs">Move SL to Breakeven</button>
-            <button id="tmMoveSlBtn" class="btn xs">Apply New SL</button>
-            <button id="tmPartialBtn" class="btn xs">Partial Close</button>
-            <button id="tmForceCloseBtn" class="btn xs warn">Force Close</button>
-            <span id="tmStatus" class="small">Trade manager ready.</span>
-          </div>
-        </div>
-        <div id="openVisuals" class="open-visual-grid"></div>
       </article>
-      <article class="card glass">
-        <h3>Signals</h3>
+
+      <article class="card glass animate-in">
+        <h3>Latest Signals</h3>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Session</th><th>Symbol</th><th>Action</th><th>Conf</th><th>Edge</th><th>Model</th><th>Engine</th></tr></thead>
+            <thead>
+              <tr><th>ID</th><th>Session</th><th>Symbol</th><th>Action</th><th>Conf</th><th>Edge</th><th>Model</th></tr>
+            </thead>
             <tbody id="signalBody"></tbody>
           </table>
         </div>
       </article>
     </section>
 
-    <section class="grid-2">
-      <article class="card glass">
-        <h3>Trade History + Fees</h3>
+    <section class="table-grid compact">
+      <article class="card glass animate-in">
+        <h3>Recent Trades</h3>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Session</th><th>Symbol</th><th>Side</th><th>Status</th><th>Lev</th><th>Gross R</th><th>Fee R</th><th>Net R</th><th>Net USD</th><th>Exit</th></tr></thead>
+            <thead>
+              <tr><th>ID</th><th>Session</th><th>Symbol</th><th>Side</th><th>Status</th><th>Lev</th><th>Net R</th><th>Net USD</th><th>Exit</th></tr>
+            </thead>
             <tbody id="tradeBody"></tbody>
           </table>
         </div>
       </article>
-      <article class="card glass">
-        <h3>Cycle Decisions</h3>
+
+      <article class="card glass animate-in">
+        <h3>Decision Feed</h3>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Session</th><th>Symbol</th><th>Decision</th><th>Stage</th><th>Direction</th><th>P Enter</th><th>Price</th><th>Reason</th></tr></thead>
+            <thead>
+              <tr><th>ID</th><th>Session</th><th>Symbol</th><th>Decision</th><th>Direction</th><th>P Enter</th><th>Price</th><th>Reason</th></tr>
+            </thead>
             <tbody id="cycleBody"></tbody>
           </table>
         </div>
@@ -701,1910 +592,737 @@
       : routePath.endsWith("/dashboard/mythos")
       ? "mythos"
       : "all";
-
     const state = {
       sessionId: "__all__",
       sessions: [],
       data: null,
       auto: true,
       timer: null,
-      openSparkSeries: {},
-      marketSymbol: "BTCUSDT",
-      livePrices: {},
-      livePriceTs: 0,
-      liveTimer: null,
-      marketInterval: "1m",
-      marketDepth: 240,
-      marketCandlesByKey: {},
-      marketCandleFetchTs: {},
-      marketCandleSourceByKey: {},
-      marketPrevCloseBySymbol: {},
-      openTradeSymbol: "BTCUSDT",
-      openTradeDepth: 180,
+      marketPrices: {},
+      previousPrices: {},
+      prevMetricValues: {},
     };
+
     const $ = (id) => document.getElementById(id);
     const fmt = {
       n: (x, d = 2) => Number.isFinite(+x) ? (+x).toFixed(d) : "0.00",
-      pct: (x, d = 1) => Number.isFinite(+x) ? `${(+x * 100).toFixed(d)}%` : "0.0%",
       r: (x, d = 3) => Number.isFinite(+x) ? `${(+x).toFixed(d)}R` : "0.000R",
       usd: (x) => Number.isFinite(+x) ? `$${(+x).toFixed(2)}` : "$0.00",
+      pct: (x, d = 1) => Number.isFinite(+x) ? `${(+x * 100).toFixed(d)}%` : "0.0%",
+      ts: (x) => {
+        if (x == null || x === "") return "-";
+        const n = Number(x);
+        if (Number.isFinite(n) && n > 0) return new Date(n).toLocaleTimeString();
+        const t = Date.parse(String(x));
+        return Number.isFinite(t) ? new Date(t).toLocaleTimeString() : "-";
+      },
     };
-    const klass = (v) => Number(v || 0) > 0 ? "pos" : Number(v || 0) < 0 ? "neg" : "";
-    const DEPTH_STEPS = [120, 180, 240, 360, 480, 720];
+
+    function toNum(v, fallback = 0) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : fallback;
+    }
+    function klass(v) {
+      const n = toNum(v, 0);
+      return n > 0 ? "pos" : n < 0 ? "neg" : "";
+    }
+    function tsMs(v) {
+      if (v == null) return 0;
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0) return n;
+      const p = Date.parse(String(v));
+      return Number.isFinite(p) ? p : 0;
+    }
+    function sideOf(v) {
+      return String(v || "").toUpperCase();
+    }
+    function statusOf(v) {
+      return String(v || "").toLowerCase();
+    }
+    function qEngine() {
+      return ENGINE_FILTER === "all" ? "" : `&engine=${encodeURIComponent(ENGINE_FILTER)}`;
+    }
+
+    async function fetchJson(url, opts = undefined) {
+      const res = await fetch(url, opts);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return await res.json();
+    }
 
     function setupRouteUI() {
       $("tabAll").classList.toggle("active", ENGINE_FILTER === "all");
       $("tabV5").classList.toggle("active", ENGINE_FILTER === "v5");
       $("tabMythos").classList.toggle("active", ENGINE_FILTER === "mythos");
       const titleMap = {
-        all: "Dual Engine Paper Trading Dashboard",
-        v5: "V5 Forecaster Paper Trading Dashboard",
-        mythos: "Mythos Paper Trading Dashboard",
+        all: "Dual Engine Professional Dashboard",
+        v5: "V5 Professional Dashboard",
+        mythos: "Mythos Professional Dashboard",
       };
       $("mainTitle").textContent = titleMap[ENGINE_FILTER] || titleMap.all;
     }
 
-    function emptyDashboardPayload() {
+    function emptyPayload() {
       return {
         summary: {
           session_id: state.sessionId,
           engine: ENGINE_FILTER === "all" ? "multi" : ENGINE_FILTER,
-          models: [],
-          symbols: [],
-          asset_count: 0,
           open_positions: 0,
           closed_trades: 0,
-          wins: 0,
-          losses: 0,
           win_rate: 0,
           expectancy_r: 0,
           profit_factor: 0,
-          gross_realized_r: 0,
-          fees_r: 0,
-          fees_usd: 0,
           realized_net_r: 0,
           unrealized_r: 0,
-          paper_equity_usd: 10000,
-          equity_live_usd: 10000,
-          realized_net_usd: 0,
-          unrealized_usd: 0,
-          avg_leverage: 1.0,
-          max_leverage_used: 1.0,
-          long_taken: 0,
-          short_taken: 0,
-          long_success: 0,
-          short_success: 0,
-          long_success_rate: 0,
-          short_success_rate: 0,
-          manual_closes: 0,
+          equity_live_usd: 0,
+          paper_equity_usd: 0,
           max_drawdown_r: 0,
-          session_count: 0,
-          paper_settings: {
-            account_equity_usd: 10000,
-            risk_per_trade_pct: 1.0,
-            base_leverage: 1.0,
-            max_leverage: 200.0,
-            auto_leverage: true,
-          },
+          avg_leverage: 1,
+          models: [],
         },
+        trades: [],
         predictions: [],
         cycle_logs: [],
-        trades: [],
         equity_curve: [],
         assets: [],
         models: [],
       };
     }
 
-    async function fetchJson(url, options) {
-      const res = await fetch(url, options || { cache: "no-store" });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      return await res.json();
-    }
-
     async function loadSessions() {
-      const q = ENGINE_FILTER === "all" ? "" : `?engine=${encodeURIComponent(ENGINE_FILTER)}`;
-      const payload = await fetchJson(`/api/dashboard/sessions${q}`);
-      state.sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
-      if (state.sessionId !== "__all__" && !state.sessions.find(s => s.session_id === state.sessionId)) {
-        state.sessionId = "__all__";
+      let list = [];
+      try {
+        const payload = await fetchJson(`/api/dashboard/sessions?engine=${encodeURIComponent(ENGINE_FILTER)}`);
+        list = Array.isArray(payload.sessions) ? payload.sessions : [];
+      } catch {
+        list = [];
       }
+      state.sessions = list;
+      const hasCurrent = state.sessionId === "__all__" || list.some((s) => s.session_id === state.sessionId);
+      if (!hasCurrent) state.sessionId = list[0]?.session_id || "__all__";
       renderSessionSelect();
     }
 
     function renderSessionSelect() {
       const sel = $("sessionSelect");
-      const rows = state.sessions.length ? state.sessions : [];
-      const opts = [
-        `<option value="__all__">ALL SESSIONS (${rows.length})</option>`,
-        ...rows.map(r => {
-          const sid = r.session_id || "unknown";
-          const eng = String(r.engine || "unknown").toUpperCase();
-          const assets = Number(r.asset_count || 0);
-          return `<option value="${sid}">${sid} • ${eng} • ${assets} assets</option>`;
-        }),
-      ];
+      const opts = ['<option value="__all__">All Sessions</option>'];
+      state.sessions.forEach((s) => {
+        const sid = String(s.session_id || "");
+        if (!sid) return;
+        opts.push(`<option value="${sid}">${sid}</option>`);
+      });
       sel.innerHTML = opts.join("");
+      if (![...sel.options].some((o) => o.value === state.sessionId)) state.sessionId = "__all__";
       sel.value = state.sessionId;
     }
 
-    async function loadState() {
-      const qEngine = ENGINE_FILTER === "all" ? "" : `&engine=${encodeURIComponent(ENGINE_FILTER)}`;
-      if (state.sessionId === "__all__") {
-        const sessionIds = state.sessions.map(s => s.session_id).filter(Boolean);
-        if (!sessionIds.length) {
-          state.data = emptyDashboardPayload();
-          return;
-        }
-        const requests = sessionIds.map((sid) => {
-          const url = `/api/dashboard/state?session_id=${encodeURIComponent(sid)}${qEngine}&predictions_limit=350&cycles_limit=1200&trades_limit=3000`;
-          return fetchJson(url).catch(() => null);
-        });
-        const payloads = (await Promise.all(requests)).filter(Boolean);
-        state.data = mergeDashboardPayloads(payloads);
-        return;
-      }
-      const url = `/api/dashboard/state?session_id=${encodeURIComponent(state.sessionId)}${qEngine}&predictions_limit=350&cycles_limit=1200&trades_limit=3000`;
-      state.data = await fetchJson(url);
-    }
-
-    function drawSeries(canvasId, emptyId, series, opt = {}) {
-      const canvas = $(canvasId);
-      const empty = $(emptyId);
-      const parent = canvas.parentElement;
-      const w = parent.clientWidth;
-      const h = parent.clientHeight;
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.max(1, Math.floor(w * dpr));
-      canvas.height = Math.max(1, Math.floor(h * dpr));
-      const ctx = canvas.getContext("2d");
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-      const values = (series || []).map(Number).filter(v => Number.isFinite(v));
-      if (!values.length) {
-        empty.hidden = false;
-        return;
-      }
-      empty.hidden = true;
-      const pad = 22;
-      const min = Math.min(...values, 0);
-      const max = Math.max(...values, 0);
-      const span = Math.max(max - min, 1e-6);
-      const zeroY = pad + ((max - 0) / span) * (h - pad * 2);
-      const xSpan = Math.max(values.length - 1, 1);
-
-      ctx.strokeStyle = "rgba(130,170,235,.22)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(pad, zeroY);
-      ctx.lineTo(w - pad, zeroY);
-      ctx.stroke();
-
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = opt.color || "rgba(94,163,255,.95)";
-      ctx.beginPath();
-      values.forEach((v, i) => {
-        const x = pad + (i / xSpan) * (w - pad * 2);
-        const y = pad + ((max - v) / span) * (h - pad * 2);
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      });
-      ctx.stroke();
-      if (opt.fill) {
-        ctx.lineTo(w - pad, h - pad);
-        ctx.lineTo(pad, h - pad);
-        ctx.closePath();
-        const g = ctx.createLinearGradient(0, pad, 0, h - pad);
-        g.addColorStop(0, opt.fillTop || "rgba(95,156,255,.27)");
-        g.addColorStop(1, opt.fillBottom || "rgba(10,22,42,.02)");
-        ctx.fillStyle = g;
-        ctx.fill();
-      }
-    }
-
-    function tsMs(v) {
-      const n = Number(v || 0);
-      if (!Number.isFinite(n) || n <= 0) return 0;
-      if (n > 1e12) return n;
-      if (n > 1e10) return n;
-      if (n > 1e9) return n * 1000;
-      return n;
-    }
-
-    function clamp(v, lo, hi) {
-      return Math.max(lo, Math.min(hi, v));
-    }
-
-    function intervalToMs(interval) {
-      const map = {
-        "1m": 60 * 1000,
-        "3m": 3 * 60 * 1000,
-        "5m": 5 * 60 * 1000,
-        "15m": 15 * 60 * 1000,
-        "30m": 30 * 60 * 1000,
-        "1h": 60 * 60 * 1000,
-      };
-      return map[String(interval || "1m").toLowerCase()] || 60 * 1000;
-    }
-
-    function bucketStart(ts, bucketMs) {
-      const t = Number(ts || 0);
-      if (!Number.isFinite(t) || t <= 0) return 0;
-      return Math.floor(t / bucketMs) * bucketMs;
-    }
-
-    function normalizeCandles(rows) {
-      return (rows || []).map((r) => ({
-        ts: tsMs(r.ts || r.open_time || r.openTime || r.timestamp || 0),
-        open: Number(r.open || 0),
-        high: Number(r.high || 0),
-        low: Number(r.low || 0),
-        close: Number(r.close || 0),
-        volume: Number(r.volume || 0),
-      })).filter((r) => (
-        r.ts > 0
-        && Number.isFinite(r.open) && r.open > 0
-        && Number.isFinite(r.high) && r.high > 0
-        && Number.isFinite(r.low) && r.low > 0
-        && Number.isFinite(r.close) && r.close > 0
-      )).sort((a, b) => a.ts - b.ts);
-    }
-
-    function buildSyntheticCandlesFromPoints(points, bucketMs) {
-      const map = new Map();
-      for (const p of (points || [])) {
-        const ts = tsMs(p.ts || 0);
-        const px = Number(p.price || 0);
-        if (!ts || !Number.isFinite(px) || px <= 0) continue;
-        const b = bucketStart(ts, bucketMs);
-        const row = map.get(b);
-        if (!row) {
-          map.set(b, { ts: b, open: px, high: px, low: px, close: px, volume: 0 });
-        } else {
-          row.high = Math.max(row.high, px);
-          row.low = Math.min(row.low, px);
-          row.close = px;
-          row.volume += 0;
-        }
-      }
-      return Array.from(map.values()).sort((a, b) => a.ts - b.ts);
-    }
-
-    function buildSymbolTickPoints(symbol, cycles) {
-      const sym = String(symbol || "").toUpperCase();
-      const rows = (cycles || [])
-        .filter((c) => String(c.symbol || "").toUpperCase() === sym)
-        .map((c) => ({
-          ts: tsMs(c.server_ts || c.ts || c.timestamp || c.time || 0),
-          price: Number(c.price || 0),
-        }))
-        .filter((r) => r.ts > 0 && Number.isFinite(r.price) && r.price > 0)
-        .sort((a, b) => a.ts - b.ts);
-      const out = [];
-      let lastTs = 0;
-      for (const row of rows) {
-        if (row.ts === lastTs) continue;
-        out.push(row);
-        lastTs = row.ts;
-      }
-      const livePx = Number(state.livePrices?.[sym]);
-      if (Number.isFinite(livePx) && livePx > 0) {
-        out.push({ ts: Number(state.livePriceTs || Date.now()), price: livePx });
-      }
-      return out.slice(-2500);
-    }
-
-    function trackedMarketSymbols(summary, cycles, trades) {
-      const set = new Set();
-      (summary?.symbols || []).forEach((s) => {
-        const sym = String(s || "").toUpperCase();
-        if (sym) set.add(sym);
-      });
-      (cycles || []).forEach((c) => {
-        const sym = String(c.symbol || "").toUpperCase();
-        if (sym) set.add(sym);
-      });
-      (trades || []).forEach((t) => {
-        const sym = String(t.symbol || "").toUpperCase();
-        if (sym) set.add(sym);
-      });
-      if (!set.size) {
-        set.add("BTCUSDT");
-        set.add("ETHUSDT");
-      }
-      return Array.from(set).slice(0, 20);
-    }
-
-    async function refreshMarketCandles(summary, cycles, trades) {
-      const symbols = trackedMarketSymbols(summary, cycles, trades);
-      if (!symbols.length) return;
-      if (!symbols.includes(state.marketSymbol)) {
-        state.marketSymbol = symbols.includes("BTCUSDT") ? "BTCUSDT" : symbols[0];
-      }
-      const tf = String(state.marketInterval || "1m");
-      const depth = Number(state.marketDepth || 240);
-      const key = `${state.marketSymbol}|${tf}|${depth}`;
-      const now = Date.now();
-      const minGapMs = 1200;
-      if ((now - Number(state.marketCandleFetchTs[key] || 0)) < minGapMs) {
-        return;
-      }
-      state.marketCandleFetchTs[key] = now;
-      try {
-        const url = `/api/market/candles?symbol=${encodeURIComponent(state.marketSymbol)}&interval=${encodeURIComponent(tf)}&limit=${encodeURIComponent(depth)}`;
-        const payload = await fetchJson(url);
-        const candles = normalizeCandles(payload?.candles || []);
-        if (candles.length) {
-          state.marketCandlesByKey[key] = candles;
-          state.marketCandleSourceByKey[key] = String(payload?.source || "unknown");
-        }
-      } catch (_) {
-        // fallback handled in drawMarketChart using synthetic candles
-      }
-    }
-
-    function nearestDepthStep(v) {
-      const val = Number(v || DEPTH_STEPS[0]);
-      let best = DEPTH_STEPS[0];
-      let bestD = Math.abs(best - val);
-      for (const d of DEPTH_STEPS) {
-        const dd = Math.abs(d - val);
-        if (dd < bestD) {
-          best = d;
-          bestD = dd;
-        }
-      }
-      return best;
-    }
-
-    function stepDepth(current, direction) {
-      const cur = nearestDepthStep(current);
-      const idx = DEPTH_STEPS.indexOf(cur);
-      if (direction < 0) return DEPTH_STEPS[Math.max(idx - 1, 0)];
-      return DEPTH_STEPS[Math.min(idx + 1, DEPTH_STEPS.length - 1)];
-    }
-
-    function getBestCachedCandles(symbol, interval) {
-      const prefix = `${String(symbol || "").toUpperCase()}|${String(interval || "1m").toLowerCase()}|`;
-      let best = [];
-      let bestSource = "synthetic";
-      for (const [key, rows] of Object.entries(state.marketCandlesByKey || {})) {
-        if (!key.startsWith(prefix)) continue;
-        const norm = normalizeCandles(rows || []);
-        if (norm.length > best.length) {
-          best = norm;
-          bestSource = String(state.marketCandleSourceByKey?.[key] || "cache");
-        }
-      }
-      return { candles: best, source: bestSource };
-    }
-
-    async function refreshOpenTradeCandles(summary, cycles, trades) {
-      const open = (trades || []).filter((t) => String(t.status || "").toLowerCase() === "open");
-      const openSymbols = Array.from(new Set(open.map((t) => String(t.symbol || "").toUpperCase()).filter(Boolean)));
-      if (!openSymbols.length) return;
-      if (!openSymbols.includes(state.openTradeSymbol)) {
-        state.openTradeSymbol = openSymbols[0];
-      }
-      const symbol = state.openTradeSymbol;
-      const tf = String(state.marketInterval || "1m");
-      const depth = Math.max(Number(state.marketDepth || 240), Number(state.openTradeDepth || 180));
-      const key = `${symbol}|${tf}|${depth}`;
-      const now = Date.now();
-      const minGapMs = 1200;
-      if ((now - Number(state.marketCandleFetchTs[key] || 0)) < minGapMs) return;
-      state.marketCandleFetchTs[key] = now;
-      try {
-        const url = `/api/market/candles?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(tf)}&limit=${encodeURIComponent(depth)}`;
-        const payload = await fetchJson(url);
-        const candles = normalizeCandles(payload?.candles || []);
-        if (candles.length) {
-          state.marketCandlesByKey[key] = candles;
-          state.marketCandleSourceByKey[key] = String(payload?.source || "unknown");
-        }
-      } catch (_) {
-        // open panel can render synthetic candles while endpoint is unavailable
-      }
-    }
-
-    function buildCyclePriceSeries(cycles) {
-      const out = new Map();
-      (cycles || []).forEach(c => {
-        const sym = String(c.symbol || "").toUpperCase();
-        const px = Number(c.price || 0);
-        if (!sym || !Number.isFinite(px) || px <= 0) return;
-        const ts = tsMs(c.server_ts || c.ts || c.timestamp || c.time || Date.now());
-        if (!out.has(sym)) out.set(sym, []);
-        out.get(sym).push({ ts, price: px });
-      });
-      for (const [sym, rows] of out.entries()) {
-        rows.sort((a, b) => a.ts - b.ts);
-        if (rows.length > 1800) out.set(sym, rows.slice(-1800));
-      }
-      return out;
-    }
-
-    function rrAtPrice(trade, px) {
-      const entry = Number(trade.entry_price || trade.entryPrice || 0);
-      const sl = Number(trade.stop_loss || trade.stopLoss || trade.initial_sl || entry);
-      const side = String(trade.side || "LONG").toUpperCase();
-      const risk = Math.abs(entry - sl);
-      if (!Number.isFinite(px) || !Number.isFinite(entry) || risk <= 1e-9) return 0;
-      return side === "LONG" ? (px - entry) / risk : (entry - px) / risk;
-    }
-
-    function buildOpenTradeTrack(trade, latestPriceMap, cycleSeriesMap) {
-      const symbol = String(trade.symbol || "").toUpperCase();
-      const entryTs = tsMs(trade.entry_time || trade.entryTs || trade.entry_ts || 0);
-      const entry = Number(trade.entry_price || trade.entryPrice || 0);
-      const sl = Number(trade.stop_loss || trade.stopLoss || trade.initial_sl || entry);
-      const tp = Number(trade.take_profit || trade.tp2 || trade.take_profit_price || entry);
-      const side = String(trade.side || "LONG").toUpperCase();
-      const risk = Math.abs(entry - sl);
-      const rawSeries = cycleSeriesMap.get(symbol) || [];
-      const rrSeries = [];
-      for (const pt of rawSeries) {
-        if (entryTs > 0 && pt.ts < entryTs) continue;
-        rrSeries.push(rrAtPrice(trade, pt.price));
-      }
-      const latestPx = Number(latestPriceMap.get(symbol) || rawSeries[rawSeries.length - 1]?.price || entry);
-      const liveR = rrAtPrice(trade, latestPx);
-      if (!rrSeries.length || Math.abs(rrSeries[rrSeries.length - 1] - liveR) > 1e-9) {
-        rrSeries.push(liveR);
-      }
-      const tpR = risk > 1e-9 ? (side === "LONG" ? (tp - entry) / risk : (entry - tp) / risk) : 0;
-      const lo = Math.min(-1, tpR, liveR, -2);
-      const hi = Math.max(1, tpR, liveR, 2);
-      const toPct = (r) => clamp(((r - lo) / Math.max(hi - lo, 1e-9)) * 100, 0, 100);
-      const nowMs = Date.now();
-      const ageMins = entryTs > 0 ? Math.max(0, (nowMs - entryTs) / 60000) : 0;
-      const leverage = Number(trade.leverage || trade.lane_size_mult || 1);
-      const riskUsd = Number(trade.risk_usd_used || 0);
-      const liveUsd = Number.isFinite(riskUsd) && riskUsd > 0 ? liveR * riskUsd : 0;
+    function withSessionRows(payload, sid) {
+      const stamp = (arr) => (Array.isArray(arr) ? arr.map((row) => ({ ...row, session_id: row.session_id || sid })) : []);
       return {
-        symbol,
-        side,
-        entry,
-        sl,
-        tp,
-        liveR,
-        latestPx,
-        rrSeries: rrSeries.slice(-220),
-        slPct: toPct(-1),
-        entryPct: toPct(0),
-        tpPct: toPct(tpR),
-        livePct: toPct(liveR),
-        ageMins,
-        leverage,
-        riskUsd,
-        liveUsd,
+        ...payload,
+        summary: { ...(payload.summary || {}), session_id: sid },
+        trades: stamp(payload.trades),
+        predictions: stamp(payload.predictions),
+        cycle_logs: stamp(payload.cycle_logs),
       };
     }
 
-    function drawSparkline(canvasId, series, colorHint) {
-      const canvas = $(canvasId);
-      if (!canvas) return;
-      const parent = canvas.parentElement;
-      const w = parent.clientWidth;
-      const h = parent.clientHeight;
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.max(1, Math.floor(w * dpr));
-      canvas.height = Math.max(1, Math.floor(h * dpr));
-      const ctx = canvas.getContext("2d");
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-      const values = (series || []).map(Number).filter(v => Number.isFinite(v));
-      if (!values.length) return;
-      const pad = 6;
-      const min = Math.min(...values, 0);
-      const max = Math.max(...values, 0);
-      const span = Math.max(max - min, 1e-9);
-      const zeroY = pad + ((max - 0) / span) * (h - pad * 2);
-      const xSpan = Math.max(values.length - 1, 1);
-
-      ctx.strokeStyle = "rgba(121, 165, 242, .25)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(pad, zeroY);
-      ctx.lineTo(w - pad, zeroY);
-      ctx.stroke();
-
-      ctx.lineWidth = 1.8;
-      ctx.strokeStyle = colorHint || "rgba(98, 229, 255, .95)";
-      ctx.beginPath();
-      values.forEach((v, i) => {
-        const x = pad + (i / xSpan) * (w - pad * 2);
-        const y = pad + ((max - v) / span) * (h - pad * 2);
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      });
-      ctx.stroke();
+    async function fetchStateForSession(sessionId) {
+      const url = `/api/dashboard/state?session_id=${encodeURIComponent(sessionId)}${qEngine()}&predictions_limit=350&cycles_limit=1400&trades_limit=3000`;
+      const payload = await fetchJson(url);
+      return withSessionRows(payload, sessionId);
     }
 
-    function buildPriceMap(cycles) {
-      const out = new Map();
-      (cycles || []).forEach(c => {
+    function buildCyclePriceMap(cycles) {
+      const map = {};
+      (cycles || []).forEach((c) => {
         const sym = String(c.symbol || "").toUpperCase();
-        if (!sym) return;
-        const p = Number(c.price || 0);
-        if (!Number.isFinite(p) || p <= 0) return;
-        out.set(sym, p);
+        const px = toNum(c.price, NaN);
+        if (!sym || !Number.isFinite(px)) return;
+        const t = tsMs(c.server_ts || c.ts || 0);
+        const prev = map[sym];
+        if (!prev || t >= prev.ts) map[sym] = { price: px, ts: t };
       });
+      Object.entries(state.marketPrices).forEach(([sym, px]) => {
+        if (Number.isFinite(px)) map[sym] = { price: px, ts: Date.now() };
+      });
+      const out = {};
+      Object.entries(map).forEach(([sym, row]) => { out[sym] = row.price; });
       return out;
     }
 
-    function trackedSymbols(summary, cycles, trades) {
-      const set = new Set();
-      (summary?.symbols || []).forEach((s) => {
-        const sym = String(s || "").toUpperCase();
-        if (sym) set.add(sym);
+    function tradeNetR(tr) {
+      const net = Number(tr.net_r);
+      if (Number.isFinite(net)) return net;
+      const gross = toNum(tr.gross_r, 0);
+      const cost = toNum(tr.cost_r, 0);
+      return gross - cost;
+    }
+
+    function buildEquityCurveFromTrades(trades) {
+      const closed = (trades || [])
+        .filter((t) => statusOf(t.status) === "closed")
+        .slice()
+        .sort((a, b) => tsMs(a.close_ts || a.exit_ts || a.updated_at || a.id) - tsMs(b.close_ts || b.exit_ts || b.updated_at || b.id));
+      let running = 0;
+      let peak = 0;
+      const curve = [];
+      closed.forEach((t, i) => {
+        running += tradeNetR(t);
+        peak = Math.max(peak, running);
+        curve.push({
+          i,
+          ts: tsMs(t.close_ts || t.exit_ts || t.updated_at || Date.now()),
+          equity_r: running,
+          drawdown_r: running - peak,
+        });
       });
-      (cycles || []).forEach((c) => {
-        const sym = String(c.symbol || "").toUpperCase();
-        if (sym) set.add(sym);
-      });
-      (trades || []).forEach((t) => {
+      return curve;
+    }
+
+    function computeSummary(trades, cycles, payloads) {
+      const open = (trades || []).filter((t) => statusOf(t.status) === "open");
+      const closed = (trades || []).filter((t) => statusOf(t.status) === "closed");
+      const wins = closed.filter((t) => tradeNetR(t) > 0).length;
+      const losses = Math.max(closed.length - wins, 0);
+      const grossPos = closed.reduce((a, t) => a + Math.max(tradeNetR(t), 0), 0);
+      const grossNeg = closed.reduce((a, t) => a + Math.max(-tradeNetR(t), 0), 0);
+      const realizedNetR = closed.reduce((a, t) => a + tradeNetR(t), 0);
+      const expectancy = closed.length ? realizedNetR / closed.length : 0;
+      const winRate = closed.length ? wins / closed.length : 0;
+      const prices = buildCyclePriceMap(cycles);
+      let unrealizedR = 0;
+      let unrealizedUsd = 0;
+      open.forEach((t) => {
         const sym = String(t.symbol || "").toUpperCase();
-        if (sym) set.add(sym);
+        const px = toNum(prices[sym], NaN);
+        const entry = toNum(t.entry_price ?? t.entryPrice, NaN);
+        const sl = toNum(t.stop_loss ?? t.stopLoss ?? t.initial_sl, NaN);
+        const risk = Math.abs(entry - sl);
+        if (!Number.isFinite(px) || !Number.isFinite(entry) || !Number.isFinite(sl) || risk <= 1e-9) return;
+        const side = sideOf(t.side);
+        const rr = side === "SHORT" ? (entry - px) / risk : (px - entry) / risk;
+        unrealizedR += rr;
+        const riskUsd = toNum(t.risk_usd_used, NaN);
+        if (Number.isFinite(riskUsd) && riskUsd > 0) unrealizedUsd += rr * riskUsd;
       });
-      if (!set.size) {
-        set.add("BTCUSDT");
-        set.add("ETHUSDT");
-      }
-      return Array.from(set).slice(0, 20);
+
+      const curve = buildEquityCurveFromTrades(trades);
+      const maxDd = curve.length ? Math.min(...curve.map((p) => toNum(p.drawdown_r, 0))) : 0;
+      const longClosed = closed.filter((t) => sideOf(t.side) === "LONG");
+      const shortClosed = closed.filter((t) => sideOf(t.side) === "SHORT");
+      const longWins = longClosed.filter((t) => tradeNetR(t) > 0).length;
+      const shortWins = shortClosed.filter((t) => tradeNetR(t) > 0).length;
+      const summarySeeds = (payloads || []).map((p) => p.summary || {});
+      const avgEqSeed = summarySeeds.length
+        ? summarySeeds.reduce((a, s) => a + toNum(s.paper_equity_usd, 0), 0) / summarySeeds.length
+        : 0;
+      const equityLive = avgEqSeed + (closed.reduce((a, t) => a + toNum(t.pnl_usd, tradeNetR(t) * toNum(t.risk_usd_used, 0)), 0)) + unrealizedUsd;
+      const models = new Set();
+      (payloads || []).forEach((p) => (p.models || []).forEach((m) => models.add(String(m))));
+      const symbols = new Set((trades || []).map((t) => String(t.symbol || "").toUpperCase()).filter(Boolean));
+
+      return {
+        session_id: state.sessionId,
+        engine: ENGINE_FILTER === "all" ? "multi" : ENGINE_FILTER,
+        open_positions: open.length,
+        closed_trades: closed.length,
+        wins,
+        losses,
+        win_rate: winRate,
+        expectancy_r: expectancy,
+        profit_factor: grossNeg > 1e-9 ? grossPos / grossNeg : (grossPos > 0 ? 999 : 0),
+        realized_net_r: realizedNetR,
+        unrealized_r: unrealizedR,
+        paper_equity_usd: avgEqSeed,
+        equity_live_usd: equityLive,
+        max_drawdown_r: maxDd,
+        long_taken: longClosed.length,
+        short_taken: shortClosed.length,
+        long_success_rate: longClosed.length ? longWins / longClosed.length : 0,
+        short_success_rate: shortClosed.length ? shortWins / shortClosed.length : 0,
+        avg_leverage: closed.length ? closed.reduce((a, t) => a + toNum(t.leverage, 1), 0) / closed.length : 1,
+        asset_count: symbols.size,
+        models: [...models],
+      };
     }
 
-    async function refreshLiveTicks(summary, cycles, trades) {
-      const syms = trackedSymbols(summary, cycles, trades);
-      if (!syms.length) return;
-      const q = encodeURIComponent(syms.join(","));
-      try {
-        const payload = await fetchJson(`/api/market/ticks?symbols=${q}`);
-        const prices = payload?.prices || {};
-        const ts = Number(payload?.server_ts || Date.now());
-        for (const [sym, px] of Object.entries(prices)) {
-          const v = Number(px);
-          if (Number.isFinite(v) && v > 0) {
-            state.livePrices[String(sym).toUpperCase()] = v;
-          }
-        }
-        state.livePriceTs = ts;
-      } catch (_) {
-        // keep previous prices if live tick fetch fails
-      }
-    }
-
-    function priceMapWithLive(cycles) {
-      const map = buildPriceMap(cycles);
-      for (const [sym, px] of Object.entries(state.livePrices || {})) {
-        const v = Number(px);
-        if (Number.isFinite(v) && v > 0) {
-          map.set(String(sym).toUpperCase(), v);
-        }
-      }
-      return map;
-    }
-
-    function trackedSymbols(summary, cycles, trades) {
-      const set = new Set();
-      (summary?.symbols || []).forEach((s) => {
-        const sym = String(s || "").toUpperCase();
-        if (sym) set.add(sym);
+    function mergeAssets(payloads) {
+      const bySym = {};
+      (payloads || []).forEach((p) => {
+        (p.assets || []).forEach((row) => {
+          const sym = String(row.symbol || row.asset || "").toUpperCase();
+          if (!sym) return;
+          const existing = bySym[sym] || { symbol: sym, open_trades: 0, closed_trades: 0, net_r: 0, wins: 0, losses: 0 };
+          existing.open_trades += toNum(row.open_trades, 0);
+          existing.closed_trades += toNum(row.closed_trades, 0);
+          existing.net_r += toNum(row.net_r, 0);
+          existing.wins += toNum(row.wins, 0);
+          existing.losses += toNum(row.losses, 0);
+          bySym[sym] = existing;
+        });
       });
-      (cycles || []).forEach((c) => {
-        const sym = String(c.symbol || "").toUpperCase();
-        if (sym) set.add(sym);
-      });
-      (trades || []).forEach((t) => {
-        const sym = String(t.symbol || "").toUpperCase();
-        if (sym) set.add(sym);
-      });
-      if (!set.size) {
-        set.add("BTCUSDT");
-        set.add("ETHUSDT");
-      }
-      return Array.from(set).slice(0, 20);
+      return Object.values(bySym).sort((a, b) => b.closed_trades - a.closed_trades);
     }
 
-    async function refreshLiveTicks(summary, cycles, trades) {
-      const syms = trackedSymbols(summary, cycles, trades);
-      if (!syms.length) return;
-      const q = encodeURIComponent(syms.join(","));
-      try {
-        const payload = await fetchJson(`/api/market/ticks?symbols=${q}`);
-        const prices = payload?.prices || {};
-        const ts = Number(payload?.server_ts || Date.now());
-        for (const [sym, px] of Object.entries(prices)) {
-          const v = Number(px);
-          if (Number.isFinite(v) && v > 0) {
-            state.livePrices[String(sym).toUpperCase()] = v;
-          }
-        }
-        state.livePriceTs = ts;
-      } catch (_) {
-        // keep previous prices if tick request fails
-      }
-    }
-
-    function priceMapWithLive(cycles) {
-      const map = buildPriceMap(cycles);
-      for (const [sym, px] of Object.entries(state.livePrices || {})) {
-        const v = Number(px);
-        if (Number.isFinite(v) && v > 0) map.set(String(sym).toUpperCase(), v);
-      }
-      return map;
-    }
-
-    function summaryWithLiveMarkToMarket(summary, trades, cycles) {
-      const s = { ...(summary || {}) };
-      const rows = Array.isArray(trades) ? trades : [];
-      const latest = priceMapWithLive(cycles);
-      const openTrades = rows.filter((t) => String(t.status || "").toLowerCase() === "open");
-      const closedTrades = rows.filter((t) => String(t.status || "").toLowerCase() === "closed");
-      let unrealR = 0;
-      let unrealUsd = 0;
-      const leverageValues = [];
-      for (const tr of closedTrades) {
-        const lev = Number(tr.leverage || 0);
-        if (Number.isFinite(lev) && lev > 0) leverageValues.push(lev);
-      }
-      for (const tr of openTrades) {
-        const sym = String(tr.symbol || "").toUpperCase();
-        const px = Number(latest.get(sym));
-        if (!Number.isFinite(px) || px <= 0) continue;
-        const rr = rrAtPrice(tr, px);
-        unrealR += rr;
-        const riskUsd = Number(tr.risk_usd_used || 0);
-        if (Number.isFinite(riskUsd) && riskUsd > 0) {
-          unrealUsd += rr * riskUsd;
-        }
-        const lev = Number(tr.leverage || 0);
-        if (Number.isFinite(lev) && lev > 0) leverageValues.push(lev);
-      }
-      const paperEq = Number(s.paper_equity_usd || 0);
-      const realizedUsd = Number(s.realized_net_usd || 0);
-      s.unrealized_r = Number(unrealR.toFixed(6));
-      s.unrealized_usd = Number(unrealUsd.toFixed(2));
-      s.equity_live_usd = Number((paperEq + realizedUsd + unrealUsd).toFixed(2));
-      if (leverageValues.length) {
-        const avgLev = leverageValues.reduce((a, b) => a + b, 0) / leverageValues.length;
-        s.avg_leverage = Number(avgLev.toFixed(4));
-        s.max_leverage_used = Number(Math.max(...leverageValues).toFixed(4));
-      }
-      return s;
-    }
-
-    function mergeDashboardPayloads(payloads) {
-      const items = (payloads || []).filter(Boolean);
-      if (!items.length) return emptyDashboardPayload();
-
+    function mergePayloads(payloads) {
+      if (!payloads.length) return emptyPayload();
       const predictions = [];
       const cycleLogs = [];
       const trades = [];
-      const modelsSet = new Set();
-      const sessionsSet = new Set();
-      let updatedAtMs = 0;
-
-      items.forEach((p) => {
-        const summary = p.summary || {};
-        const sid = String(summary.session_id || "unknown");
-        sessionsSet.add(sid);
-        updatedAtMs = Math.max(updatedAtMs, Number(summary.updated_at_ms || 0));
-        (p.models || summary.models || []).forEach((m) => {
-          const name = String(m || "").trim();
-          if (name) modelsSet.add(name);
-        });
-        (p.predictions || []).forEach((row) => predictions.push({ ...row, session_id: row.session_id || sid }));
-        (p.cycle_logs || []).forEach((row) => cycleLogs.push({ ...row, session_id: row.session_id || sid }));
-        (p.trades || []).forEach((row) => trades.push({ ...row, session_id: row.session_id || sid }));
+      const models = new Set();
+      payloads.forEach((p) => {
+        (p.predictions || []).forEach((row) => predictions.push(row));
+        (p.cycle_logs || []).forEach((row) => cycleLogs.push(row));
+        (p.trades || []).forEach((row) => trades.push(row));
+        (p.models || []).forEach((m) => models.add(String(m)));
       });
-
-      predictions.sort((a, b) => tsMs(a.ts || a.server_ts || 0) - tsMs(b.ts || b.server_ts || 0));
-      cycleLogs.sort((a, b) => tsMs(a.server_ts || a.ts || 0) - tsMs(b.server_ts || b.ts || 0));
-      trades.sort((a, b) => tsMs(a.entry_time || a.entryTs || 0) - tsMs(b.entry_time || b.entryTs || 0));
-
-      const latestPrices = buildPriceMap(cycleLogs);
-      const openTrades = trades.filter(t => String(t.status || "").toLowerCase() === "open");
-      const closedTrades = trades.filter(t => String(t.status || "").toLowerCase() === "closed");
-
-      let wins = 0;
-      let losses = 0;
-      let totalNetR = 0;
-      let totalGrossR = 0;
-      let totalFeeR = 0;
-      let totalFeeUsd = 0;
-      let totalNetUsd = 0;
-      let unrealizedUsd = 0;
-      let manualCloses = 0;
-      let longTaken = 0;
-      let shortTaken = 0;
-      let longSuccess = 0;
-      let shortSuccess = 0;
-      const leverageValues = [];
-      const startEquityUsd = items.reduce((s, p) => s + Number(p?.summary?.paper_equity_usd || 0), 0);
-      for (const tr of trades) {
-        const side = String(tr.side || "").toUpperCase();
-        if (side === "LONG") longTaken += 1;
-        if (side === "SHORT") shortTaken += 1;
-      }
-      for (const tr of closedTrades) {
-        const side = String(tr.side || "").toUpperCase();
-        if (tr.manual_close) manualCloses += 1;
-        const grossR = Number(tr.gross_r ?? tr.net_r ?? 0);
-        const costR = Number(tr.cost_r ?? 0);
-        const netR = Number(tr.net_r ?? tr.gross_r ?? 0);
-        const feeUsd = Number(tr.pnl_usd_cost ?? 0);
-        const netUsdRaw = Number(tr.pnl_usd ?? (netR * Number(tr.risk_usd_used || 0)));
-        const lev = Number(tr.leverage || 0);
-        totalGrossR += Number.isFinite(grossR) ? grossR : 0;
-        totalFeeR += Number.isFinite(costR) ? costR : 0;
-        totalFeeUsd += Number.isFinite(feeUsd) ? feeUsd : 0;
-        totalNetUsd += Number.isFinite(netUsdRaw) ? netUsdRaw : 0;
-        totalNetR += Number.isFinite(netR) ? netR : 0;
-        if (Number.isFinite(lev) && lev > 0) leverageValues.push(lev);
-        if (netR > 0) {
-          wins += 1;
-          if (side === "LONG") longSuccess += 1;
-          if (side === "SHORT") shortSuccess += 1;
-        } else if (netR < 0) {
-          losses += 1;
-        }
-      }
-      const closedN = closedTrades.length;
-      const winRate = closedN > 0 ? wins / closedN : 0;
-      const expectancy = closedN > 0 ? totalNetR / closedN : 0;
-      const grossProfit = closedTrades.reduce((s, t) => s + Math.max(Number(t.net_r ?? t.gross_r ?? 0) || 0, 0), 0);
-      const grossLoss = closedTrades.reduce((s, t) => s + Math.max(-(Number(t.net_r ?? t.gross_r ?? 0) || 0), 0), 0);
-      let profitFactor = grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? 9999 : 0);
-      if (!Number.isFinite(profitFactor)) profitFactor = 0;
-
-      let unrealizedR = 0;
-      for (const tr of openTrades) {
-        const sym = String(tr.symbol || "").toUpperCase();
-        const px = Number(latestPrices.get(sym));
-        if (!Number.isFinite(px) || px <= 0) continue;
-        const rr = rrAtPrice(tr, px);
-        unrealizedR += rr;
-        const riskUsd = Number(tr.risk_usd_used || 0);
-        if (Number.isFinite(riskUsd) && riskUsd > 0) {
-          unrealizedUsd += rr * riskUsd;
-        }
-        const lev = Number(tr.leverage || 0);
-        if (Number.isFinite(lev) && lev > 0) leverageValues.push(lev);
-      }
-
-      const closedChrono = closedTrades.slice().sort((a, b) => tsMs(a.exit_time || a.exitTs || 0) - tsMs(b.exit_time || b.exitTs || 0));
-      const equityCurve = [];
-      let eq = 0;
-      let peak = 0;
-      for (let i = 0; i < closedChrono.length; i++) {
-        const tr = closedChrono[i];
-        const netR = Number(tr.net_r ?? tr.gross_r ?? 0) || 0;
-        eq += netR;
-        peak = Math.max(peak, eq);
-        equityCurve.push({
-          seq: i + 1,
-          trade_id: tr.id ?? i + 1,
-          symbol: tr.symbol,
-          session_id: tr.session_id,
-          net_r: Number(netR.toFixed(6)),
-          equity_r: Number(eq.toFixed(6)),
-          drawdown_r: Number((eq - peak).toFixed(6)),
-          exit_time: tr.exit_time,
-        });
-      }
-      const maxDrawdown = equityCurve.reduce((m, pt) => Math.min(m, Number(pt.drawdown_r || 0)), 0);
-
-      const symbolSet = new Set();
-      const bySymbol = new Map();
-      const ensureSym = (sym) => {
-        if (!sym) return null;
-        const key = String(sym).toUpperCase();
-        if (!key) return null;
-        symbolSet.add(key);
-        if (!bySymbol.has(key)) {
-          bySymbol.set(key, {
-            symbol: key,
-            open: 0,
-            closed: 0,
-            wins: 0,
-            losses: 0,
-            long_taken: 0,
-            short_taken: 0,
-            net_r: 0,
-            fees_r: 0,
-            last_price: null,
-          });
-        }
-        return bySymbol.get(key);
-      };
-      for (const tr of trades) {
-        const row = ensureSym(tr.symbol);
-        if (!row) continue;
-        const side = String(tr.side || "").toUpperCase();
-        if (side === "LONG") row.long_taken += 1;
-        if (side === "SHORT") row.short_taken += 1;
-        const status = String(tr.status || "").toLowerCase();
-        if (status === "open") {
-          row.open += 1;
-        } else if (status === "closed") {
-          row.closed += 1;
-          const net = Number(tr.net_r ?? tr.gross_r ?? 0) || 0;
-          const fee = Number(tr.cost_r ?? 0) || 0;
-          row.net_r += net;
-          row.fees_r += fee;
-          if (net > 0) row.wins += 1;
-          if (net < 0) row.losses += 1;
-        }
-      }
-      for (const p of predictions) ensureSym(p.symbol);
-      for (const c of cycleLogs) ensureSym(c.symbol);
-      const assets = Array.from(bySymbol.values()).map((row) => {
-        row.last_price = latestPrices.get(row.symbol) ?? null;
-        row.win_rate = Number((row.wins / Math.max(row.closed, 1)).toFixed(4));
-        row.expectancy_r = Number((row.net_r / Math.max(row.closed, 1)).toFixed(6));
-        row.net_r = Number(row.net_r.toFixed(6));
-        row.fees_r = Number(row.fees_r.toFixed(6));
-        return row;
-      }).sort((a, b) => (b.open - a.open) || (b.net_r - a.net_r));
-
-      const summary = {
-        session_id: "__all__",
-        engine: ENGINE_FILTER === "all" ? "multi" : ENGINE_FILTER,
-        models: Array.from(modelsSet).sort(),
-        symbols: Array.from(symbolSet).sort(),
-        asset_count: symbolSet.size,
-        open_positions: openTrades.length,
-        closed_trades: closedN,
-        wins,
-        losses,
-        win_rate: Number(winRate.toFixed(4)),
-        expectancy_r: Number(expectancy.toFixed(6)),
-        profit_factor: Number(profitFactor.toFixed(4)),
-        gross_realized_r: Number(totalGrossR.toFixed(6)),
-        fees_r: Number(totalFeeR.toFixed(6)),
-        fees_usd: Number(totalFeeUsd.toFixed(4)),
-        realized_net_r: Number(totalNetR.toFixed(6)),
-        unrealized_r: Number(unrealizedR.toFixed(6)),
-        paper_equity_usd: Number(startEquityUsd.toFixed(2)),
-        equity_live_usd: Number((startEquityUsd + totalNetUsd + unrealizedUsd).toFixed(2)),
-        realized_net_usd: Number(totalNetUsd.toFixed(2)),
-        unrealized_usd: Number(unrealizedUsd.toFixed(2)),
-        avg_leverage: Number((leverageValues.length ? leverageValues.reduce((a, b) => a + b, 0) / leverageValues.length : 0).toFixed(4)),
-        max_leverage_used: Number((leverageValues.length ? Math.max(...leverageValues) : 0).toFixed(4)),
-        paper_settings: {
-          account_equity_usd: Number(startEquityUsd.toFixed(2)),
-          risk_per_trade_pct: 1.0,
-          base_leverage: 1.0,
-          max_leverage: Number((leverageValues.length ? Math.max(...leverageValues) : 1.0).toFixed(2)),
-          auto_leverage: false,
-        },
-        long_taken: longTaken,
-        short_taken: shortTaken,
-        long_success: longSuccess,
-        short_success: shortSuccess,
-        long_success_rate: Number((longSuccess / Math.max(longTaken, 1)).toFixed(4)),
-        short_success_rate: Number((shortSuccess / Math.max(shortTaken, 1)).toFixed(4)),
-        manual_closes: manualCloses,
-        predictions: predictions.length,
-        cycle_logs: cycleLogs.length,
-        updated_at_ms: updatedAtMs,
-        max_drawdown_r: Number(maxDrawdown.toFixed(6)),
-        session_count: sessionsSet.size,
-      };
-
+      predictions.sort((a, b) => tsMs(a.ts || a.server_ts || a.id) - tsMs(b.ts || b.server_ts || b.id));
+      cycleLogs.sort((a, b) => tsMs(a.server_ts || a.ts || a.id) - tsMs(b.server_ts || b.ts || b.id));
+      trades.sort((a, b) => tsMs(a.open_ts || a.entry_ts || a.id) - tsMs(b.open_ts || b.entry_ts || b.id));
+      const summary = computeSummary(trades, cycleLogs, payloads);
+      const equityCurve = buildEquityCurveFromTrades(trades);
       return {
         summary,
         predictions: predictions.slice(-2500),
         cycle_logs: cycleLogs.slice(-3500),
-        trades: trades.slice(-4000),
+        trades: trades.slice(-3500),
         equity_curve: equityCurve.slice(-3000),
-        assets,
-        models: Array.from(modelsSet).sort(),
+        assets: mergeAssets(payloads),
+        models: [...models],
       };
     }
 
-    function renderMetrics(summary) {
-      const s = summary || {};
-      $("mOpen").textContent = s.open_positions ?? 0;
-      $("mClosed").textContent = s.closed_trades ?? 0;
-      $("mWR").textContent = fmt.pct(s.win_rate || 0);
-      $("mExp").textContent = fmt.r(s.expectancy_r || 0);
-      $("mPF").textContent = fmt.n(s.profit_factor || 0, 2);
-      $("mNet").textContent = fmt.r(s.realized_net_r || 0);
-      $("mNet").className = `v ${klass(s.realized_net_r)}`;
-      $("mUnreal").textContent = `${fmt.r(s.unrealized_r || 0)} unrealized`;
-      $("mGrossFee").textContent = `${fmt.r(s.gross_realized_r || 0)} / ${fmt.r(s.fees_r || 0)}`;
-      $("mGrossFee").className = `v ${klass(s.gross_realized_r)}`;
-      $("mFeeUsd").textContent = `${fmt.usd(s.fees_usd || 0)} fees`;
-      $("mLong").textContent = `${s.long_success || 0} / ${s.long_taken || 0}`;
-      $("mLongRate").textContent = `${fmt.pct(s.long_success_rate || 0)} successful`;
-      $("mShort").textContent = `${s.short_success || 0} / ${s.short_taken || 0}`;
-      $("mShortRate").textContent = `${fmt.pct(s.short_success_rate || 0)} successful`;
-      $("mEngine").textContent = String((s.engine || "-")).toUpperCase();
-      $("mAssets").textContent = `${s.asset_count || 0} assets`;
-      $("mEqUsd").textContent = fmt.usd(s.equity_live_usd || s.paper_equity_usd || 0);
-      $("mEqUsd").className = `v ${klass((s.equity_live_usd || 0) - (s.paper_equity_usd || 0))}`;
-      $("mEqDelta").textContent = `${fmt.usd(s.realized_net_usd || 0)} realized • ${fmt.usd(s.unrealized_usd || 0)} unrealized`;
-      const avgLev = Number(s.avg_leverage || 0);
-      const maxLev = Number(s.max_leverage_used || 0);
-      const st = s.paper_settings || {};
-      $("mLev").textContent = `x${fmt.n(avgLev > 0 ? avgLev : (st.base_leverage || 1), 2)}`;
-      $("mLevMode").textContent = `${st.auto_leverage ? "auto" : "manual"} • max x${fmt.n(maxLev > 0 ? maxLev : (st.max_leverage || 1), 2)}`;
+    async function loadState() {
+      if (state.sessionId && state.sessionId !== "__all__") {
+        state.data = await fetchStateForSession(state.sessionId);
+        return;
+      }
+      const sids = state.sessions.map((s) => String(s.session_id || "")).filter(Boolean);
+      if (!sids.length) {
+        state.data = emptyPayload();
+        return;
+      }
+      const results = await Promise.allSettled(sids.map((sid) => fetchStateForSession(sid)));
+      const payloads = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
+      state.data = mergePayloads(payloads);
     }
 
-    function renderInsights(summary, trades, cycles, assets) {
-      const openN = trades.filter(t => String(t.status || "").toLowerCase() === "open").length;
-      const closedN = trades.filter(t => String(t.status || "").toLowerCase() === "closed").length;
-      const holdN = cycles.filter(c => String(c.decision || "").toUpperCase().includes("HOLD")).length;
-      const holdRate = cycles.length ? holdN / cycles.length : 0;
-      const manual = summary.manual_closes || 0;
-      const settings = summary.paper_settings || {};
-      const lines = [
-        `Session <b>${summary.session_id || state.sessionId}</b> • Engine <b>${String(summary.engine || "-").toUpperCase()}</b> • Models <b>${(summary.models || []).length}</b>`,
-        `Open trades <b>${openN}</b>, closed trades <b>${closedN}</b>, cycle hold ratio <b>${fmt.pct(holdRate)}</b>.`,
-        `Realized net <b class="${klass(summary.realized_net_r)}">${fmt.r(summary.realized_net_r || 0)}</b> vs unrealized <b class="${klass(summary.unrealized_r)}">${fmt.r(summary.unrealized_r || 0)}</b>.`,
-        `Fees paid <b>${fmt.r(summary.fees_r || 0)}</b> (${fmt.usd(summary.fees_usd || 0)}), manual closes <b>${manual}</b>.`,
-        `Equity <b>${fmt.usd(summary.equity_live_usd || summary.paper_equity_usd || 0)}</b> • risk/trade <b>${fmt.n(settings.risk_per_trade_pct || 0, 2)}%</b> • leverage mode <b>${settings.auto_leverage ? "AUTO" : "MANUAL"}</b>.`,
-        `Top assets: <b>${assets.slice(0, 4).map(a => a.symbol).join(", ") || "-"}</b>.`
-      ];
-      $("insights").innerHTML = lines.map(l => `<div class="insight">${l}</div>`).join("");
+    function showConnection(ok, err = "") {
+      const dotColor = ok ? "var(--positive)" : "var(--negative)";
+      $("liveState").innerHTML = `<span class="chip-dot" style="background:${dotColor}"></span><span>${ok ? "Live" : "Disconnected"}${err ? ` • ${err}` : ""}</span>`;
     }
 
-    function renderModels(models) {
-      const rows = (models || []).slice(0, 28);
-      $("modelList").innerHTML = rows.length
-        ? rows.map(m => `<span class="model-pill">${m}</span>`).join("")
-        : `<span class="small">No model-name payloads yet.</span>`;
+    function applyFlash(el, nextValue) {
+      const key = el.id;
+      const prev = state.prevMetricValues[key];
+      const n = Number(nextValue);
+      if (Number.isFinite(prev) && Number.isFinite(n) && prev !== n) {
+        const cls = n > prev ? "flash-up" : "flash-down";
+        el.closest(".kpi")?.classList.remove("flash-up", "flash-down");
+        el.closest(".kpi")?.classList.add(cls);
+        setTimeout(() => el.closest(".kpi")?.classList.remove(cls), 700);
+      }
+      if (Number.isFinite(n)) state.prevMetricValues[key] = n;
     }
 
-    function renderAssets(assets) {
-      const rows = (assets || []).slice(0, 160);
-      $("assetBody").innerHTML = rows.length ? rows.map(a => `
-        <tr>
-          <td>${a.symbol || "-"}</td>
-          <td>${a.open || 0}</td>
-          <td>${a.closed || 0}</td>
-          <td class="${klass(a.net_r)}">${fmt.n(a.net_r || 0, 3)}</td>
-          <td>${fmt.pct(a.win_rate || 0)}</td>
-          <td>${(() => {
-            const sym = String(a.symbol || "").toUpperCase();
-            const live = Number(state.livePrices?.[sym]);
-            if (Number.isFinite(live) && live > 0) return fmt.n(live, 2);
-            return a.last_price != null ? fmt.n(a.last_price, 2) : "-";
-          })()}</td>
-        </tr>
-      `).join("") : `<tr><td colspan="6" class="small">No asset activity yet.</td></tr>`;
-    }
-
-    function setInputValueIfIdle(id, value) {
+    function setMetric(id, text, numericValue = null, className = "") {
       const el = $(id);
-      if (!el) return;
-      if (document.activeElement === el) return;
-      if (el.type === "checkbox") {
-        el.checked = !!value;
-      } else {
-        el.value = value;
-      }
+      el.textContent = text;
+      el.className = `v ${className}`.trim();
+      applyFlash(el, numericValue);
     }
 
-    function renderPaperControls(summary) {
-      const s = summary || {};
-      const st = s.paper_settings || {};
-      const isAll = String(s.session_id || state.sessionId) === "__all__";
-      const disabled = isAll;
-      const ids = ["equityInput", "riskPctInput", "baseLevInput", "maxLevInput", "autoLevInput", "savePaperBtn"];
-      ids.forEach((id) => {
-        const el = $(id);
-        if (el) el.disabled = disabled;
+    function renderKPIs(summary, trades) {
+      const closed = (trades || []).filter((t) => statusOf(t.status) === "closed");
+      const longClosed = closed.filter((t) => sideOf(t.side) === "LONG");
+      const shortClosed = closed.filter((t) => sideOf(t.side) === "SHORT");
+      const longWins = longClosed.filter((t) => tradeNetR(t) > 0).length;
+      const shortWins = shortClosed.filter((t) => tradeNetR(t) > 0).length;
+      setMetric("mOpen", String(toNum(summary.open_positions, 0)), toNum(summary.open_positions, 0));
+      setMetric("mClosed", String(toNum(summary.closed_trades, 0)), toNum(summary.closed_trades, 0));
+      setMetric("mWr", fmt.pct(summary.win_rate || 0, 1), toNum(summary.win_rate, 0), klass(summary.win_rate - 0.45));
+      $("mWrSub").textContent = `LONG ${longWins}/${longClosed.length || 0} • SHORT ${shortWins}/${shortClosed.length || 0}`;
+      setMetric("mExp", fmt.r(summary.expectancy_r || 0), toNum(summary.expectancy_r, 0), klass(summary.expectancy_r));
+      setMetric("mPf", fmt.n(summary.profit_factor || 0, 2), toNum(summary.profit_factor, 0), klass((summary.profit_factor || 0) - 1));
+      setMetric("mNet", fmt.r(summary.realized_net_r || 0), toNum(summary.realized_net_r, 0), klass(summary.realized_net_r));
+      $("mUnreal").textContent = `${fmt.r(summary.unrealized_r || 0)} unrealized`;
+      setMetric("mEq", fmt.usd(summary.equity_live_usd || summary.paper_equity_usd || 0), toNum(summary.equity_live_usd || 0), klass((summary.equity_live_usd || 0) - (summary.paper_equity_usd || 0)));
+      $("mEqSub").textContent = `base ${fmt.usd(summary.paper_equity_usd || 0)}`;
+      setMetric("mDd", fmt.r(summary.max_drawdown_r || 0), toNum(summary.max_drawdown_r, 0), klass(-(summary.max_drawdown_r || 0)));
+      $("mEngine").textContent = `${String(summary.engine || "-").toUpperCase()} • x${fmt.n(summary.avg_leverage || 1, 2)} avg`;
+    }
+
+    function renderRunMeta(summary, payload) {
+      const now = new Date().toLocaleTimeString();
+      const preds = Array.isArray(payload.predictions) ? payload.predictions.length : 0;
+      const cyc = Array.isArray(payload.cycle_logs) ? payload.cycle_logs.length : 0;
+      $("runMeta").textContent = `${summary.session_id || state.sessionId} • Updated ${now} • Predictions ${preds} • Cycles ${cyc}`;
+    }
+
+    function renderInsights(summary, trades, predictions, cycles, models) {
+      const closed = (trades || []).filter((t) => statusOf(t.status) === "closed");
+      const open = (trades || []).filter((t) => statusOf(t.status) === "open");
+      const avgConf = predictions.length ? predictions.reduce((a, p) => a + toNum(p.confidence ?? p.p_enter, 0), 0) / predictions.length : 0;
+      const avgEdge = predictions.length ? predictions.reduce((a, p) => a + toNum(p.edge ?? p.expected_return, 0), 0) / predictions.length : 0;
+      const holdN = cycles.filter((c) => String(c.decision || "").toUpperCase().includes("HOLD")).length;
+      const holdRate = cycles.length ? holdN / cycles.length : 0;
+      const rec = closed.slice(-20);
+      const recWr = rec.length ? rec.filter((t) => tradeNetR(t) > 0).length / rec.length : 0;
+      const recExp = rec.length ? rec.reduce((a, t) => a + tradeNetR(t), 0) / rec.length : 0;
+
+      $("insights").innerHTML = [
+        `Session <b>${summary.session_id || state.sessionId}</b> has <b>${open.length}</b> open and <b>${closed.length}</b> closed trades.`,
+        `Realized <b class="${klass(summary.realized_net_r)}">${fmt.r(summary.realized_net_r || 0)}</b> with max drawdown <b>${fmt.r(summary.max_drawdown_r || 0)}</b>.`,
+        `Recent quality window: <b>${fmt.pct(recWr, 1)}</b> WR and <b class="${klass(recExp)}">${fmt.r(recExp)}</b> expectancy over last <b>${rec.length}</b> closes.`,
+        `Decision cadence: hold ratio <b>${fmt.pct(holdRate, 1)}</b> across <b>${cycles.length}</b> cycles.`,
+      ].map((line) => `<div class="insight">${line}</div>`).join("");
+
+      $("qConf").textContent = fmt.pct(avgConf, 2);
+      $("qEdge").textContent = fmt.n(avgEdge, 4);
+      $("qHold").textContent = fmt.pct(holdRate, 1);
+      $("qLev").textContent = `x${fmt.n(summary.avg_leverage || 1, 2)}`;
+      $("modelList").innerHTML = (models.length ? models : ["no-model-tag"]).slice(0, 12).map((m) => `<span class="pill">${m}</span>`).join("");
+    }
+
+    function collectTrackedSymbols(payload) {
+      const syms = new Set(["BTCUSDT", "ETHUSDT"]);
+      (payload.trades || []).slice(-250).forEach((t) => syms.add(String(t.symbol || "").toUpperCase()));
+      (payload.predictions || []).slice(-120).forEach((p) => syms.add(String(p.symbol || "").toUpperCase()));
+      (payload.cycle_logs || []).slice(-120).forEach((c) => syms.add(String(c.symbol || "").toUpperCase()));
+      return [...syms].filter(Boolean).slice(0, 10);
+    }
+
+    async function refreshMarketPrices(symbols) {
+      if (!symbols.length) return;
+      const param = encodeURIComponent(symbols.join(","));
+      const payload = await fetchJson(`/api/market/ticks?symbols=${param}`);
+      const incoming = payload.prices || {};
+      Object.entries(incoming).forEach(([sym, px]) => {
+        const n = Number(px);
+        if (!Number.isFinite(n)) return;
+        if (Number.isFinite(state.marketPrices[sym])) state.previousPrices[sym] = state.marketPrices[sym];
+        state.marketPrices[sym] = n;
       });
-      setInputValueIfIdle("equityInput", Number(st.account_equity_usd ?? s.paper_equity_usd ?? 10000).toFixed(2));
-      setInputValueIfIdle("riskPctInput", Number(st.risk_per_trade_pct ?? 1.0).toFixed(2));
-      setInputValueIfIdle("baseLevInput", Number(st.base_leverage ?? 1.0).toFixed(2));
-      setInputValueIfIdle("maxLevInput", Number(st.max_leverage ?? 200.0).toFixed(2));
-      setInputValueIfIdle("autoLevInput", !!st.auto_leverage);
-      $("paperStatus").textContent = isAll
-        ? "Select a specific session to edit equity/risk/leverage."
-        : `Session ${s.session_id || state.sessionId} • Equity ${fmt.usd(s.equity_live_usd || s.paper_equity_usd || 0)} • Avg lev x${fmt.n(s.avg_leverage || st.base_leverage || 1, 2)}`;
     }
 
-    async function savePaperSettings() {
-      if (state.sessionId === "__all__") {
-        $("paperStatus").textContent = "Pick a specific session first (ALL sessions cannot be edited together).";
-        return;
-      }
-      const payload = {
-        account_equity_usd: Number($("equityInput").value || 0),
-        risk_per_trade_pct: Number($("riskPctInput").value || 1),
-        base_leverage: Number($("baseLevInput").value || 1),
-        max_leverage: Number($("maxLevInput").value || 200),
-        auto_leverage: !!$("autoLevInput").checked,
-        revalue_open_positions: true,
-      };
-      $("paperStatus").textContent = "Saving paper settings...";
-      try {
-        await fetchJson(`/api/paper/settings?session_id=${encodeURIComponent(state.sessionId)}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        $("paperStatus").textContent = "Paper settings saved.";
-        await tick();
-      } catch (err) {
-        $("paperStatus").textContent = `Save failed: ${err.message || err}`;
-      }
+    function renderMarketList(symbols, cycles) {
+      const cycleMap = buildCyclePriceMap(cycles);
+      const rows = symbols.map((sym) => {
+        const px = Number.isFinite(state.marketPrices[sym]) ? state.marketPrices[sym] : toNum(cycleMap[sym], NaN);
+        const prev = Number.isFinite(state.previousPrices[sym]) ? state.previousPrices[sym] : px;
+        const delta = Number.isFinite(px) && Number.isFinite(prev) && Math.abs(prev) > 1e-9 ? (px - prev) / prev : 0;
+        return { sym, px, delta };
+      }).filter((r) => Number.isFinite(r.px));
+
+      $("marketList").innerHTML = rows.length ? rows.map((r) => `
+        <div class="market-row">
+          <span class="sym">${r.sym}</span>
+          <span class="delta ${klass(r.delta)}">${fmt.pct(r.delta, 2)}</span>
+          <span class="px">${fmt.n(r.px, r.px > 1000 ? 2 : 4)}</span>
+        </div>
+      `).join("") : `<div class="small">No live market snapshots yet.</div>`;
     }
 
-    function nearestIndexByTs(rows, ts) {
-      if (!rows.length || !ts) return rows.length - 1;
-      let bestIdx = 0;
-      let bestDelta = Math.abs((rows[0].ts || 0) - ts);
-      for (let i = 1; i < rows.length; i++) {
-        const d = Math.abs((rows[i].ts || 0) - ts);
-        if (d < bestDelta) {
-          bestDelta = d;
-          bestIdx = i;
-        }
-      }
-      return bestIdx;
-    }
-
-    function drawMarketChart(cycles, trades, summary) {
-      const symList = trackedMarketSymbols(summary, cycles, trades).sort();
-      const sel = $("marketSymbolSelect");
-      if (!symList.includes(state.marketSymbol)) {
-        state.marketSymbol = symList.includes("BTCUSDT") ? "BTCUSDT" : (symList[0] || "BTCUSDT");
-      }
-      sel.innerHTML = symList.length
-        ? symList.map((s) => `<option value="${s}">${s}</option>`).join("")
-        : `<option value="BTCUSDT">BTCUSDT</option>`;
-      sel.value = state.marketSymbol;
-      $("marketTfSelect").value = String(state.marketInterval || "1m");
-      $("marketDepthSelect").value = String(nearestDepthStep(state.marketDepth || 240));
-      $("marketZoomLabel").textContent = `zoom ${Number(state.marketDepth || 240)}`;
-
-      const symbol = state.marketSymbol;
-      const tf = String(state.marketInterval || "1m");
-      const depth = Number(state.marketDepth || 240);
-      const intervalMs = intervalToMs(tf);
-      const key = `${symbol}|${tf}|${depth}`;
-      const cachedCandles = normalizeCandles(state.marketCandlesByKey?.[key] || []);
-      const fallbackPoints = buildSymbolTickPoints(symbol, cycles);
-      const fallbackCandles = buildSyntheticCandlesFromPoints(fallbackPoints, intervalMs);
-      const candlesBase = (cachedCandles.length ? cachedCandles : fallbackCandles).slice(-depth);
-      const candles = candlesBase.map((c) => ({ ...c }));
-      const livePx = Number(state.livePrices?.[symbol]);
-      const liveTs = Number(state.livePriceTs || Date.now());
-      if (Number.isFinite(livePx) && livePx > 0) {
-        const b = bucketStart(liveTs, intervalMs);
-        if (!candles.length) {
-          candles.push({ ts: b, open: livePx, high: livePx, low: livePx, close: livePx, volume: 0 });
-        } else {
-          const last = candles[candles.length - 1];
-          if (Math.abs((last.ts || 0) - b) <= 1e-6) {
-            last.high = Math.max(last.high, livePx);
-            last.low = Math.min(last.low, livePx);
-            last.close = livePx;
-          } else if (b > (last.ts || 0)) {
-            candles.push({ ts: b, open: last.close, high: livePx, low: livePx, close: livePx, volume: 0 });
-          }
-        }
-      }
-
-      const canvas = $("marketCanvas");
-      const empty = $("marketEmpty");
+    function ensureCanvas(canvasId) {
+      const canvas = $(canvasId);
       const parent = canvas.parentElement;
-      const w = parent.clientWidth;
-      const h = parent.clientHeight;
+      const rect = parent.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.max(1, Math.floor(w * dpr));
-      canvas.height = Math.max(1, Math.floor(h * dpr));
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
       const ctx = canvas.getContext("2d");
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      return { ctx, w: rect.width, h: rect.height };
+    }
 
-      if (candles.length < 2) {
+    function drawLine(canvasId, emptyId, series, opts = {}) {
+      const empty = $(emptyId);
+      if (!Array.isArray(series) || !series.length) {
         empty.hidden = false;
-        $("marketMeta").textContent = `No candle series yet for ${symbol}.`;
-        $("marketTape").innerHTML = "";
-        $("marketOpenPnl").innerHTML = "";
+        ensureCanvas(canvasId);
         return;
       }
       empty.hidden = true;
+      const { ctx, w, h } = ensureCanvas(canvasId);
+      const padL = 34;
+      const padR = 14;
+      const padT = 14;
+      const padB = 22;
+      const minY = Number.isFinite(opts.minY) ? opts.minY : Math.min(...series, 0);
+      const maxY = Number.isFinite(opts.maxY) ? opts.maxY : Math.max(...series, 0);
+      const span = Math.max(maxY - minY, 1e-6);
+      const xSpan = Math.max(series.length - 1, 1);
+      const yAt = (v) => padT + ((maxY - v) / span) * (h - padT - padB);
+      const xAt = (i) => padL + (i / xSpan) * (w - padL - padR);
 
-      const padL = 14;
-      const padR = 76;
-      const padT = 16;
+      ctx.strokeStyle = "rgba(124,165,236,.24)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = padT + (i / 4) * (h - padT - padB);
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(w - padR, y);
+        ctx.stroke();
+      }
+      if (opts.baseline != null) {
+        const y0 = yAt(opts.baseline);
+        ctx.strokeStyle = "rgba(255,209,102,.42)";
+        ctx.beginPath();
+        ctx.moveTo(padL, y0);
+        ctx.lineTo(w - padR, y0);
+        ctx.stroke();
+      }
+
+      const gradient = ctx.createLinearGradient(0, padT, 0, h - padB);
+      gradient.addColorStop(0, opts.fillTop || "rgba(95,156,255,.32)");
+      gradient.addColorStop(1, opts.fillBottom || "rgba(14,31,63,.02)");
+
+      ctx.beginPath();
+      series.forEach((v, i) => {
+        const x = xAt(i);
+        const y = yAt(v);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      if (opts.fill !== false) {
+        ctx.lineTo(xAt(series.length - 1), h - padB);
+        ctx.lineTo(xAt(0), h - padB);
+        ctx.closePath();
+        ctx.fillStyle = gradient;
+        ctx.fill();
+      }
+
+      ctx.beginPath();
+      series.forEach((v, i) => {
+        const x = xAt(i);
+        const y = yAt(v);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = opts.color || "rgba(98,166,255,.96)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      const last = series[series.length - 1];
+      const lastX = xAt(series.length - 1);
+      const lastY = yAt(last);
+      ctx.fillStyle = opts.color || "rgba(98,166,255,.96)";
+      ctx.beginPath();
+      ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#caddf7";
+      ctx.font = "11px Inter, sans-serif";
+      ctx.fillText(fmt.n(last, 3), Math.min(lastX + 7, w - 56), Math.max(lastY - 8, 12));
+    }
+
+    function drawBars(canvasId, emptyId, values) {
+      const empty = $(emptyId);
+      if (!Array.isArray(values) || !values.length) {
+        empty.hidden = false;
+        ensureCanvas(canvasId);
+        return;
+      }
+      empty.hidden = true;
+      const { ctx, w, h } = ensureCanvas(canvasId);
+      const padL = 26;
+      const padR = 12;
+      const padT = 14;
       const padB = 24;
-      const volH = Math.min(70, Math.max(42, h * 0.18));
-      const chartH = Math.max(90, h - padT - padB - volH);
-      const chartW = Math.max(120, w - padL - padR);
-      const minPriceRaw = Math.min(...candles.map((c) => c.low));
-      const maxPriceRaw = Math.max(...candles.map((c) => c.high));
-      const openForSym = (trades || []).filter((t) => String(t.status || "").toLowerCase() === "open" && String(t.symbol || "").toUpperCase() === symbol);
-      const allForSym = (trades || []).filter((t) => String(t.symbol || "").toUpperCase() === symbol);
-      const guidePrices = [];
-      openForSym.forEach((tr) => {
-        guidePrices.push(Number(tr.entry_price || tr.entryPrice || 0));
-        guidePrices.push(Number(tr.stop_loss || tr.stopLoss || tr.initial_sl || 0));
-        guidePrices.push(Number(tr.take_profit || tr.tp2 || tr.take_profit_price || 0));
-      });
-      if (Number.isFinite(livePx) && livePx > 0) guidePrices.push(livePx);
-      const guideMin = guidePrices.filter((x) => Number.isFinite(x) && x > 0);
-      const minP = guideMin.length ? Math.min(minPriceRaw, ...guideMin) : minPriceRaw;
-      const maxP = guideMin.length ? Math.max(maxPriceRaw, ...guideMin) : maxPriceRaw;
-      const span = Math.max(maxP - minP, Math.abs(maxP) * 0.002, 1e-9);
-      const lo = minP - span * 0.08;
-      const hi = maxP + span * 0.08;
-      const yAt = (p) => padT + ((hi - p) / Math.max(hi - lo, 1e-9)) * chartH;
-      const xStep = chartW / Math.max(candles.length, 1);
-      const bodyW = clamp(xStep * 0.64, 2.5, 16);
-      const xAt = (i) => padL + (i + 0.5) * xStep;
-      const volumes = candles.map((c) => Number(c.volume || 0));
-      const maxVol = Math.max(1e-9, ...volumes);
+      const maxAbs = Math.max(...values.map((v) => Math.abs(v)), 1e-6);
+      const yZero = padT + ((maxAbs - 0) / (maxAbs * 2)) * (h - padT - padB);
+      const barW = Math.max(2, (w - padL - padR) / values.length - 2);
 
-      ctx.strokeStyle = "rgba(122, 167, 238, .14)";
-      ctx.lineWidth = 1;
-      for (let i = 0; i <= 4; i++) {
-        const y = padT + (i / 4) * chartH;
-        ctx.beginPath();
-        ctx.moveTo(padL, y);
-        ctx.lineTo(padL + chartW, y);
-        ctx.stroke();
-        const level = hi - (i / 4) * (hi - lo);
-        ctx.fillStyle = "rgba(184, 211, 245, .7)";
-        ctx.font = "11px Inter, system-ui, sans-serif";
-        ctx.textAlign = "left";
-        ctx.fillText(fmt.n(level, level > 1000 ? 2 : 4), padL + chartW + 6, y + 4);
-      }
-
-      for (let i = 0; i < candles.length; i++) {
-        const c = candles[i];
-        const x = xAt(i);
-        const up = c.close >= c.open;
-        const color = up ? "rgba(42,226,173,.95)" : "rgba(255,111,141,.95)";
-        const wickColor = up ? "rgba(95, 238, 194, .95)" : "rgba(255, 137, 161, .95)";
-        const yO = yAt(c.open);
-        const yC = yAt(c.close);
-        const yH = yAt(c.high);
-        const yL = yAt(c.low);
-        ctx.strokeStyle = wickColor;
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.moveTo(x, yH);
-        ctx.lineTo(x, yL);
-        ctx.stroke();
-        const top = Math.min(yO, yC);
-        const bh = Math.max(Math.abs(yC - yO), 1.5);
-        ctx.fillStyle = color;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1;
-        ctx.fillRect(x - bodyW / 2, top, bodyW, bh);
-      }
-
-      const volTop = padT + chartH + 6;
-      for (let i = 0; i < candles.length; i++) {
-        const c = candles[i];
-        const x = xAt(i);
-        const up = c.close >= c.open;
-        const vh = (Number(c.volume || 0) / maxVol) * (volH - 14);
-        ctx.fillStyle = up ? "rgba(42,226,173,.28)" : "rgba(255,111,141,.24)";
-        ctx.fillRect(x - bodyW / 2, volTop + (volH - 10 - vh), bodyW, vh);
-      }
-
-      const latest = candles[candles.length - 1];
-      const prev = candles[candles.length - 2] || latest;
-      const delta = latest.close - prev.close;
-      const deltaPct = prev.close > 0 ? (delta / prev.close) * 100.0 : 0.0;
-      const blinkClass = delta >= 0 ? "blink-up" : "blink-down";
-      canvas.classList.remove("blink-up", "blink-down");
-      canvas.classList.add(blinkClass);
-      setTimeout(() => canvas.classList.remove("blink-up", "blink-down"), 320);
-
-      const allRowsByTs = candles.map((c, i) => ({ ts: c.ts, idx: i }));
-      for (const tr of openForSym) {
-        const entry = Number(tr.entry_price || tr.entryPrice || 0);
-        const sl = Number(tr.stop_loss || tr.stopLoss || tr.initial_sl || 0);
-        const tp = Number(tr.take_profit || tr.tp2 || tr.take_profit_price || 0);
-        const entryTs = tsMs(tr.entry_time || tr.entryTs || tr.entry_ts || 0);
-        const i0 = nearestIndexByTs(allRowsByTs, entryTs);
-        const x0 = xAt(i0);
-        const xr = padL + chartW;
-        const side = String(tr.side || "LONG").toUpperCase();
-        const riskFill = side === "LONG" ? "rgba(42,226,173,.07)" : "rgba(255,111,141,.07)";
-        const color = side === "LONG" ? "rgba(42,226,173,.9)" : "rgba(255,111,141,.9)";
-
-        if (Number.isFinite(sl) && sl > 0 && Number.isFinite(tp) && tp > 0) {
-          const yTop = Math.min(yAt(tp), yAt(sl));
-          const yBot = Math.max(yAt(tp), yAt(sl));
-          ctx.fillStyle = riskFill;
-          ctx.fillRect(x0, yTop, Math.max(xr - x0, 1), Math.max(yBot - yTop, 1));
-        }
-
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(x0, yAt(entry));
-        ctx.lineTo(xr, yAt(entry));
-        ctx.stroke();
-
-        ctx.setLineDash([5, 4]);
-        if (Number.isFinite(sl) && sl > 0) {
-          ctx.strokeStyle = "rgba(255,111,141,.85)";
-          ctx.beginPath();
-          ctx.moveTo(x0, yAt(sl));
-          ctx.lineTo(xr, yAt(sl));
-          ctx.stroke();
-        }
-        if (Number.isFinite(tp) && tp > 0) {
-          ctx.strokeStyle = "rgba(42,226,173,.85)";
-          ctx.beginPath();
-          ctx.moveTo(x0, yAt(tp));
-          ctx.lineTo(xr, yAt(tp));
-          ctx.stroke();
-        }
-        ctx.setLineDash([]);
-      }
-
-      const drawMarker = (x, y, side, filled = true) => {
-        const color = String(side || "").toUpperCase() === "LONG" ? "rgba(42,226,173,.95)" : "rgba(255,111,141,.95)";
-        ctx.fillStyle = color;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.5;
-        if (filled) {
-          ctx.beginPath();
-          ctx.arc(x, y, 4.2, 0, Math.PI * 2);
-          ctx.fill();
-        } else {
-          ctx.beginPath();
-          ctx.moveTo(x - 4, y - 4);
-          ctx.lineTo(x + 4, y + 4);
-          ctx.moveTo(x + 4, y - 4);
-          ctx.lineTo(x - 4, y + 4);
-          ctx.stroke();
-        }
-      };
-
-      for (const tr of allForSym) {
-        const entry = Number(tr.entry_price || tr.entryPrice || 0);
-        const entryTs = tsMs(tr.entry_time || tr.entryTs || tr.entry_ts || 0);
-        const i0 = nearestIndexByTs(allRowsByTs, entryTs);
-        drawMarker(xAt(i0), yAt(entry), tr.side, true);
-        if (String(tr.status || "").toLowerCase() === "closed") {
-          const ex = Number(tr.exit_price || 0);
-          const exTs = tsMs(tr.exit_time || tr.exitTs || 0);
-          const i1 = nearestIndexByTs(allRowsByTs, exTs);
-          drawMarker(xAt(i1), yAt(ex || entry), tr.side, false);
-        }
-      }
-
-      const nowY = yAt(latest.close);
-      ctx.strokeStyle = "rgba(190, 219, 255, .45)";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = "rgba(126,170,240,.26)";
       ctx.beginPath();
-      ctx.moveTo(padL, nowY);
-      ctx.lineTo(padL + chartW, nowY);
+      ctx.moveTo(padL, yZero);
+      ctx.lineTo(w - padR, yZero);
       ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = "rgba(17, 33, 63, .95)";
-      ctx.strokeStyle = "rgba(165, 200, 255, .55)";
-      ctx.lineWidth = 1;
-      const tagW = 64;
-      const tagH = 18;
-      ctx.beginPath();
-      ctx.rect(padL + chartW + 6, nowY - tagH / 2, tagW, tagH);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "rgba(225, 240, 255, .96)";
-      ctx.font = "11px Inter, system-ui, sans-serif";
-      ctx.textAlign = "left";
-      ctx.fillText(fmt.n(latest.close, latest.close > 1000 ? 2 : 4), padL + chartW + 10, nowY + 4);
 
-      const openUsd = openForSym.reduce((acc, tr) => {
-        const riskUsd = Number(tr.risk_usd_used || 0);
-        if (!Number.isFinite(riskUsd) || riskUsd <= 0) return acc;
-        const rr = rrAtPrice(tr, latest.close);
-        return acc + rr * riskUsd;
-      }, 0);
-      const openR = openForSym.reduce((acc, tr) => acc + rrAtPrice(tr, latest.close), 0);
-
-      const openN = openForSym.length;
-      const closedN = allForSym.filter((t) => String(t.status || "").toLowerCase() === "closed").length;
-      const source = state.marketCandleSourceByKey?.[key] || "synthetic";
-      $("marketMeta").innerHTML = `${symbol} • TF <b>${tf}</b> • last <b>${fmt.n(latest.close, 3)}</b> • O <b>${fmt.n(latest.open, 3)}</b> H <b>${fmt.n(latest.high, 3)}</b> L <b>${fmt.n(latest.low, 3)}</b> C <b>${fmt.n(latest.close, 3)}</b> • open positions <b>${openN}</b> • closed trades <b>${closedN}</b> • source <b>${source}</b>`;
-      $("marketTape").innerHTML = `
-        <div class="tape-cell"><div class="k">Last Price</div><div class="v ${klass(delta)}">${fmt.n(latest.close, 3)}</div></div>
-        <div class="tape-cell"><div class="k">Change</div><div class="v ${klass(delta)}">${fmt.n(delta, 3)} (${fmt.n(deltaPct, 2)}%)</div></div>
-        <div class="tape-cell"><div class="k">Session Range</div><div class="v">${fmt.n(minP, 2)} - ${fmt.n(maxP, 2)}</div></div>
-        <div class="tape-cell"><div class="k">Candle Body</div><div class="v">${fmt.n(Math.abs(latest.close - latest.open), 4)}</div></div>
-        <div class="tape-cell"><div class="k">Open Trade PnL</div><div class="v ${klass(openUsd)}">${fmt.usd(openUsd)} / ${fmt.r(openR, 3)}</div></div>
-        <div class="tape-cell"><div class="k">Market Depth</div><div class="v">${candles.length} candles</div></div>
-      `;
-      const openPills = openForSym.slice(0, 8).map((tr) => {
-        const rr = rrAtPrice(tr, latest.close);
-        const riskUsd = Number(tr.risk_usd_used || 0);
-        const usd = Number.isFinite(riskUsd) && riskUsd > 0 ? rr * riskUsd : 0;
-        const side = String(tr.side || "LONG").toUpperCase();
-        return `<span class="pill">#${tr.id ?? "-"} ${side} <b class="${klass(usd)}">${fmt.r(rr, 2)} • ${fmt.usd(usd)}</b></span>`;
+      values.forEach((v, i) => {
+        const x = padL + i * (barW + 2);
+        const height = (Math.abs(v) / (maxAbs * 2)) * (h - padT - padB);
+        const y = v >= 0 ? yZero - height : yZero;
+        ctx.fillStyle = v >= 0 ? "rgba(46,228,179,.82)" : "rgba(255,111,143,.82)";
+        ctx.fillRect(x, y, barW, Math.max(height, 1));
       });
-      $("marketOpenPnl").innerHTML = openPills.length
-        ? `Open-trade live marks: ${openPills.join("")}`
-        : "Open-trade live marks: no active position on this symbol.";
     }
 
-    function renderOpenTradeCandlePanel(openTrades, cycles) {
-      const canvas = $("openTradeCandleCanvas");
-      const empty = $("openTradeCandleEmpty");
-      const meta = $("openTradeCandleMeta");
-      const sel = $("openTradeSymbolSelect");
-      const symbols = Array.from(new Set((openTrades || []).map((t) => String(t.symbol || "").toUpperCase()).filter(Boolean)));
-      if (!symbols.length) {
-        sel.innerHTML = `<option value="BTCUSDT">BTCUSDT</option>`;
-        empty.hidden = false;
-        meta.textContent = "No open trades available for candle command panel.";
-        $("openZoomLabel").textContent = `zoom ${Number(state.openTradeDepth || 180)}`;
-        return;
+    function rollingWinRate(closed, window = 20) {
+      const out = [];
+      for (let i = 0; i < closed.length; i++) {
+        const seg = closed.slice(Math.max(0, i - window + 1), i + 1);
+        out.push(seg.filter((t) => tradeNetR(t) > 0).length / Math.max(seg.length, 1));
       }
-      if (!symbols.includes(state.openTradeSymbol)) {
-        state.openTradeSymbol = symbols[0];
-      }
-      sel.innerHTML = symbols.map((s) => `<option value="${s}">${s}</option>`).join("");
-      sel.value = state.openTradeSymbol;
-      $("openZoomLabel").textContent = `zoom ${Number(state.openTradeDepth || 180)}`;
-
-      const symbol = state.openTradeSymbol;
-      const tf = String(state.marketInterval || "1m");
-      const depth = Number(state.openTradeDepth || 180);
-      const { candles: bestCached, source } = getBestCachedCandles(symbol, tf);
-      const fallback = buildSyntheticCandlesFromPoints(buildSymbolTickPoints(symbol, cycles), intervalToMs(tf));
-      const candles = (bestCached.length ? bestCached : fallback).slice(-depth).map((c) => ({ ...c }));
-      const livePx = Number(state.livePrices?.[symbol]);
-      const liveTs = Number(state.livePriceTs || Date.now());
-      const intervalMs = intervalToMs(tf);
-      if (Number.isFinite(livePx) && livePx > 0) {
-        const b = bucketStart(liveTs, intervalMs);
-        if (!candles.length) {
-          candles.push({ ts: b, open: livePx, high: livePx, low: livePx, close: livePx, volume: 0 });
-        } else {
-          const last = candles[candles.length - 1];
-          if (Math.abs((last.ts || 0) - b) <= 1e-6) {
-            last.high = Math.max(last.high, livePx);
-            last.low = Math.min(last.low, livePx);
-            last.close = livePx;
-          } else if (b > (last.ts || 0)) {
-            candles.push({ ts: b, open: last.close, high: livePx, low: livePx, close: livePx, volume: 0 });
-          }
-        }
-      }
-
-      const parent = canvas.parentElement;
-      const w = parent.clientWidth;
-      const h = parent.clientHeight;
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.max(1, Math.floor(w * dpr));
-      canvas.height = Math.max(1, Math.floor(h * dpr));
-      const ctx = canvas.getContext("2d");
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-
-      if (candles.length < 2) {
-        empty.hidden = false;
-        meta.textContent = `No candle stream available for ${symbol}.`;
-        return;
-      }
-      empty.hidden = true;
-
-      const openForSym = (openTrades || []).filter((t) => String(t.symbol || "").toUpperCase() === symbol);
-      const guide = [];
-      openForSym.forEach((tr) => {
-        guide.push(Number(tr.entry_price || tr.entryPrice || 0));
-        guide.push(Number(tr.stop_loss || tr.stopLoss || tr.initial_sl || 0));
-        guide.push(Number(tr.take_profit || tr.tp2 || tr.take_profit_price || 0));
-      });
-      if (Number.isFinite(livePx) && livePx > 0) guide.push(livePx);
-      const lows = candles.map((c) => c.low);
-      const highs = candles.map((c) => c.high);
-      const minP = Math.min(...lows, ...guide.filter((x) => Number.isFinite(x) && x > 0));
-      const maxP = Math.max(...highs, ...guide.filter((x) => Number.isFinite(x) && x > 0));
-      const span = Math.max(maxP - minP, Math.abs(maxP) * 0.002, 1e-9);
-      const lo = minP - span * 0.1;
-      const hi = maxP + span * 0.1;
-      const padL = 12;
-      const padR = 72;
-      const padT = 12;
-      const padB = 16;
-      const chartW = Math.max(100, w - padL - padR);
-      const chartH = Math.max(80, h - padT - padB);
-      const xStep = chartW / Math.max(candles.length, 1);
-      const bodyW = clamp(xStep * 0.64, 2.2, 14);
-      const xAt = (i) => padL + (i + 0.5) * xStep;
-      const yAt = (p) => padT + ((hi - p) / Math.max(hi - lo, 1e-9)) * chartH;
-
-      ctx.strokeStyle = "rgba(120, 165, 235, .14)";
-      ctx.lineWidth = 1;
-      for (let i = 0; i <= 4; i++) {
-        const y = padT + (i / 4) * chartH;
-        ctx.beginPath();
-        ctx.moveTo(padL, y);
-        ctx.lineTo(padL + chartW, y);
-        ctx.stroke();
-      }
-
-      for (let i = 0; i < candles.length; i++) {
-        const c = candles[i];
-        const x = xAt(i);
-        const up = c.close >= c.open;
-        const color = up ? "rgba(42,226,173,.94)" : "rgba(255,111,141,.94)";
-        const wick = up ? "rgba(111,239,202,.95)" : "rgba(255,141,169,.95)";
-        const yO = yAt(c.open);
-        const yC = yAt(c.close);
-        const yH = yAt(c.high);
-        const yL = yAt(c.low);
-        ctx.strokeStyle = wick;
-        ctx.lineWidth = 1.1;
-        ctx.beginPath();
-        ctx.moveTo(x, yH);
-        ctx.lineTo(x, yL);
-        ctx.stroke();
-        const top = Math.min(yO, yC);
-        const bh = Math.max(Math.abs(yC - yO), 1.2);
-        ctx.fillStyle = color;
-        ctx.fillRect(x - bodyW / 2, top, bodyW, bh);
-      }
-
-      const tsRows = candles.map((c) => ({ ts: c.ts }));
-      for (const tr of openForSym) {
-        const entry = Number(tr.entry_price || tr.entryPrice || 0);
-        const sl = Number(tr.stop_loss || tr.stopLoss || tr.initial_sl || 0);
-        const tp = Number(tr.take_profit || tr.tp2 || tr.take_profit_price || 0);
-        const entryTs = tsMs(tr.entry_time || tr.entryTs || tr.entry_ts || 0);
-        const i0 = nearestIndexByTs(tsRows, entryTs);
-        const x0 = xAt(i0);
-        const xr = padL + chartW;
-        const side = String(tr.side || "LONG").toUpperCase();
-        const entryColor = side === "LONG" ? "rgba(42,226,173,.9)" : "rgba(255,111,141,.9)";
-        if (Number.isFinite(sl) && sl > 0 && Number.isFinite(tp) && tp > 0) {
-          ctx.fillStyle = side === "LONG" ? "rgba(42,226,173,.08)" : "rgba(255,111,141,.08)";
-          const yTop = Math.min(yAt(tp), yAt(sl));
-          const yBot = Math.max(yAt(tp), yAt(sl));
-          ctx.fillRect(x0, yTop, Math.max(xr - x0, 1), Math.max(yBot - yTop, 1));
-        }
-        ctx.strokeStyle = entryColor;
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.moveTo(x0, yAt(entry));
-        ctx.lineTo(xr, yAt(entry));
-        ctx.stroke();
-        ctx.setLineDash([5, 4]);
-        if (Number.isFinite(sl) && sl > 0) {
-          ctx.strokeStyle = "rgba(255,111,141,.92)";
-          ctx.beginPath();
-          ctx.moveTo(x0, yAt(sl));
-          ctx.lineTo(xr, yAt(sl));
-          ctx.stroke();
-        }
-        if (Number.isFinite(tp) && tp > 0) {
-          ctx.strokeStyle = "rgba(42,226,173,.92)";
-          ctx.beginPath();
-          ctx.moveTo(x0, yAt(tp));
-          ctx.lineTo(xr, yAt(tp));
-          ctx.stroke();
-        }
-        ctx.setLineDash([]);
-      }
-
-      const latest = candles[candles.length - 1];
-      const nowY = yAt(latest.close);
-      ctx.strokeStyle = "rgba(198, 224, 255, .5)";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.moveTo(padL, nowY);
-      ctx.lineTo(padL + chartW, nowY);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = "rgba(16, 33, 60, .92)";
-      ctx.strokeStyle = "rgba(170, 204, 255, .55)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.rect(padL + chartW + 6, nowY - 9, 62, 18);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "rgba(230, 242, 255, .95)";
-      ctx.font = "11px Inter, system-ui, sans-serif";
-      ctx.fillText(fmt.n(latest.close, latest.close > 1000 ? 2 : 4), padL + chartW + 10, nowY + 4);
-
-      const pnlUsd = openForSym.reduce((acc, tr) => {
-        const rr = rrAtPrice(tr, latest.close);
-        const riskUsd = Number(tr.risk_usd_used || 0);
-        if (!Number.isFinite(riskUsd) || riskUsd <= 0) return acc;
-        return acc + rr * riskUsd;
-      }, 0);
-      const pnlR = openForSym.reduce((acc, tr) => acc + rrAtPrice(tr, latest.close), 0);
-      meta.innerHTML = `${symbol} • TF <b>${tf}</b> • last <b>${fmt.n(latest.close, 3)}</b> • open trades <b>${openForSym.length}</b> • live <b class="${klass(pnlUsd)}">${fmt.usd(pnlUsd)} / ${fmt.r(pnlR, 3)}</b> • source <b>${source}</b>`;
+      return out;
     }
 
-    function renderOpenExposure(openTrades, cycles) {
-      const rows = (cycles || []).slice(-1400).map(c => ({
-        symbol: String(c.symbol || "").toUpperCase(),
-        price: Number(c.price || 0),
-        ts: tsMs(c.server_ts || c.ts || c.timestamp || c.time || 0),
-      })).filter(r => r.symbol && Number.isFinite(r.price) && r.price > 0 && r.ts > 0);
-      const liveTs = Number(state.livePriceTs || Date.now());
-      for (const [sym, px] of Object.entries(state.livePrices || {})) {
-        const p = Number(px);
-        if (!Number.isFinite(p) || p <= 0) continue;
-        rows.push({ symbol: String(sym).toUpperCase(), price: p, ts: liveTs });
-      }
-      const series = [];
-      if (rows.length && (openTrades || []).length) {
-        rows.sort((a, b) => a.ts - b.ts);
-        const latest = new Map();
-        for (const row of rows) {
-          latest.set(row.symbol, row.price);
-          let totalR = 0;
-          let active = 0;
-          for (const tr of openTrades) {
-            const sym = String(tr.symbol || "").toUpperCase();
-            const entryTs = tsMs(tr.entry_time || tr.entryTs || tr.entry_ts || 0);
-            if (!sym || (entryTs > 0 && row.ts < entryTs)) continue;
-            const px = latest.get(sym);
-            if (!Number.isFinite(px)) continue;
-            totalR += rrAtPrice(tr, px);
-            active += 1;
-          }
-          if (active > 0) series.push(totalR);
-        }
-      }
-      drawSeries("openExposureCanvas", "openExposureEmpty", series.slice(-320), {
-        color: "rgba(98, 229, 255, .96)",
-        fill: true,
-        fillTop: "rgba(98, 229, 255, .24)",
+    function renderCharts(trades, equityCurve) {
+      const eq = (equityCurve || []).map((p) => toNum(p.equity_r, 0));
+      const dd = (equityCurve || []).map((p) => toNum(p.drawdown_r, 0));
+      drawLine("equityCanvas", "equityEmpty", eq, { color: "rgba(98,166,255,.96)", fillTop: "rgba(93,158,255,.28)" });
+      drawLine("drawdownCanvas", "drawdownEmpty", dd, { color: "rgba(255,111,143,.95)", fillTop: "rgba(255,111,143,.22)" });
+
+      const closed = (trades || []).filter((t) => statusOf(t.status) === "closed");
+      const pnl = closed.slice(-80).map((t) => tradeNetR(t));
+      drawBars("pnlCanvas", "pnlEmpty", pnl);
+
+      const wr = rollingWinRate(closed, 20);
+      drawLine("qualityCanvas", "qualityEmpty", wr, {
+        color: "rgba(100,230,255,.97)",
+        fillTop: "rgba(100,230,255,.22)",
+        minY: 0,
+        maxY: 1,
+        baseline: 0.45,
       });
-      const liveTotal = series.length ? series[series.length - 1] : 0;
-      const peak = series.length ? Math.max(...series) : 0;
-      const trough = series.length ? Math.min(...series) : 0;
-      $("openExposureMeta").innerHTML = [
-        `Open exposure now <b class="${klass(liveTotal)}">${fmt.r(liveTotal, 3)}</b>`,
-        `peak <b class="${klass(peak)}">${fmt.r(peak, 3)}</b>`,
-        `trough <b class="${klass(trough)}">${fmt.r(trough, 3)}</b>`,
-        `samples <b>${series.length}</b>`
-      ].join(" • ");
     }
 
-    function renderOpenVisuals(openTrades, latest, cycleSeriesMap) {
-      const root = $("openVisuals");
-      state.openSparkSeries = {};
-      if (!openTrades.length) {
-        root.innerHTML = `<div class="small">No open trades to visualize yet.</div>`;
-        return;
-      }
-      const cards = openTrades.slice(0, 40).map((t, idx) => {
-        const tr = buildOpenTradeTrack(t, latest, cycleSeriesMap);
-        const cid = `openSpark_${t.id || idx}_${idx}`;
-        state.openSparkSeries[cid] = tr.rrSeries;
-        const liveCls = klass(tr.liveR);
-        const ageTxt = tr.ageMins >= 120
-          ? `${fmt.n(tr.ageMins / 60, 1)}h`
-          : `${fmt.n(tr.ageMins, 0)}m`;
-        return `
-          <article class="trade-visual-card">
-            <div class="trade-visual-top">
-              <div>
-                <div class="trade-visual-title">${tr.symbol || "-"}</div>
-                <div class="trade-visual-meta">#${t.id ?? "-"} • ${ageTxt} live</div>
-              </div>
-              <span class="tag ${tr.side.toLowerCase()}">${tr.side}</span>
-            </div>
-            <div class="trade-visual-stats">
-              <div class="trade-visual-stat"><div class="k">Live R</div><div class="v ${liveCls}">${fmt.n(tr.liveR, 3)}</div></div>
-              <div class="trade-visual-stat"><div class="k">Price</div><div class="v">${fmt.n(tr.latestPx, 3)}</div></div>
-              <div class="trade-visual-stat"><div class="k">Lev</div><div class="v">x${fmt.n(tr.leverage || 1, 2)}</div></div>
-              <div class="trade-visual-stat"><div class="k">Live USD</div><div class="v ${liveCls}">${fmt.usd(tr.liveUsd || 0)}</div></div>
-            </div>
-            <div class="risk-rail">
-              <div class="risk-label" style="left:${tr.slPct}%">SL</div>
-              <div class="risk-label" style="left:${tr.entryPct}%">ENTRY</div>
-              <div class="risk-label" style="left:${tr.tpPct}%">TP</div>
-              <div class="risk-marker" style="left:${tr.slPct}%"></div>
-              <div class="risk-marker" style="left:${tr.entryPct}%"></div>
-              <div class="risk-marker" style="left:${tr.tpPct}%"></div>
-              <div class="risk-dot" style="left:${tr.livePct}%"></div>
-            </div>
-            <div class="sparkline-wrap">
-              <canvas id="${cid}"></canvas>
-            </div>
-          </article>
-        `;
-      });
-      root.innerHTML = cards.join("");
-      for (const [cid, series] of Object.entries(state.openSparkSeries)) {
-        const tail = Number(series?.[series.length - 1] || 0);
-        drawSparkline(cid, series, tail >= 0 ? "rgba(42, 226, 173, .95)" : "rgba(255, 111, 141, .95)");
-      }
+    function calcLiveR(trade, priceMap) {
+      const entry = toNum(trade.entry_price ?? trade.entryPrice, NaN);
+      const sl = toNum(trade.stop_loss ?? trade.stopLoss ?? trade.initial_sl, NaN);
+      const risk = Math.abs(entry - sl);
+      const symbol = String(trade.symbol || "").toUpperCase();
+      const px = toNum(priceMap[symbol], NaN);
+      if (!Number.isFinite(entry) || !Number.isFinite(sl) || !Number.isFinite(px) || risk <= 1e-9) return 0;
+      return sideOf(trade.side) === "SHORT" ? (entry - px) / risk : (px - entry) / risk;
     }
 
     function renderOpenTrades(trades, cycles) {
-      const latest = priceMapWithLive(cycles);
-      const cycleSeriesMap = buildCyclePriceSeries(cycles);
-      const open = (trades || []).filter(t => String(t.status || "").toLowerCase() === "open").reverse();
-      renderOpenTradeCandlePanel(open, cycles);
-      renderTradeManagerControls(open);
-      $("openBody").innerHTML = open.length ? open.map(t => {
-        const entry = Number(t.entry_price || t.entryPrice || 0);
-        const sl = Number(t.stop_loss || t.stopLoss || t.initial_sl || entry);
-        const px = Number(latest.get(String(t.symbol || "").toUpperCase()) || entry);
-        const rr = rrAtPrice(t, px);
-        const side = String(t.side || "LONG").toUpperCase();
-        const sid = String(t.session_id || state.sessionId || "-");
-        const lev = Number(t.leverage || 1);
-        const riskUsd = Number(t.risk_usd_used || 0);
-        const liveUsd = Number.isFinite(riskUsd) && riskUsd > 0 ? rr * riskUsd : 0;
+      const priceMap = buildCyclePriceMap(cycles);
+      const rows = (trades || []).filter((t) => statusOf(t.status) === "open").slice().reverse().slice(0, 180);
+      $("openBody").innerHTML = rows.length ? rows.map((t) => {
+        const rr = calcLiveR(t, priceMap);
+        const riskUsd = toNum(t.risk_usd_used, NaN);
+        const liveUsd = Number.isFinite(riskUsd) && riskUsd > 0 ? rr * riskUsd : NaN;
+        const sym = String(t.symbol || "").toUpperCase();
+        const px = toNum(priceMap[sym], NaN);
+        const sid = String(t.session_id || state.sessionId || "");
         return `
           <tr>
             <td>${t.id ?? "-"}</td>
-            <td class="mono">${sid}</td>
-            <td>${t.symbol ?? "-"}</td>
-            <td><span class="tag ${side.toLowerCase()}">${side}</span></td>
-            <td>${fmt.n(entry, 2)}</td>
-            <td>${fmt.n(sl, 2)}</td>
-            <td>${fmt.n(t.take_profit || t.tp2 || t.take_profit_price || 0, 2)}</td>
-            <td class="${klass(rr)}">${fmt.n(rr, 3)}</td>
-            <td class="${klass(liveUsd)}">${fmt.usd(liveUsd)}</td>
-            <td>x${fmt.n(lev, 2)}</td>
-            <td>${fmt.usd(riskUsd)}</td>
-            <td>
-              <div class="action-stack">
-                <button class="btn xs mono" data-action="breakeven" data-trade-id="${t.id}" data-session="${sid}">BE</button>
-                <button class="btn xs mono" data-action="partial25" data-trade-id="${t.id}" data-session="${sid}">25%</button>
-                <button class="btn xs mono" data-action="partial50" data-trade-id="${t.id}" data-session="${sid}">50%</button>
-                <button class="btn xs mono warn" data-close-id="${t.id}" data-close-session="${sid}">Close</button>
-              </div>
-            </td>
-          </tr>`;
-      }).join("") : `<tr><td colspan="12" class="small">No open positions.</td></tr>`;
-      renderOpenExposure(open, cycles);
-      renderOpenVisuals(open, latest, cycleSeriesMap);
+            <td>${sid}</td>
+            <td>${sym || "-"}</td>
+            <td><span class="tag ${String(t.side || "").toLowerCase()}">${t.side ?? "-"}</span></td>
+            <td>${fmt.n(t.entry_price ?? t.entryPrice, 4)}</td>
+            <td>${Number.isFinite(px) ? fmt.n(px, px > 1000 ? 2 : 4) : "-"}</td>
+            <td>${fmt.n(t.stop_loss ?? t.stopLoss ?? t.initial_sl, 4)}</td>
+            <td>${fmt.n(t.take_profit ?? t.take_profit_price ?? t.tp2, 4)}</td>
+            <td class="${klass(rr)}">${fmt.r(rr, 3)}</td>
+            <td class="${klass(liveUsd)}">${Number.isFinite(liveUsd) ? fmt.usd(liveUsd) : "-"}</td>
+            <td><button class="btn xs close-trade" data-trade-id="${t.id}" data-session-id="${sid}">Close</button></td>
+          </tr>
+        `;
+      }).join("") : `<tr><td colspan="11" class="small">No open positions.</td></tr>`;
     }
 
-    function renderSignals(preds) {
-      const rows = (preds || []).slice().reverse().slice(0, 260);
-      $("signalBody").innerHTML = rows.length ? rows.map(p => `
+    function renderSignals(predictions) {
+      const rows = (predictions || []).slice().reverse().slice(0, 220);
+      $("signalBody").innerHTML = rows.length ? rows.map((p) => `
         <tr>
           <td>${p.id ?? "-"}</td>
-          <td class="mono">${p.session_id ?? "-"}</td>
+          <td>${p.session_id ?? "-"}</td>
           <td>${p.symbol ?? "-"}</td>
           <td><span class="tag ${String(p.action || "").toLowerCase()}">${p.action ?? "-"}</span></td>
           <td>${fmt.pct(p.confidence ?? p.p_enter ?? 0, 2)}</td>
-          <td>${fmt.n(p.edge ?? p.expected_return ?? 0, 4)}</td>
+          <td class="${klass(p.edge ?? p.expected_return ?? 0)}">${fmt.n(p.edge ?? p.expected_return ?? 0, 4)}</td>
           <td>${p.model_name ?? "-"}</td>
-          <td>${String(p.engine || "-").toUpperCase()}</td>
         </tr>
-      `).join("") : `<tr><td colspan="8" class="small">No signals yet.</td></tr>`;
+      `).join("") : `<tr><td colspan="7" class="small">No predictions yet.</td></tr>`;
     }
 
     function renderTrades(trades) {
-      const rows = (trades || []).slice().reverse().slice(0, 500);
-      $("tradeBody").innerHTML = rows.length ? rows.map(t => {
-        const status = String(t.status || "-").toLowerCase();
-        const maybeManual = t.manual_close ? "manual" : "";
+      const rows = (trades || []).slice().reverse().slice(0, 240);
+      $("tradeBody").innerHTML = rows.length ? rows.map((t) => {
+        const nr = tradeNetR(t);
+        const nusd = toNum(t.pnl_usd, nr * toNum(t.risk_usd_used, 0));
         return `
           <tr>
             <td>${t.id ?? "-"}</td>
-            <td class="mono">${t.session_id ?? "-"}</td>
+            <td>${t.session_id ?? "-"}</td>
             <td>${t.symbol ?? "-"}</td>
             <td><span class="tag ${String(t.side || "").toLowerCase()}">${t.side ?? "-"}</span></td>
-            <td><span class="tag ${status}">${status}${maybeManual ? `:${maybeManual}` : ""}</span></td>
+            <td><span class="tag ${String(t.status || "").toLowerCase()}">${t.status ?? "-"}</span></td>
             <td>x${fmt.n(t.leverage ?? 1, 2)}</td>
-            <td class="${klass(t.gross_r)}">${fmt.n(t.gross_r ?? 0, 4)}</td>
-            <td>${fmt.n(t.cost_r ?? 0, 4)}</td>
-            <td class="${klass(t.net_r ?? t.gross_r)}">${fmt.n(t.net_r ?? t.gross_r ?? 0, 4)}</td>
-            <td>${fmt.usd(t.pnl_usd ?? 0)}</td>
-            <td title="${t.exit_reason || t.outcome || "-"}">${t.outcome || "-"}</td>
+            <td class="${klass(nr)}">${fmt.n(nr, 4)}</td>
+            <td class="${klass(nusd)}">${fmt.usd(nusd)}</td>
+            <td>${fmt.ts(t.close_ts ?? t.exit_ts ?? t.updated_at)}</td>
           </tr>
         `;
-      }).join("") : `<tr><td colspan="11" class="small">No trades yet.</td></tr>`;
+      }).join("") : `<tr><td colspan="9" class="small">No trades yet.</td></tr>`;
     }
 
     function renderCycles(cycles) {
-      const rows = (cycles || []).slice().reverse().slice(0, 420);
-      $("cycleBody").innerHTML = rows.length ? rows.map(c => `
-        <tr>
-          <td>${c.id ?? "-"}</td>
-          <td class="mono">${c.session_id ?? "-"}</td>
-          <td>${c.symbol ?? "-"}</td>
-          <td>${c.decision ?? "-"}</td>
-          <td>${c.decision_stage || "-"}/${c.execution_status || "-"}</td>
-          <td>${c.direction ?? "-"}</td>
-          <td>${fmt.pct(c.p_enter ?? 0, 2)}</td>
-          <td>${fmt.n(c.price ?? 0, 2)}</td>
-          <td title="${Array.isArray(c.reasons) ? c.reasons.join(" | ") : (c.hold_reason || "-")}">${c.hold_reason || (Array.isArray(c.reasons) ? c.reasons[0] : "-")}</td>
-        </tr>
-      `).join("") : `<tr><td colspan="9" class="small">No cycle logs yet.</td></tr>`;
+      const rows = (cycles || []).slice().reverse().slice(0, 260);
+      $("cycleBody").innerHTML = rows.length ? rows.map((c) => {
+        const reason = c.hold_reason || (Array.isArray(c.reasons) ? c.reasons[0] : "-") || "-";
+        return `
+          <tr>
+            <td>${c.id ?? "-"}</td>
+            <td>${c.session_id ?? "-"}</td>
+            <td>${c.symbol ?? "-"}</td>
+            <td>${c.decision ?? "-"}</td>
+            <td>${c.direction ?? "-"}</td>
+            <td>${fmt.pct(c.p_enter ?? 0, 2)}</td>
+            <td>${fmt.n(c.price ?? 0, 4)}</td>
+            <td title="${Array.isArray(c.reasons) ? c.reasons.join(" | ") : reason}">${reason}</td>
+          </tr>
+        `;
+      }).join("") : `<tr><td colspan="8" class="small">No cycle logs yet.</td></tr>`;
     }
 
-    function renderCharts(payload) {
-      const curve = Array.isArray(payload.equity_curve) ? payload.equity_curve : [];
-      const trades = Array.isArray(payload.trades) ? payload.trades : [];
-      const eq = curve.map(x => Number(x.equity_r || 0));
-      drawSeries("equityCanvas", "eqEmpty", eq, { color: "rgba(90, 170, 255, .95)", fill: true });
-      const closed = trades.filter(t => String(t.status || "").toLowerCase() === "closed");
-      const grossCum = [];
-      const netCum = [];
-      let g = 0;
-      let n = 0;
-      closed.forEach(t => {
-        g += Number(t.gross_r || t.net_r || 0);
-        n += Number(t.net_r || t.gross_r || 0);
-        grossCum.push(g);
-        netCum.push(n);
-      });
-      const diff = grossCum.map((gv, i) => gv - (netCum[i] || 0));
-      drawSeries("grossCanvas", "grossEmpty", diff, { color: "rgba(255, 209, 102, .92)", fill: true, fillTop: "rgba(255, 209, 102, .28)" });
+    async function manualCloseTrade(tradeId, sessionId) {
+      const sid = String(sessionId || state.sessionId || "").trim();
+      if (!tradeId) return;
+      try {
+        const url = `/api/paper/trade/${encodeURIComponent(tradeId)}/manual-close${sid ? `?session_id=${encodeURIComponent(sid)}` : ""}`;
+        await fetchJson(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ note: "dashboard_manual_close" }),
+        });
+        await tick();
+      } catch (e) {
+        showConnection(false, e.message || "manual close failed");
+      }
     }
 
-    function applyState() {
-      const payload = state.data || {};
+    function applyData() {
+      const payload = state.data || emptyPayload();
       const summary = payload.summary || {};
-      const preds = Array.isArray(payload.predictions) ? payload.predictions : [];
-      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
       const trades = Array.isArray(payload.trades) ? payload.trades : [];
-      const models = Array.isArray(payload.models) ? payload.models : (summary.models || []);
-      const assets = Array.isArray(payload.assets) ? payload.assets : [];
-      const liveSummary = summaryWithLiveMarkToMarket(summary, trades, cycles);
+      const predictions = Array.isArray(payload.predictions) ? payload.predictions : [];
+      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+      const eq = Array.isArray(payload.equity_curve) ? payload.equity_curve : [];
+      const models = Array.isArray(payload.models) ? payload.models : [];
 
-      renderMetrics(liveSummary);
-      renderInsights(liveSummary, trades, cycles, assets);
-      renderPaperControls(liveSummary);
-      renderModels(models);
-      renderAssets(assets);
-      drawMarketChart(cycles, trades, liveSummary);
+      renderKPIs(summary, trades);
+      renderRunMeta(summary, payload);
+      renderInsights(summary, trades, predictions, cycles, models);
       renderOpenTrades(trades, cycles);
-      renderSignals(preds);
+      renderSignals(predictions);
       renderTrades(trades);
       renderCycles(cycles);
-      renderCharts(payload);
-
-      const stamp = new Date().toLocaleTimeString();
-      const sessTxt = liveSummary.session_id === "__all__"
-        ? `All sessions (${liveSummary.session_count || state.sessions.length || 0})`
-        : `Session ${liveSummary.session_id || state.sessionId}`;
-      $("runMeta").textContent = `${sessTxt} • Engine ${String(liveSummary.engine || ENGINE_FILTER).toUpperCase()} • Assets ${liveSummary.asset_count || assets.length || 0} • Open ${liveSummary.open_positions || 0} • Equity ${fmt.usd(liveSummary.equity_live_usd || liveSummary.paper_equity_usd || 0)} • Updated ${stamp}`;
-    }
-
-    function setStatus(ok, msg = "") {
-      $("liveState").innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${ok ? "var(--pos)" : "var(--neg)"};display:inline-block"></span>${ok ? "Live" : "Disconnected"}${msg ? ` • ${msg}` : ""}`;
-    }
-
-    async function manualClose(tradeId, tradeSessionId) {
-      const id = Number(tradeId);
-      if (!Number.isFinite(id)) return;
-      const sid = String(tradeSessionId || state.sessionId || "default");
-      await fetchJson(
-        `/api/paper/trade/${id}/manual-close?session_id=${encodeURIComponent(sid)}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ note: "manual_close_ui", fee_bps: 8.0 }),
-        },
-      );
-      await tick();
-    }
-
-    function parseTradeSelectorValue(raw) {
-      const text = String(raw || "");
-      const sep = text.indexOf("::");
-      if (sep <= 0) return null;
-      const id = Number(text.slice(0, sep));
-      const sid = text.slice(sep + 2);
-      if (!Number.isFinite(id) || !sid) return null;
-      return { id, sessionId: sid };
-    }
-
-    function selectedManagerTrade() {
-      const sel = $("tmTradeSelect");
-      return parseTradeSelectorValue(sel?.value || "");
-    }
-
-    async function runTradeManagerAction(action, extra = {}) {
-      const selected = selectedManagerTrade();
-      if (!selected) {
-        $("tmStatus").textContent = "Pick an open trade first.";
-        return;
-      }
-      const payload = {
-        action,
-        note: String($("tmNoteInput").value || "dashboard_trade_manager"),
-        ...extra,
-      };
-      $("tmStatus").textContent = `Executing ${action}...`;
-      await fetchJson(
-        `/api/paper/trade/${selected.id}/manager-action?session_id=${encodeURIComponent(selected.sessionId)}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        },
-      );
-      $("tmStatus").textContent = `Executed ${action}.`;
-      await tick();
-    }
-
-    function renderTradeManagerControls(openTrades) {
-      const sel = $("tmTradeSelect");
-      const rows = (openTrades || []).map((t) => {
-        const id = Number(t.id || 0);
-        const sid = String(t.session_id || state.sessionId || "default");
-        const sym = String(t.symbol || "-");
-        const side = String(t.side || "LONG").toUpperCase();
-        return { id, sid, label: `#${id} ${sym} ${side} • ${sid}` };
-      }).filter((r) => Number.isFinite(r.id) && r.id > 0 && r.sid);
-      if (!rows.length) {
-        sel.innerHTML = `<option value="">No open trades</option>`;
-        $("tmStatus").textContent = "No open trades to manage.";
-        return;
-      }
-      const current = parseTradeSelectorValue(sel.value || "");
-      const currentKey = current ? `${current.id}::${current.sessionId}` : "";
-      sel.innerHTML = rows.map((r) => `<option value="${r.id}::${r.sid}">${r.label}</option>`).join("");
-      const fallback = rows[0];
-      const match = rows.find((r) => `${r.id}::${r.sid}` === currentKey) || fallback;
-      sel.value = `${match.id}::${match.sid}`;
+      renderCharts(trades, eq);
+      renderMarketList(collectTrackedSymbols(payload), cycles);
     }
 
     async function tick() {
       try {
         await loadSessions();
         await loadState();
-        const payload = state.data || {};
-        const summary = payload.summary || {};
-        const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
-        const trades = Array.isArray(payload.trades) ? payload.trades : [];
-        await refreshLiveTicks(summary, cycles, trades);
-        await refreshMarketCandles(summary, cycles, trades);
-        await refreshOpenTradeCandles(summary, cycles, trades);
-        applyState();
-        setStatus(true);
-      } catch (err) {
-        setStatus(false, err.message || "fetch error");
+        const symbols = collectTrackedSymbols(state.data || emptyPayload());
+        await refreshMarketPrices(symbols);
+        applyData();
+        showConnection(true);
+      } catch (e) {
+        showConnection(false, e.message || "fetch error");
       }
-    }
-
-    async function tickLiveOnly() {
-      if (!state.data) return;
-      const payload = state.data || {};
-      const summary = payload.summary || {};
-      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
-      const trades = Array.isArray(payload.trades) ? payload.trades : [];
-      const assets = Array.isArray(payload.assets) ? payload.assets : [];
-      await refreshLiveTicks(summary, cycles, trades);
-      await refreshMarketCandles(summary, cycles, trades);
-      await refreshOpenTradeCandles(summary, cycles, trades);
-      const liveSummary = summaryWithLiveMarkToMarket(summary, trades, cycles);
-      renderMetrics(liveSummary);
-      renderInsights(liveSummary, trades, cycles, assets);
-      renderPaperControls(liveSummary);
-      renderAssets(assets);
-      drawMarketChart(cycles, trades, liveSummary);
-      renderOpenTrades(trades, cycles);
-      const stamp = new Date().toLocaleTimeString();
-      const sessTxt = liveSummary.session_id === "__all__"
-        ? `All sessions (${liveSummary.session_count || state.sessions.length || 0})`
-        : `Session ${liveSummary.session_id || state.sessionId}`;
-      $("runMeta").textContent = `${sessTxt} • Engine ${String(liveSummary.engine || ENGINE_FILTER).toUpperCase()} • Assets ${liveSummary.asset_count || assets.length || 0} • Open ${liveSummary.open_positions || 0} • Equity ${fmt.usd(liveSummary.equity_live_usd || liveSummary.paper_equity_usd || 0)} • Updated ${stamp}`;
     }
 
     function schedule() {
       if (state.timer) clearInterval(state.timer);
       if (!state.auto) return;
-      state.timer = setInterval(tick, 2500);
-    }
-
-    function scheduleLiveTicks() {
-      if (state.liveTimer) clearInterval(state.liveTimer);
-      if (!state.auto) return;
-      state.liveTimer = setInterval(() => {
-        tickLiveOnly().catch(() => {});
-      }, 1000);
+      state.timer = setInterval(tick, 5000);
     }
 
     $("refreshBtn").addEventListener("click", () => tick());
@@ -2613,205 +1331,25 @@
       $("autoBtn").textContent = `Auto: ${state.auto ? "ON" : "OFF"}`;
       $("autoBtn").classList.toggle("warn", !state.auto);
       schedule();
-      scheduleLiveTicks();
     });
     $("sessionSelect").addEventListener("change", (e) => {
-      state.sessionId = e.target.value || "default";
+      state.sessionId = e.target.value || "__all__";
       tick();
     });
-    $("savePaperBtn").addEventListener("click", () => savePaperSettings());
-    $("marketSymbolSelect").addEventListener("change", (e) => {
-      state.marketSymbol = String(e.target.value || "BTCUSDT").toUpperCase();
-      if (!state.data) return;
-      const payload = state.data || {};
-      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
-      const trades = Array.isArray(payload.trades) ? payload.trades : [];
-      const summary = payload.summary || {};
-      refreshMarketCandles(summary, cycles, trades).finally(() => {
-        drawMarketChart(cycles, trades, summary);
-        refreshOpenTradeCandles(summary, cycles, trades).finally(() => {
-          renderOpenTradeCandlePanel((trades || []).filter(t => String(t.status || "").toLowerCase() === "open"), cycles);
-        });
-      });
-    });
-    $("marketTfSelect").addEventListener("change", (e) => {
-      state.marketInterval = String(e.target.value || "1m");
-      if (!state.data) return;
-      const payload = state.data || {};
-      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
-      const trades = Array.isArray(payload.trades) ? payload.trades : [];
-      const summary = payload.summary || {};
-      refreshMarketCandles(summary, cycles, trades).finally(() => {
-        drawMarketChart(cycles, trades, summary);
-        refreshOpenTradeCandles(summary, cycles, trades).finally(() => {
-          renderOpenTradeCandlePanel((trades || []).filter(t => String(t.status || "").toLowerCase() === "open"), cycles);
-        });
-      });
-    });
-    $("marketDepthSelect").addEventListener("change", (e) => {
-      state.marketDepth = nearestDepthStep(Number(e.target.value || 240));
-      if (!state.data) return;
-      const payload = state.data || {};
-      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
-      const trades = Array.isArray(payload.trades) ? payload.trades : [];
-      const summary = payload.summary || {};
-      refreshMarketCandles(summary, cycles, trades).finally(() => {
-        drawMarketChart(cycles, trades, summary);
-        renderOpenTradeCandlePanel((trades || []).filter(t => String(t.status || "").toLowerCase() === "open"), cycles);
-      });
-    });
-    $("marketZoomIn").addEventListener("click", () => {
-      state.marketDepth = stepDepth(state.marketDepth, -1);
-      $("marketDepthSelect").value = String(state.marketDepth);
-      if (!state.data) return;
-      const payload = state.data || {};
-      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
-      const trades = Array.isArray(payload.trades) ? payload.trades : [];
-      const summary = payload.summary || {};
-      refreshMarketCandles(summary, cycles, trades).finally(() => {
-        drawMarketChart(cycles, trades, summary);
-      });
-    });
-    $("marketZoomOut").addEventListener("click", () => {
-      state.marketDepth = stepDepth(state.marketDepth, +1);
-      $("marketDepthSelect").value = String(state.marketDepth);
-      if (!state.data) return;
-      const payload = state.data || {};
-      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
-      const trades = Array.isArray(payload.trades) ? payload.trades : [];
-      const summary = payload.summary || {};
-      refreshMarketCandles(summary, cycles, trades).finally(() => {
-        drawMarketChart(cycles, trades, summary);
-      });
-    });
-    $("openTradeSymbolSelect").addEventListener("change", (e) => {
-      state.openTradeSymbol = String(e.target.value || "BTCUSDT").toUpperCase();
-      if (!state.data) return;
-      const payload = state.data || {};
-      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
-      const trades = Array.isArray(payload.trades) ? payload.trades : [];
-      const summary = payload.summary || {};
-      refreshOpenTradeCandles(summary, cycles, trades).finally(() => {
-        renderOpenTradeCandlePanel((trades || []).filter(t => String(t.status || "").toLowerCase() === "open"), cycles);
-      });
-    });
-    $("openZoomIn").addEventListener("click", () => {
-      state.openTradeDepth = stepDepth(state.openTradeDepth, -1);
-      if (!state.data) return;
-      const payload = state.data || {};
-      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
-      const trades = Array.isArray(payload.trades) ? payload.trades : [];
-      const summary = payload.summary || {};
-      refreshOpenTradeCandles(summary, cycles, trades).finally(() => {
-        renderOpenTradeCandlePanel((trades || []).filter(t => String(t.status || "").toLowerCase() === "open"), cycles);
-      });
-    });
-    $("openZoomOut").addEventListener("click", () => {
-      state.openTradeDepth = stepDepth(state.openTradeDepth, +1);
-      if (!state.data) return;
-      const payload = state.data || {};
-      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
-      const trades = Array.isArray(payload.trades) ? payload.trades : [];
-      const summary = payload.summary || {};
-      refreshOpenTradeCandles(summary, cycles, trades).finally(() => {
-        renderOpenTradeCandlePanel((trades || []).filter(t => String(t.status || "").toLowerCase() === "open"), cycles);
-      });
-    });
-    $("openBody").addEventListener("click", async (e) => {
-      const actBtn = e.target.closest("[data-action]");
-      if (actBtn) {
-        const action = String(actBtn.getAttribute("data-action") || "");
-        const tradeId = Number(actBtn.getAttribute("data-trade-id") || 0);
-        const sid = String(actBtn.getAttribute("data-session") || state.sessionId || "default");
-        if (Number.isFinite(tradeId) && tradeId > 0) {
-          $("tmTradeSelect").value = `${tradeId}::${sid}`;
-          actBtn.disabled = true;
-          try {
-            if (action === "breakeven") {
-              await runTradeManagerAction("breakeven");
-            } else if (action === "partial25") {
-              await runTradeManagerAction("partial_close", { close_pct: 25 });
-            } else if (action === "partial50") {
-              await runTradeManagerAction("partial_close", { close_pct: 50 });
-            }
-          } finally {
-            actBtn.disabled = false;
-          }
-        }
-        return;
-      }
-      const btn = e.target.closest("[data-close-id]");
-      if (!btn) return;
-      const id = btn.getAttribute("data-close-id");
-      const sid = btn.getAttribute("data-close-session") || state.sessionId;
-      btn.disabled = true;
-      btn.textContent = "Closing...";
-      try {
-        await manualClose(id, sid);
-      } catch (err) {
-        btn.disabled = false;
-        btn.textContent = "Manual Close";
-      }
-    });
-    $("tmBreakevenBtn").addEventListener("click", async () => {
-      try {
-        await runTradeManagerAction("breakeven");
-      } catch (err) {
-        $("tmStatus").textContent = `Breakeven failed: ${err.message || err}`;
-      }
-    });
-    $("tmMoveSlBtn").addEventListener("click", async () => {
-      const newSl = Number($("tmNewSlInput").value || 0);
-      if (!Number.isFinite(newSl) || newSl <= 0) {
-        $("tmStatus").textContent = "Enter a valid new stop loss.";
-        return;
-      }
-      try {
-        await runTradeManagerAction("move_sl", { new_stop_loss: newSl });
-      } catch (err) {
-        $("tmStatus").textContent = `Move SL failed: ${err.message || err}`;
-      }
-    });
-    $("tmPartialBtn").addEventListener("click", async () => {
-      const pct = Number($("tmClosePctInput").value || 25);
-      if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
-        $("tmStatus").textContent = "Partial close % must be 1-100.";
-        return;
-      }
-      try {
-        await runTradeManagerAction("partial_close", { close_pct: pct });
-      } catch (err) {
-        $("tmStatus").textContent = `Partial close failed: ${err.message || err}`;
-      }
-    });
-    $("tmForceCloseBtn").addEventListener("click", async () => {
-      try {
-        await runTradeManagerAction("force_close");
-      } catch (err) {
-        $("tmStatus").textContent = `Force close failed: ${err.message || err}`;
-      }
+    $("openBody").addEventListener("click", (ev) => {
+      const target = ev.target.closest(".close-trade");
+      if (!target) return;
+      const tradeId = target.getAttribute("data-trade-id");
+      const sid = target.getAttribute("data-session-id") || state.sessionId;
+      manualCloseTrade(tradeId, sid);
     });
     window.addEventListener("resize", () => {
-      if (!state.data) return;
-      const payload = state.data || {};
-      renderCharts(payload);
-      const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
-      const trades = Array.isArray(payload.trades) ? payload.trades : [];
-      const summary = payload.summary || {};
-      drawMarketChart(cycles, trades, summary);
-      renderOpenTrades(trades, cycles);
+      if (state.data) applyData();
     });
 
-    state.marketDepth = nearestDepthStep(state.marketDepth);
-    state.openTradeDepth = nearestDepthStep(state.openTradeDepth);
-    $("marketTfSelect").value = state.marketInterval;
-    $("marketDepthSelect").value = String(state.marketDepth);
-    $("marketZoomLabel").textContent = `zoom ${state.marketDepth}`;
-    $("openZoomLabel").textContent = `zoom ${state.openTradeDepth}`;
     setupRouteUI();
     tick();
     schedule();
-    scheduleLiveTicks();
   </script>
 </body>
 </html>
