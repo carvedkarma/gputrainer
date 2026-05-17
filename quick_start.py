@@ -5822,6 +5822,8 @@ Examples:
                         help="MYTHOS optimizer objective profile: balanced, precision-first, aggression/participation-first, or ultra final-stage blend (default: balanced)")
     parser.add_argument("--mythos-strategy-search-max-candidates", type=int, default=10,
                         help="MYTHOS optimizer: number of built-in strategy candidates to evaluate (default: 10)")
+    parser.add_argument("--mythos-strategy-search-folds", type=int, default=6,
+                        help="MYTHOS optimizer: max folds evaluated per strategy candidate (default: 6; set 0 to use global fold count)")
     parser.add_argument("--mythos-strategy-search-report-path", type=str, default="checkpoints/mythos_strategy_search.json",
                         help="MYTHOS optimizer: summary leaderboard path for strategy search (default: checkpoints/mythos_strategy_search.json)")
     parser.add_argument("--mythos-save-best-model", action="store_true", default=True,
@@ -7798,6 +7800,13 @@ Examples:
                     int(base_cfg.get("robust_validation_trial_count", 1)),
                     len(strategy_specs),
                 )
+                search_fold_cap = int(max(getattr(args, "mythos_strategy_search_folds", 6), 0))
+                if search_fold_cap > 0:
+                    configured_max = base_cfg.get("max_folds")
+                    if configured_max is None:
+                        base_cfg["max_folds"] = int(search_fold_cap)
+                    else:
+                        base_cfg["max_folds"] = int(max(1, min(int(configured_max), search_fold_cap)))
                 best_strategy_name = "baseline"
                 best_strategy_score = float("-inf")
                 best_strategy_report = None
@@ -7805,9 +7814,10 @@ Examples:
                 ultra_eligible_candidates = 0
                 leaderboard = []
                 log.info(
-                    "[MYTHOS][SEARCH] objective=%s candidates=%d",
+                    "[MYTHOS][SEARCH] objective=%s candidates=%d max_folds_per_candidate=%s",
                     search_objective,
                     len(strategy_specs),
+                    base_cfg.get("max_folds"),
                 )
                 for idx, spec in enumerate(strategy_specs, start=1):
                     strat_name = str(spec.get("name", f"strategy_{idx}"))
@@ -7899,6 +7909,7 @@ Examples:
                     "objective": search_objective,
                     "symbol": symbols_list[0] if symbols_list else "UNKNOWN",
                     "candidates_tested": len(strategy_specs),
+                    "max_folds_per_candidate": int(base_cfg.get("max_folds")) if base_cfg.get("max_folds") is not None else None,
                     "eligible_candidates": int(ultra_eligible_candidates),
                     "best_strategy": best_strategy_name,
                     "best_score": round(best_strategy_score, 6),
