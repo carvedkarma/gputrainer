@@ -1342,6 +1342,7 @@ class LiveRunner:
         self._daily_r_date: str = ""
         self._last_candle_time: float = 0.0
         self._closed_trade_stats: List[Dict[str, object]] = []
+        self._no_candidate_streak: int = 0
 
         if self.execution_mode == "live" and self.execution is None:
             log.warning(
@@ -2613,8 +2614,12 @@ class LiveRunner:
                 candidates.append(result)
 
         if not candidates:
+            if self.live_model == "mythos":
+                self._no_candidate_streak += 1
             log.info("No candidates this cycle.")
             return
+        if self.live_model == "mythos":
+            self._no_candidate_streak = 0
 
         accepted = self.portfolio.filter_and_rank(candidates)
         accepted_ids = {id(c) for c in accepted}
@@ -2754,6 +2759,12 @@ class LiveRunner:
         atr = _compute_atr(df_candles)
         edge_floor = float(getattr(model, "live_edge_threshold", 0.0))
         conf_floor = float(getattr(model, "live_min_confidence", 0.0))
+        edge_floor_eff = edge_floor
+        conf_floor_eff = conf_floor
+        streak = int(getattr(self, "_no_candidate_streak", 0))
+        if self.execution_mode == "paper" and streak > 0:
+            edge_floor_eff = float(max(0.0, edge_floor - 0.0025 * float(streak)))
+            conf_floor_eff = float(max(0.50, conf_floor - 0.01 * float(min(streak, 8))))
         htf_score = 0
         cfg_obj = getattr(model, "cfg", None)
         min_expected_r = float(max(getattr(cfg_obj, "min_expected_r", 0.01), 1e-6))
@@ -2803,9 +2814,9 @@ class LiveRunner:
             "lane": "MYTHOS",
             "model_name": "mythos_runtime_live",
             "v5_score": round(edge, 4),
-            "v5_threshold": edge_floor,
+            "v5_threshold": edge_floor_eff,
             "v5_side": side,
-            "threshold_used": edge_floor,
+            "threshold_used": edge_floor_eff,
             "htf_score": htf_score,
             "mythos_uncertainty": round(uncertainty, 4),
             "mythos_regime": pred.get("regime"),
@@ -2821,6 +2832,11 @@ class LiveRunner:
             "lane_horizon": lane_horizon,
             "mythos_time_horizon": lane_horizon,
             "mythos_horizon_profile": "regime_adaptive",
+            "mythos_edge_floor_base": round(edge_floor, 4),
+            "mythos_conf_floor_base": round(conf_floor, 4),
+            "mythos_edge_floor_eff": round(edge_floor_eff, 4),
+            "mythos_conf_floor_eff": round(conf_floor_eff, 4),
+            "mythos_no_candidate_streak": streak,
         }
         if atr and atr > 0 and not (atr != atr):
             sl_dist = float(sl_mult_used * atr)
@@ -2834,21 +2850,43 @@ class LiveRunner:
             mythos_info["sl_dist_atr"] = round(sl_dist / atr, 3)
             mythos_info["tp_dist_atr"] = round(tp_dist / atr, 3)
 
-        if side not in {"LONG", "SHORT"} or abstain or edge < edge_floor or confidence < conf_floor:
+        side_eff = side
+        abstain_eff = abstain
+        if side_eff not in {"LONG", "SHORT"} and str(reason) == "edge_below_floor":
+            expert_name = str(pred.get("expert_name", "")).lower()
+            if "short" in expert_name:
+                side_eff = "SHORT"
+            elif "long" in expert_name:
+                side_eff = "LONG"
+        if (
+            self.execution_mode == "paper"
+            and streak >= 3
+            and abstain_eff
+            and str(reason) == "edge_below_floor"
+            and side_eff in {"LONG", "SHORT"}
+            and confidence >= conf_floor_eff
+        ):
+            abstain_eff = False
+            side = side_eff
+            mythos_info["paper_abstain_override"] = True
+            mythos_info["paper_abstain_override_reason"] = "edge_below_floor_streak_relax"
+            mythos_info["v5_side"] = side
+
+        if side not in {"LONG", "SHORT"} or abstain_eff or edge < edge_floor_eff or confidence < conf_floor_eff:
             blocks = []
             if side not in {"LONG", "SHORT"}:
                 blocks.append(f"neutral_side={side}")
-            if abstain:
+            if abstain_eff:
                 blocks.append(f"abstain:{reason or 'router_abstain'}")
-            if edge < edge_floor:
-                blocks.append(f"edge={edge:.4f}<floor={edge_floor:.4f}")
-            if confidence < conf_floor:
-                blocks.append(f"conf={confidence:.3f}<min={conf_floor:.3f}")
+            if edge < edge_floor_eff:
+                blocks.append(f"edge={edge:.4f}<floor={edge_floor_eff:.4f}")
+            if confidence < conf_floor_eff:
+                blocks.append(f"conf={confidence:.3f}<min={conf_floor_eff:.3f}")
             hold_reason = "; ".join(blocks) if blocks else "mythos_hold"
             mythos_info["hold_reason"] = hold_reason
             log.info(
-                "[MYTHOS_DECISION] sym=%s side=%s edge=%.4f conf=%.3f aware=%s exp=%+.3f n=%s abstain=%s -> HOLD reason=%s",
-                symbol, side, edge, confidence, aware.get("profile"), aware.get("expectancy_r", 0.0), aware.get("n", 0), abstain, hold_reason,
+                "[MYTHOS_DECISION] sym=%s side=%s edge=%.4f conf=%.3f aware=%s exp=%+.3f n=%s abstain=%s streak=%s floor=%.4f/%.3f -> HOLD reason=%s",
+                symbol, side, edge, confidence, aware.get("profile"), aware.get("expectancy_r", 0.0), aware.get("n", 0), abstain_eff, streak, edge_floor_eff, conf_floor_eff, hold_reason,
             )
             try:
                 self._push_cycle_log(
@@ -2868,9 +2906,10 @@ class LiveRunner:
 
         try:
             log.info(
-                "[MYTHOS_DECISION] sym=%s side=%s edge=%.4f conf=%.3f aware=%s exp=%+.3f n=%s expert=%s regime=%s -> ENTER",
+                "[MYTHOS_DECISION] sym=%s side=%s edge=%.4f conf=%.3f aware=%s exp=%+.3f n=%s expert=%s regime=%s streak=%s floor=%.4f/%.3f -> ENTER",
                 symbol, side, edge, confidence, aware.get("profile"), aware.get("expectancy_r", 0.0), aware.get("n", 0),
                 pred.get("expert_name"), pred.get("regime"),
+                streak, edge_floor_eff, conf_floor_eff,
             )
             self._push_cycle_log(
                 symbol=symbol,
