@@ -6259,6 +6259,36 @@ async def market_candles(
     return payload
 
 
+@app.post("/api/dashboard/session/reset")
+async def dashboard_reset_session(
+    session_id: str = Query(default="default"),
+    keep_settings: bool = Query(default=True),
+):
+    sid = str(session_id or "default").strip() or "default"
+    prev = _get_dashboard_session(sid)
+    cleared = {
+        "predictions": len(prev.predictions),
+        "cycle_logs": len(prev.cycle_logs),
+        "trades": len(prev.trade_order),
+    }
+
+    restored_settings = _session_paper_settings(prev)
+    fresh = _DashboardSessionState(session_id=sid)
+    if bool(keep_settings):
+        fresh.account_equity_usd = float(restored_settings.get("account_equity_usd", fresh.account_equity_usd))
+        fresh.risk_per_trade_pct = float(restored_settings.get("risk_per_trade_pct", fresh.risk_per_trade_pct))
+        fresh.base_leverage = float(restored_settings.get("base_leverage", fresh.base_leverage))
+        fresh.max_leverage = float(restored_settings.get("max_leverage", fresh.max_leverage))
+        fresh.auto_leverage = bool(restored_settings.get("auto_leverage", fresh.auto_leverage))
+    _dashboard_sessions[sid] = fresh
+    return {
+        "ok": True,
+        "session_id": sid,
+        "cleared": cleared,
+        "settings": _session_paper_settings(fresh),
+    }
+
+
 @app.get("/api/dashboard/sessions")
 async def dashboard_sessions(engine: Optional[str] = Query(default=None)):
     engine_filter = _normalize_engine_tag(engine) if engine else None

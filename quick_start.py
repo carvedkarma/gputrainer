@@ -7012,6 +7012,8 @@ Examples:
                         help="Enable trade recording (POST to /api/live/trade). Default: off unless --paper or --live")
     parser.add_argument("--paper-session-id", type=str, default=None,
                         help="Optional paper trading session id for multi-terminal isolation (e.g. SOL-paper)")
+    parser.add_argument("--paper-reset-session", action="store_true", default=False,
+                        help="Clear existing dashboard history for --paper-session-id at startup")
     parser.add_argument("--dashboard-engine", type=str, default="v5", choices=["v5", "mythos"],
                         help="Engine tag propagated to dashboard payloads for isolated model pages")
     parser.add_argument("--live-model", type=str, default="auto", choices=["auto", "v5", "mythos"],
@@ -7272,6 +7274,7 @@ Examples:
             v5_mae_floor=getattr(args, 'v5_live_mae_floor', None),
             predictive_sltp=getattr(args, 'v5_predictive_sltp', False),
             paper_session_id=args.paper_session_id,
+            paper_reset_session=args.paper_reset_session,
             dashboard_engine=args.dashboard_engine,
             live_model=resolved_live_model,
             equity_floor_usd=args.equity_floor_usd,

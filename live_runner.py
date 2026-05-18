@@ -1144,6 +1144,7 @@ class LiveRunner:
         v5_mae_floor: float = None,
         predictive_sltp: bool = False,
         paper_session_id: Optional[str] = None,
+        paper_reset_session: bool = False,
         dashboard_engine: str = "v5",
         live_model: str = "v5",
         equity_floor_usd: float = 0.0,
@@ -1206,6 +1207,7 @@ class LiveRunner:
         self._recent_signal_sides: list = []
         self.predictive_sltp = predictive_sltp
         self.paper_session_id = str(paper_session_id or "default").strip() or "default"
+        self.paper_reset_session = bool(paper_reset_session)
         self.dashboard_engine = _normalize_dashboard_engine(dashboard_engine)
         raw_live_model = str(live_model or "auto").strip().lower()
         if raw_live_model in {"", "auto"}:
@@ -1279,6 +1281,11 @@ class LiveRunner:
         log.info(f"[INIT] LiveRunner {SYSTEM_VERSION} execution_mode={execution_mode} "
                  f"record_trades={record_trades} symbols={symbols} session={self.paper_session_id} "
                  f"engine={self.dashboard_engine} model={self.live_model}")
+        if self.execution_mode == "paper" and self.record_trades:
+            log.info(
+                "[CONFIG] Paper dashboard session reset on startup: %s",
+                self.paper_reset_session,
+            )
         if self.live_model == "mythos":
             log.info(
                 "[CONFIG] Mythos runtime selected for live/paper inference "
@@ -1414,6 +1421,76 @@ class LiveRunner:
             if self._web_api_enabled and base == self.replit_url.rstrip("/"):
                 self._note_web_api_status(source, int(resp.status_code))
         return None
+
+    def _reset_dashboard_session_state(self) -> bool:
+        if not (self.execution_mode == "paper" and self.record_trades):
+            return False
+        resp = self._dashboard_request(
+            "POST",
+            "/api/dashboard/session/reset",
+            source="dashboard/session/reset",
+            params={"session_id": self.paper_session_id, "keep_settings": 1},
+            success_codes=(200,),
+        )
+        if resp is None or resp.status_code != 200:
+            log.warning(
+                "[SESSION_SYNC] requested reset for session=%s but reset endpoint was unavailable",
+                self.paper_session_id,
+            )
+            return False
+        try:
+            payload = resp.json() if resp.content else {}
+            cleared = payload.get("cleared", {}) if isinstance(payload, dict) else {}
+            log.info(
+                "[SESSION_SYNC] reset session=%s cleared(trades=%s predictions=%s cycles=%s)",
+                self.paper_session_id,
+                int(cleared.get("trades", 0) or 0),
+                int(cleared.get("predictions", 0) or 0),
+                int(cleared.get("cycle_logs", 0) or 0),
+            )
+        except Exception:
+            log.info("[SESSION_SYNC] reset session=%s", self.paper_session_id)
+        return True
+
+    def _log_dashboard_session_snapshot(self, *, source: str = "startup") -> None:
+        if not (self.execution_mode == "paper" and self.record_trades):
+            return
+        resp = self._dashboard_request(
+            "GET",
+            "/api/dashboard/state",
+            source=f"dashboard/state/{source}",
+            params={
+                "session_id": self.paper_session_id,
+                "engine": self.dashboard_engine,
+                "predictions_limit": 1,
+                "cycles_limit": 1,
+                "trades_limit": 2000,
+            },
+            success_codes=(200,),
+        )
+        if resp is None or resp.status_code != 200:
+            return
+        try:
+            data = resp.json()
+            summary = data.get("summary", {}) if isinstance(data, dict) else {}
+            closed = int(summary.get("closed_trades", 0) or 0)
+            open_n = int(summary.get("open_positions", 0) or 0)
+            log.info(
+                "[SESSION_SYNC] %s session=%s has open=%d closed=%d historical trades",
+                source,
+                self.paper_session_id,
+                open_n,
+                closed,
+            )
+            if source == "startup" and not self.paper_reset_session and (closed > 0 or open_n > 0):
+                log.warning(
+                    "[SESSION_SYNC] session=%s already has prior history; "
+                    "runner summary reflects this process only while dashboard is cumulative. "
+                    "Use --paper-reset-session or a new --paper-session-id for isolated runs.",
+                    self.paper_session_id,
+                )
+        except Exception:
+            return
 
     @staticmethod
     def _detect_gpu_self_url() -> Optional[str]:
@@ -2274,6 +2351,11 @@ class LiveRunner:
         if getattr(self.model, '_is_v6', False):
             log.info(f"[V6] V6Forecaster active — seq_len={self.model._v6_seq_len}, confidence gating enabled (min=0.4)")
         self._init_fetcher()
+
+        if self.execution_mode == "paper" and self.record_trades:
+            if self.paper_reset_session:
+                self._reset_dashboard_session_state()
+            self._log_dashboard_session_snapshot(source="startup")
 
         for sym in self.symbols:
             self.cooldown_tracker[sym] = 0
