@@ -260,6 +260,10 @@
     }
     .chart.small { height: 150px; margin-top: 8px; }
     .chart canvas { width: 100%; height: 100%; display: block; }
+    #marketCanvas, #openTradeCandleCanvas {
+      cursor: crosshair;
+      touch-action: none;
+    }
     .empty {
       position: absolute;
       inset: 0;
@@ -637,11 +641,15 @@
       data: null,
       auto: true,
       timer: null,
+      fastTimer: null,
       marketPrices: {},
       previousPrices: {},
       prevMetricValues: {},
       candleSeries: {},
       candleMeta: {},
+      candleViewports: {},
+      candleInteractionReady: false,
+      interactionDrag: null,
       marketCandleSymbol: "BTCUSDT",
       openTradeCandleSymbol: "BTCUSDT",
       marketCandleInterval: "1m",
@@ -1088,6 +1096,102 @@
       return `${String(symbol || "").toUpperCase()}|${String(interval || "1m").toLowerCase()}`;
     }
 
+    function clamp(v, lo, hi) {
+      return Math.max(lo, Math.min(hi, v));
+    }
+
+    function candleIntervalMs(interval) {
+      const map = {
+        "1m": 60 * 1000,
+        "3m": 3 * 60 * 1000,
+        "5m": 5 * 60 * 1000,
+        "15m": 15 * 60 * 1000,
+        "30m": 30 * 60 * 1000,
+        "1h": 60 * 60 * 1000,
+      };
+      const k = String(interval || "1m").toLowerCase();
+      return map[k] || map["1m"];
+    }
+
+    function getViewportState(canvasId) {
+      if (!state.candleViewports[canvasId]) {
+        state.candleViewports[canvasId] = { zoom: 1.0, offset: 0 };
+      }
+      return state.candleViewports[canvasId];
+    }
+
+    function visibleWindowForCanvas(canvasId, totalCandles) {
+      const vp = getViewportState(canvasId);
+      const total = Math.max(0, Number(totalCandles) || 0);
+      const maxVisible = Math.max(2, Math.min(220, total));
+      const minVisible = Math.min(20, maxVisible);
+      const zoom = clamp(toNum(vp.zoom, 1), 1, 12);
+      const visible = clamp(Math.round(maxVisible / zoom), minVisible, maxVisible);
+      const maxOffset = Math.max(0, total - visible);
+      vp.zoom = zoom;
+      vp.offset = clamp(Math.round(toNum(vp.offset, 0)), 0, maxOffset);
+      const start = Math.max(0, total - visible - vp.offset);
+      const end = Math.min(total, start + visible);
+      return { vp, start, end, visible, maxOffset, total };
+    }
+
+    function candleSeriesForCanvas(canvasId) {
+      if (canvasId === "marketCanvas") {
+        const key = candleKey(state.marketCandleSymbol, state.marketCandleInterval);
+        return Array.isArray(state.candleSeries[key]) ? state.candleSeries[key] : [];
+      }
+      if (canvasId === "openTradeCandleCanvas") {
+        const key = candleKey(state.openTradeCandleSymbol, state.openTradeCandleInterval);
+        return Array.isArray(state.candleSeries[key]) ? state.candleSeries[key] : [];
+      }
+      return [];
+    }
+
+    function applyLivePriceToCandleSeries(symbol, interval, price) {
+      const px = toNum(price, NaN);
+      if (!Number.isFinite(px) || px <= 0) return;
+      const key = candleKey(symbol, interval);
+      const rows = Array.isArray(state.candleSeries[key]) ? state.candleSeries[key].slice() : [];
+      if (!rows.length) return;
+      const now = Date.now();
+      const bucket = Math.floor(now / candleIntervalMs(interval)) * candleIntervalMs(interval);
+      const last = rows[rows.length - 1] || {};
+      const lastTs = toNum(last.ts, 0);
+      if (bucket > lastTs) {
+        const prevClose = toNum(last.close, px);
+        rows.push({
+          ts: bucket,
+          open: prevClose,
+          high: Math.max(prevClose, px),
+          low: Math.min(prevClose, px),
+          close: px,
+          volume: toNum(last.volume, 0),
+        });
+      } else {
+        last.close = px;
+        last.high = Math.max(toNum(last.high, px), px);
+        last.low = Math.min(toNum(last.low, px), px);
+        rows[rows.length - 1] = last;
+      }
+      state.candleSeries[key] = rows.slice(-400);
+      const priorMeta = state.candleMeta[key] || {};
+      state.candleMeta[key] = {
+        ...priorMeta,
+        server_ts: now,
+      };
+    }
+
+    function applyLiveTicksToCandles() {
+      const marketPx = toNum(state.marketPrices[state.marketCandleSymbol], NaN);
+      if (Number.isFinite(marketPx)) {
+        applyLivePriceToCandleSeries(state.marketCandleSymbol, state.marketCandleInterval, marketPx);
+      }
+      const openPx = toNum(state.marketPrices[state.openTradeCandleSymbol], NaN);
+      if (Number.isFinite(openPx)) {
+        applyLivePriceToCandleSeries(state.openTradeCandleSymbol, state.openTradeCandleInterval, openPx);
+      }
+    }
+
     async function refreshCandleSeries(payload) {
       const marketSymbol = latestTrackedSymbol(payload);
       const openSymbol = latestOpenSymbol(payload, marketSymbol);
@@ -1160,6 +1264,86 @@
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, rect.width, rect.height);
       return { ctx, w: rect.width, h: rect.height };
+    }
+
+    function redrawCandlePanelsOnly() {
+      const payload = state.data || emptyPayload();
+      const trades = Array.isArray(payload.trades) ? payload.trades : [];
+      renderCandlePanels(trades);
+    }
+
+    function setupCandleInteractions() {
+      if (state.candleInteractionReady) return;
+      state.candleInteractionReady = true;
+      const canvases = ["marketCanvas", "openTradeCandleCanvas"];
+      canvases.forEach((canvasId) => {
+        const canvas = $(canvasId);
+        if (!canvas) return;
+
+        canvas.addEventListener("wheel", (ev) => {
+          ev.preventDefault();
+          const rows = candleSeriesForCanvas(canvasId);
+          const total = rows.length;
+          if (total < 2) return;
+          const win = visibleWindowForCanvas(canvasId, total);
+          const oldZoom = win.vp.zoom;
+          const nextZoom = clamp(oldZoom * (ev.deltaY < 0 ? 1.16 : 1 / 1.16), 1, 12);
+          if (Math.abs(nextZoom - oldZoom) < 0.001) return;
+          const maxVisible = Math.max(2, Math.min(220, total));
+          const minVisible = Math.min(20, maxVisible);
+          const oldVisible = clamp(Math.round(maxVisible / oldZoom), minVisible, maxVisible);
+          const newVisible = clamp(Math.round(maxVisible / nextZoom), minVisible, maxVisible);
+          const rightAnchor = total - win.vp.offset;
+          win.vp.zoom = nextZoom;
+          win.vp.offset = clamp(total - rightAnchor, 0, Math.max(0, total - newVisible));
+          redrawCandlePanelsOnly();
+        }, { passive: false });
+
+        canvas.addEventListener("mousedown", (ev) => {
+          const rows = candleSeriesForCanvas(canvasId);
+          if (rows.length < 2) return;
+          state.interactionDrag = {
+            canvasId,
+            startX: ev.clientX,
+            startOffset: getViewportState(canvasId).offset,
+          };
+          canvas.style.cursor = "grabbing";
+        });
+
+        canvas.addEventListener("dblclick", () => {
+          const vp = getViewportState(canvasId);
+          vp.zoom = 1.0;
+          vp.offset = 0;
+          redrawCandlePanelsOnly();
+        });
+      });
+
+      window.addEventListener("mousemove", (ev) => {
+        const drag = state.interactionDrag;
+        if (!drag) return;
+        const rows = candleSeriesForCanvas(drag.canvasId);
+        const total = rows.length;
+        if (total < 2) return;
+        const canvas = $(drag.canvasId);
+        const rect = canvas.getBoundingClientRect();
+        const plotWidth = Math.max(rect.width - 56, 60);
+        const win = visibleWindowForCanvas(drag.canvasId, total);
+        const barsPerPx = win.visible / plotWidth;
+        const delta = ev.clientX - drag.startX;
+        win.vp.offset = clamp(
+          Math.round(drag.startOffset + delta * barsPerPx),
+          0,
+          win.maxOffset
+        );
+        redrawCandlePanelsOnly();
+      });
+
+      window.addEventListener("mouseup", () => {
+        if (!state.interactionDrag) return;
+        const canvas = $(state.interactionDrag.canvasId);
+        if (canvas) canvas.style.cursor = "crosshair";
+        state.interactionDrag = null;
+      });
     }
 
     function drawLine(canvasId, emptyId, series, opts = {}) {
@@ -1276,7 +1460,7 @@
 
     function drawCandles(canvasId, emptyId, rows, opts = {}) {
       const empty = $(emptyId);
-      const candles = (rows || [])
+      const normalized = (rows || [])
         .map((row) => ({
           ts: toNum(row.ts, 0),
           open: toNum(row.open, NaN),
@@ -1285,11 +1469,14 @@
           close: toNum(row.close, NaN),
         }))
         .filter((c) => Number.isFinite(c.open) && Number.isFinite(c.high) && Number.isFinite(c.low) && Number.isFinite(c.close))
-        .slice(-220);
+        .sort((a, b) => a.ts - b.ts)
+        .slice(-600);
+      const win = visibleWindowForCanvas(canvasId, normalized.length);
+      const candles = normalized.slice(win.start, win.end);
       if (candles.length < 2) {
         empty.hidden = false;
         ensureCanvas(canvasId);
-        return;
+        return { visible: candles.length, total: normalized.length, zoom: win.vp.zoom, offset: win.vp.offset };
       }
       empty.hidden = true;
       const { ctx, w, h } = ensureCanvas(canvasId);
@@ -1363,6 +1550,7 @@
         Math.max(padL + 8, w - 118),
         15
       );
+      return { visible: candles.length, total: normalized.length, zoom: win.vp.zoom, offset: win.vp.offset };
     }
 
     function rollingWinRate(closed, window = 20) {
@@ -1529,19 +1717,21 @@
       const guideLines = [];
       if (lastOpen) {
         const entry = toNum(lastOpen.entry_price ?? lastOpen.entryPrice, NaN);
-        const sl = toNum(lastOpen.stop_loss ?? lastOpen.stopLoss ?? lastOpen.initial_sl, NaN);
+        const sl = toNum(lastOpen.initial_sl ?? lastOpen.stop_loss ?? lastOpen.stopLoss, NaN);
         const tp = toNum(lastOpen.take_profit ?? lastOpen.take_profit_price ?? lastOpen.tp2, NaN);
         if (Number.isFinite(entry)) guideLines.push({ value: entry, label: "Entry", color: "rgba(116,214,255,.9)" });
         if (Number.isFinite(sl)) guideLines.push({ value: sl, label: "SL", color: "rgba(255,111,143,.9)" });
         if (Number.isFinite(tp)) guideLines.push({ value: tp, label: "TP", color: "rgba(46,228,179,.9)" });
       }
 
-      drawCandles("marketCanvas", "marketCandleEmpty", marketCandles);
-      drawCandles("openTradeCandleCanvas", "openTradeCandleEmpty", openCandles, { lines: guideLines });
+      const marketView = drawCandles("marketCanvas", "marketCandleEmpty", marketCandles);
+      const openView = drawCandles("openTradeCandleCanvas", "openTradeCandleEmpty", openCandles, { lines: guideLines });
 
-      $("marketCandleMeta").textContent = `${state.marketCandleSymbol} · ${state.marketCandleInterval}`;
+      $("marketCandleMeta").textContent =
+        `${state.marketCandleSymbol} · ${state.marketCandleInterval} · bars ${marketView.visible}/${marketView.total} · zoom ${fmt.n(marketView.zoom, 2)}`;
       $("marketCandleSource").textContent = `${marketMeta.source || "-"} · ${fmt.ts(marketMeta.server_ts)}`;
-      $("openTradeCandleMeta").textContent = `${state.openTradeCandleSymbol} · ${state.openTradeCandleInterval}`;
+      $("openTradeCandleMeta").textContent =
+        `${state.openTradeCandleSymbol} · ${state.openTradeCandleInterval} · bars ${openView.visible}/${openView.total} · zoom ${fmt.n(openView.zoom, 2)}`;
       $("openTradeCandleSource").textContent = `${openMeta.source || "-"} · ${fmt.ts(openMeta.server_ts)}`;
     }
 
@@ -1589,6 +1779,7 @@
         const symbols = collectTrackedSymbols(state.data || emptyPayload());
         await refreshMarketPrices(symbols);
         await refreshCandleSeries(state.data || emptyPayload());
+        applyLiveTicksToCandles();
         applyData();
         showConnection(true);
       } catch (e) {
@@ -1596,10 +1787,30 @@
       }
     }
 
+    async function fastTick() {
+      if (!state.auto) return;
+      const payload = state.data || emptyPayload();
+      const symbols = collectTrackedSymbols(payload);
+      if (!symbols.length) return;
+      try {
+        await refreshMarketPrices(symbols);
+        applyLiveTicksToCandles();
+        const trades = Array.isArray(payload.trades) ? payload.trades : [];
+        const cycles = Array.isArray(payload.cycle_logs) ? payload.cycle_logs : [];
+        renderOpenTrades(trades, cycles);
+        renderMarketList(symbols, cycles);
+        renderCandlePanels(trades);
+      } catch {
+        // ignore noisy fast-tick errors; full tick handles connection status
+      }
+    }
+
     function schedule() {
       if (state.timer) clearInterval(state.timer);
+      if (state.fastTimer) clearInterval(state.fastTimer);
       if (!state.auto) return;
       state.timer = setInterval(tick, 5000);
+      state.fastTimer = setInterval(fastTick, 1000);
     }
 
     $("refreshBtn").addEventListener("click", () => tick());
@@ -1625,6 +1836,7 @@
     });
 
     setupRouteUI();
+    setupCandleInteractions();
     tick();
     schedule();
   </script>
