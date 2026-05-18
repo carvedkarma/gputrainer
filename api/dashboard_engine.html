@@ -269,6 +269,9 @@
       font-size: .8rem;
       background: rgba(6, 15, 30, 0.45);
     }
+    .empty[hidden] {
+      display: none !important;
+    }
 
     .insights {
       display: grid;
@@ -1421,7 +1424,7 @@
 
     function calcLiveR(trade, priceMap) {
       const entry = toNum(trade.entry_price ?? trade.entryPrice, NaN);
-      const sl = toNum(trade.stop_loss ?? trade.stopLoss ?? trade.initial_sl, NaN);
+      const sl = toNum(trade.initial_sl ?? trade.stop_loss ?? trade.stopLoss, NaN);
       const risk = Math.abs(entry - sl);
       const symbol = String(trade.symbol || "").toUpperCase();
       const px = toNum(priceMap[symbol], NaN);

@@ -5851,6 +5851,30 @@ async def _auto_close_open_trades_from_market(state: _DashboardSessionState) -> 
     return events
 
 
+async def _resolve_close_price_for_symbol(state: _DashboardSessionState, symbol: str) -> tuple[Optional[float], str]:
+    sym = str(symbol or "").upper().strip()
+    if not sym:
+        return None, "invalid_symbol"
+    try:
+        rows = await _resolve_market_prices([sym], force_refresh=True)
+        row = rows.get(sym)
+        if row:
+            px = float(row.get("price", 0.0) or 0.0)
+            if np.isfinite(px) and px > 0.0:
+                return px, str(row.get("source", "market"))
+    except Exception:
+        pass
+    fallback = _latest_price_by_symbol(state).get(sym)
+    if fallback is not None:
+        try:
+            px = float(fallback)
+            if np.isfinite(px) and px > 0.0:
+                return px, "cycle_log_fallback"
+        except Exception:
+            pass
+    return None, "unavailable"
+
+
 @app.post("/api/live/trade")
 async def create_live_trade(payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
     sid = _resolve_session_id(payload, session_id=session_id)
@@ -5928,9 +5952,10 @@ async def manual_close_paper_trade(
         return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade, "already_closed": True}
 
     symbol = str(trade.get("symbol", "")).upper()
-    latest_px = _latest_price_by_symbol(state).get(symbol)
+    latest_px, price_source = await _resolve_close_price_for_symbol(state, symbol)
     entry = float(trade.get("entry_price") or trade.get("entryPrice") or 0.0)
     exit_price = float(payload.get("exit_price") or latest_px or entry or 0.0)
+    trade["manual_close_price_source"] = str(price_source)
     _close_open_trade_record(
         state=state,
         trade=trade,
@@ -5941,7 +5966,14 @@ async def manual_close_paper_trade(
         explicit_cost_r=float(payload.get("cost_r")) if payload.get("cost_r") is not None else None,
         manual_close=True,
     )
-    return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade}
+    return {
+        "ok": True,
+        "id": int(trade_id),
+        "session_id": state.session_id,
+        "trade": trade,
+        "close_price_source": str(price_source),
+        "close_price_used": round(float(exit_price), 6),
+    }
 
 
 @app.post("/api/paper/trade/{trade_id}/manager-action")
@@ -5956,7 +5988,7 @@ async def paper_trade_manager_action(
 
     action = str(payload.get("action", "")).strip().lower()
     symbol = str(trade.get("symbol", "")).upper()
-    latest_px = _latest_price_by_symbol(state).get(symbol)
+    latest_px, price_source = await _resolve_close_price_for_symbol(state, symbol)
     entry = float(trade.get("entry_price") or trade.get("entryPrice") or 0.0)
     side = str(trade.get("side", "LONG")).upper()
     current_sl = float(trade.get("stop_loss") or trade.get("stopLoss") or trade.get("initial_sl") or entry)
@@ -5964,6 +5996,7 @@ async def paper_trade_manager_action(
 
     if action in {"force_close", "close", "manual_close"}:
         exit_price = float(payload.get("exit_price") or latest_px or entry or 0.0)
+        trade["manual_close_price_source"] = str(price_source)
         _close_open_trade_record(
             state=state,
             trade=trade,
@@ -5974,7 +6007,15 @@ async def paper_trade_manager_action(
             explicit_cost_r=float(payload.get("cost_r")) if payload.get("cost_r") is not None else None,
             manual_close=bool(payload.get("manual_close", True)),
         )
-        return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade, "action": action}
+        return {
+            "ok": True,
+            "id": int(trade_id),
+            "session_id": state.session_id,
+            "trade": trade,
+            "action": action,
+            "close_price_source": str(price_source),
+            "close_price_used": round(float(exit_price), 6),
+        }
 
     if action in {"breakeven", "move_sl"}:
         if action == "breakeven":
@@ -6008,6 +6049,7 @@ async def paper_trade_manager_action(
         close_frac = close_pct / 100.0
         if close_frac >= 0.999:
             exit_price = float(payload.get("exit_price") or latest_px or entry or 0.0)
+            trade["manual_close_price_source"] = str(price_source)
             _close_open_trade_record(
                 state=state,
                 trade=trade,
