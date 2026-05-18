@@ -177,7 +177,8 @@ class ExecutionModule:
             improvement_bps = (entry_price - signal_price) / signal_price * 10000
 
         reason = self._build_reason(pullback_hit, confirmation_hit, method)
-        method_label = "entry_improvement_missed" if method == "missed" else method
+        method_key = str(method).strip().lower()
+        method_label = "entry_improvement_missed" if method_key == "missed" else method
         log.info(f"  [EXEC RESULT] {method_label} | pullback={'HIT' if pullback_hit else 'MISS'} | "
                  f"confirm={'HIT' if confirmation_hit else 'MISS'} | "
                  f"entry={entry_price:.2f} vs signal={signal_price:.2f} | "
@@ -284,7 +285,8 @@ class ExecutionModule:
 
                 elapsed = time.time() - start_time
                 reason = self._build_reason(pullback_hit, confirmation_hit, method)
-                method_label = "entry_improvement_missed" if method == "missed" else method
+                method_key = str(method).strip().lower()
+                method_label = "entry_improvement_missed" if method_key == "missed" else method
                 log.info(
                     "  [EXEC RESULT] %s | pullback=%s | confirm=%s | "
                     "entry=%.2f vs signal=%.2f | improvement=%+.1f bps | elapsed=%.0fs",
@@ -384,7 +386,8 @@ class ExecutionModule:
             improvement_bps = (entry_price - signal_price) / signal_price * 10000
 
         reason = self._build_reason(pullback_hit, confirmation_hit, method)
-        method_label = "entry_improvement_missed" if method == "missed" else method
+        method_key = str(method).strip().lower()
+        method_label = "entry_improvement_missed" if method_key == "missed" else method
         log.info(f"  [EXEC RESULT] {method_label} | pullback={'HIT' if pullback_hit else 'MISS'} | "
                  f"confirm={'HIT' if confirmation_hit else 'MISS'} | "
                  f"entry={entry_price:.2f} vs signal={signal_price:.2f} | "

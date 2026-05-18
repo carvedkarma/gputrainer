@@ -3481,13 +3481,16 @@ class LiveRunner:
         p_enter = candidate['p_enter']
         htf = candidate['htf']
         v5_info = candidate.get('v5_info', {})
-        lane = str(v5_info.get("lane", "V5"))
+        lane = str(v5_info.get("lane", "V5")).strip().upper() or "V5"
         lane_threshold = float(v5_info.get("threshold_used", self.v5_score_threshold))
         lane_horizon = int(v5_info.get("lane_horizon", 24))
         lane_size_mult = float(v5_info.get("lane_size_mult", 1.0))
         model_name = str(v5_info.get("model_name", "v5_forecaster_live"))
-        score_label = "mythos_score" if str(lane).upper() == "MYTHOS" else "v5_score"
-        score_value = v5_info.get("mythos_score", v5_info.get("v5_score", "?"))
+        score_label = "mythos_score" if lane == "MYTHOS" else "v5_score"
+        if lane == "MYTHOS":
+            score_value = v5_info.get("mythos_score", v5_info.get("v5_score", "?"))
+        else:
+            score_value = v5_info.get("v5_score", v5_info.get("mythos_score", "?"))
         htf_score = v5_info.get('htf_score', 0)
         lane_sl_mult = float(v5_info.get("sl_mult_used", self.sl_mult))
         lane_tp_mult = float(v5_info.get("tp_mult_used", self.tp_mult))
@@ -3574,7 +3577,7 @@ class LiveRunner:
                     # pullback execution misses, so diagnostics still produce trades.
                     skip_reason_clean = skip_reason.replace(" | Trade skipped", "").strip()
                     log.info(
-                        "  [PAPER_EXEC_FALLBACK] %s entry-improvement skipped (%s) -> opening at signal price",
+                        "  [PAPER_EXEC_FALLBACK_OPEN] %s entry-improvement skipped (%s) -> opening at signal price",
                         symbol,
                         skip_reason_clean,
                     )
@@ -3679,13 +3682,20 @@ class LiveRunner:
         except Exception as e:
             log.warning(f"Failed to push trade record for {symbol}: {e}")
 
+        if v5_info.get("execution_fallback") == "signal_price":
+            exec_path = "signal_fallback"
+        elif exec_result is not None:
+            exec_path = "execution_improved"
+        else:
+            exec_path = "signal_direct"
+
         if self.execution_mode == "paper":
             log.info(f"  [PAPER_OPEN] {lane} {symbol} {side} @ {entry_price:.2f} "
-                     f"| {score_label}={score_value}")
+                     f"| {score_label}={score_value} | exec_path={exec_path}")
         elif self.execution_mode == "live":
             if self.execution is not None:
                 log.info(f"  [LIVE_OPEN] real_order_sent {lane} {symbol} {side} @ {entry_price:.2f} "
-                         f"| {score_label}={score_value}")
+                         f"| {score_label}={score_value} | exec_path={exec_path}")
             else:
                 log.info(f"  [LIVE_SIGNAL_ONLY] no_adapter_wired {lane} {symbol} {side} @ {entry_price:.2f} "
                          f"| {score_label}={score_value} "
