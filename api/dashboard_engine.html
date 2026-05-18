@@ -327,6 +327,17 @@
       gap: 10px;
       margin-bottom: 10px;
     }
+    .chart-meta {
+      margin-top: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      color: #9bb2d4;
+      font-size: .73rem;
+      letter-spacing: .03em;
+      flex-wrap: wrap;
+    }
     .market-list {
       max-height: 164px;
       overflow: auto;
@@ -532,6 +543,31 @@
       </article>
     </section>
 
+    <section class="split-grid">
+      <article class="card glass animate-in">
+        <h3>Institutional Market Terminal</h3>
+        <div class="chart">
+          <canvas id="marketCanvas"></canvas>
+          <div id="marketCandleEmpty" class="empty" hidden>Waiting for market candles.</div>
+        </div>
+        <div class="chart-meta">
+          <span id="marketCandleMeta">Symbol -</span>
+          <span id="marketCandleSource">Source -</span>
+        </div>
+      </article>
+      <article class="card glass animate-in">
+        <h3>Open Trades Live Command Center</h3>
+        <div class="chart">
+          <canvas id="openTradeCandleCanvas"></canvas>
+          <div id="openTradeCandleEmpty" class="empty" hidden>No open trade candle feed yet.</div>
+        </div>
+        <div class="chart-meta">
+          <span id="openTradeCandleMeta">Symbol -</span>
+          <span id="openTradeCandleSource">Source -</span>
+        </div>
+      </article>
+    </section>
+
     <section class="table-grid">
       <article class="card glass animate-in">
         <h3>Open Positions</h3>
@@ -601,6 +637,12 @@
       marketPrices: {},
       previousPrices: {},
       prevMetricValues: {},
+      candleSeries: {},
+      candleMeta: {},
+      marketCandleSymbol: "BTCUSDT",
+      openTradeCandleSymbol: "BTCUSDT",
+      marketCandleInterval: "1m",
+      openTradeCandleInterval: "1m",
     };
 
     const $ = (id) => document.getElementById(id);
@@ -1005,6 +1047,87 @@
       });
     }
 
+    function latestTrackedSymbol(payload) {
+      const trades = Array.isArray(payload?.trades) ? payload.trades : [];
+      const predictions = Array.isArray(payload?.predictions) ? payload.predictions : [];
+      const cycles = Array.isArray(payload?.cycle_logs) ? payload.cycle_logs : [];
+
+      const fromOpen = trades
+        .slice()
+        .reverse()
+        .find((t) => statusOf(t.status) === "open" && String(t.symbol || "").trim());
+      if (fromOpen) return String(fromOpen.symbol).toUpperCase();
+
+      const fromPred = predictions
+        .slice()
+        .reverse()
+        .find((p) => String(p.symbol || "").trim());
+      if (fromPred) return String(fromPred.symbol).toUpperCase();
+
+      const fromCycle = cycles
+        .slice()
+        .reverse()
+        .find((c) => String(c.symbol || "").trim());
+      if (fromCycle) return String(fromCycle.symbol).toUpperCase();
+      return "BTCUSDT";
+    }
+
+    function latestOpenSymbol(payload, fallback = "BTCUSDT") {
+      const trades = Array.isArray(payload?.trades) ? payload.trades : [];
+      const fromOpen = trades
+        .slice()
+        .reverse()
+        .find((t) => statusOf(t.status) === "open" && String(t.symbol || "").trim());
+      return fromOpen ? String(fromOpen.symbol).toUpperCase() : fallback;
+    }
+
+    function candleKey(symbol, interval) {
+      return `${String(symbol || "").toUpperCase()}|${String(interval || "1m").toLowerCase()}`;
+    }
+
+    async function refreshCandleSeries(payload) {
+      const marketSymbol = latestTrackedSymbol(payload);
+      const openSymbol = latestOpenSymbol(payload, marketSymbol);
+      const marketInterval = state.marketCandleInterval || "1m";
+      const openInterval = state.openTradeCandleInterval || "1m";
+      state.marketCandleSymbol = marketSymbol;
+      state.openTradeCandleSymbol = openSymbol;
+
+      const requests = [
+        { symbol: marketSymbol, interval: marketInterval, limit: 220 },
+        { symbol: openSymbol, interval: openInterval, limit: 220 },
+      ];
+      const dedup = {};
+      requests.forEach((r) => {
+        const key = candleKey(r.symbol, r.interval);
+        dedup[key] = r;
+      });
+
+      const jobs = Object.values(dedup).map(async (cfg) => {
+        const q = new URLSearchParams({
+          symbol: String(cfg.symbol).toUpperCase(),
+          interval: String(cfg.interval),
+          limit: String(cfg.limit),
+        });
+        const key = candleKey(cfg.symbol, cfg.interval);
+        try {
+          const payloadC = await fetchJson(`/api/market/candles?${q.toString()}`);
+          const candles = Array.isArray(payloadC?.candles) ? payloadC.candles : [];
+          state.candleSeries[key] = candles;
+          state.candleMeta[key] = {
+            source: String(payloadC?.source || "unknown"),
+            server_ts: toNum(payloadC?.server_ts, Date.now()),
+          };
+        } catch {
+          if (!Array.isArray(state.candleSeries[key])) state.candleSeries[key] = [];
+          if (!state.candleMeta[key]) {
+            state.candleMeta[key] = { source: "unavailable", server_ts: Date.now() };
+          }
+        }
+      });
+      await Promise.allSettled(jobs);
+    }
+
     function renderMarketList(symbols, cycles) {
       const cycleMap = buildCyclePriceMap(cycles);
       const rows = symbols.map((sym) => {
@@ -1146,6 +1269,97 @@
         ctx.fillStyle = v >= 0 ? "rgba(46,228,179,.82)" : "rgba(255,111,143,.82)";
         ctx.fillRect(x, y, barW, Math.max(height, 1));
       });
+    }
+
+    function drawCandles(canvasId, emptyId, rows, opts = {}) {
+      const empty = $(emptyId);
+      const candles = (rows || [])
+        .map((row) => ({
+          ts: toNum(row.ts, 0),
+          open: toNum(row.open, NaN),
+          high: toNum(row.high, NaN),
+          low: toNum(row.low, NaN),
+          close: toNum(row.close, NaN),
+        }))
+        .filter((c) => Number.isFinite(c.open) && Number.isFinite(c.high) && Number.isFinite(c.low) && Number.isFinite(c.close))
+        .slice(-220);
+      if (candles.length < 2) {
+        empty.hidden = false;
+        ensureCanvas(canvasId);
+        return;
+      }
+      empty.hidden = true;
+      const { ctx, w, h } = ensureCanvas(canvasId);
+      const padL = 42;
+      const padR = 14;
+      const padT = 12;
+      const padB = 22;
+      const minLow = Math.min(...candles.map((c) => c.low));
+      const maxHigh = Math.max(...candles.map((c) => c.high));
+      const span = Math.max(maxHigh - minLow, Math.max(Math.abs(maxHigh) * 0.001, 1e-6));
+      const yAt = (v) => padT + ((maxHigh - v) / span) * (h - padT - padB);
+      const n = candles.length;
+      const xAt = (idx) => padL + ((idx + 0.5) / n) * (w - padL - padR);
+      const bodyW = Math.max(2, ((w - padL - padR) / n) * 0.68);
+
+      ctx.strokeStyle = "rgba(123,165,237,.24)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = padT + (i / 4) * (h - padT - padB);
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(w - padR, y);
+        ctx.stroke();
+      }
+
+      candles.forEach((c, i) => {
+        const x = xAt(i);
+        const yH = yAt(c.high);
+        const yL = yAt(c.low);
+        const yO = yAt(c.open);
+        const yC = yAt(c.close);
+        const up = c.close >= c.open;
+        const color = up ? "rgba(46,228,179,.95)" : "rgba(255,111,143,.95)";
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(x, yH);
+        ctx.lineTo(x, yL);
+        ctx.stroke();
+        const bodyTop = Math.min(yO, yC);
+        const bodyH = Math.max(Math.abs(yC - yO), 1.3);
+        ctx.fillStyle = color;
+        ctx.fillRect(x - bodyW / 2, bodyTop, bodyW, bodyH);
+      });
+
+      const lineDefs = Array.isArray(opts.lines) ? opts.lines : [];
+      lineDefs.forEach((line) => {
+        const val = toNum(line.value, NaN);
+        if (!Number.isFinite(val)) return;
+        const y = yAt(val);
+        if (!Number.isFinite(y)) return;
+        ctx.strokeStyle = line.color || "rgba(255,209,102,.86)";
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(w - padR, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = line.color || "rgba(255,209,102,.94)";
+        ctx.font = "11px Inter, sans-serif";
+        ctx.fillText(line.label || "", padL + 4, Math.max(12, y - 4));
+      });
+
+      const last = candles[candles.length - 1];
+      ctx.fillStyle = "#cfe0f9";
+      ctx.font = "11px Inter, sans-serif";
+      ctx.fillText(fmt.n(maxHigh, maxHigh > 1000 ? 2 : 4), 4, 14);
+      ctx.fillText(fmt.n(minLow, minLow > 1000 ? 2 : 4), 4, h - 10);
+      ctx.fillStyle = "rgba(118,212,255,.95)";
+      ctx.fillText(
+        `C ${fmt.n(last.close, last.close > 1000 ? 2 : 4)}`,
+        Math.max(padL + 8, w - 118),
+        15
+      );
     }
 
     function rollingWinRate(closed, window = 20) {
@@ -1298,6 +1512,36 @@
       }).join("") : `<tr><td colspan="8" class="small">No cycle logs yet.</td></tr>`;
     }
 
+    function renderCandlePanels(trades) {
+      const marketKey = candleKey(state.marketCandleSymbol, state.marketCandleInterval);
+      const openKey = candleKey(state.openTradeCandleSymbol, state.openTradeCandleInterval);
+      const marketCandles = Array.isArray(state.candleSeries[marketKey]) ? state.candleSeries[marketKey] : [];
+      const openCandles = Array.isArray(state.candleSeries[openKey]) ? state.candleSeries[openKey] : [];
+      const marketMeta = state.candleMeta[marketKey] || { source: "-", server_ts: 0 };
+      const openMeta = state.candleMeta[openKey] || { source: "-", server_ts: 0 };
+      const lastOpen = (trades || [])
+        .slice()
+        .reverse()
+        .find((t) => statusOf(t.status) === "open" && String(t.symbol || "").toUpperCase() === state.openTradeCandleSymbol);
+      const guideLines = [];
+      if (lastOpen) {
+        const entry = toNum(lastOpen.entry_price ?? lastOpen.entryPrice, NaN);
+        const sl = toNum(lastOpen.stop_loss ?? lastOpen.stopLoss ?? lastOpen.initial_sl, NaN);
+        const tp = toNum(lastOpen.take_profit ?? lastOpen.take_profit_price ?? lastOpen.tp2, NaN);
+        if (Number.isFinite(entry)) guideLines.push({ value: entry, label: "Entry", color: "rgba(116,214,255,.9)" });
+        if (Number.isFinite(sl)) guideLines.push({ value: sl, label: "SL", color: "rgba(255,111,143,.9)" });
+        if (Number.isFinite(tp)) guideLines.push({ value: tp, label: "TP", color: "rgba(46,228,179,.9)" });
+      }
+
+      drawCandles("marketCanvas", "marketCandleEmpty", marketCandles);
+      drawCandles("openTradeCandleCanvas", "openTradeCandleEmpty", openCandles, { lines: guideLines });
+
+      $("marketCandleMeta").textContent = `${state.marketCandleSymbol} · ${state.marketCandleInterval}`;
+      $("marketCandleSource").textContent = `${marketMeta.source || "-"} · ${fmt.ts(marketMeta.server_ts)}`;
+      $("openTradeCandleMeta").textContent = `${state.openTradeCandleSymbol} · ${state.openTradeCandleInterval}`;
+      $("openTradeCandleSource").textContent = `${openMeta.source || "-"} · ${fmt.ts(openMeta.server_ts)}`;
+    }
+
     async function manualCloseTrade(tradeId, sessionId) {
       const sid = String(sessionId || state.sessionId || "").trim();
       if (!tradeId) return;
@@ -1332,6 +1576,7 @@
       renderCycles(cycles);
       renderCharts(trades, eq, cycles, predictions);
       renderMarketList(collectTrackedSymbols(payload), cycles);
+      renderCandlePanels(trades);
     }
 
     async function tick() {
@@ -1340,6 +1585,7 @@
         await loadState();
         const symbols = collectTrackedSymbols(state.data || emptyPayload());
         await refreshMarketPrices(symbols);
+        await refreshCandleSeries(state.data || emptyPayload());
         applyData();
         showConnection(true);
       } catch (e) {
