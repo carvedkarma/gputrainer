@@ -5855,13 +5855,17 @@ async def _resolve_close_price_for_symbol(state: _DashboardSessionState, symbol:
     sym = str(symbol or "").upper().strip()
     if not sym:
         return None, "invalid_symbol"
+    now_ms = int(time.time() * 1000)
     try:
         rows = await _resolve_market_prices([sym], force_refresh=True)
         row = rows.get(sym)
         if row:
             px = float(row.get("price", 0.0) or 0.0)
-            if np.isfinite(px) and px > 0.0:
-                return px, str(row.get("source", "market"))
+            src = str(row.get("source", "market"))
+            ts_ms = int(row.get("ts", now_ms) or now_ms)
+            fresh = (now_ms - ts_ms) <= 6_000
+            if np.isfinite(px) and px > 0.0 and (src != "cache" or fresh):
+                return px, src
     except Exception:
         pass
     fallback = _latest_price_by_symbol(state).get(sym)

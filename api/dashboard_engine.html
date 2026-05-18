@@ -1642,7 +1642,7 @@
             <td>${fmt.n(t.take_profit ?? t.take_profit_price ?? t.tp2, 4)}</td>
             <td class="${klass(rr)}">${fmt.r(rr, 3)}</td>
             <td class="${klass(liveUsd)}">${Number.isFinite(liveUsd) ? fmt.usd(liveUsd) : "-"}</td>
-            <td><button class="btn xs close-trade" data-trade-id="${t.id}" data-session-id="${sid}">Close</button></td>
+            <td><button class="btn xs close-trade" data-trade-id="${t.id}" data-session-id="${sid}" data-symbol="${sym}" data-price="${Number.isFinite(px) ? px : ""}">Close</button></td>
           </tr>
         `;
       }).join("") : `<tr><td colspan="11" class="small">No open positions.</td></tr>`;
@@ -1735,15 +1735,24 @@
       $("openTradeCandleSource").textContent = `${openMeta.source || "-"} · ${fmt.ts(openMeta.server_ts)}`;
     }
 
-    async function manualCloseTrade(tradeId, sessionId) {
+    async function manualCloseTrade(tradeId, sessionId, symbol = "", exitPriceHint = NaN) {
       const sid = String(sessionId || state.sessionId || "").trim();
       if (!tradeId) return;
       try {
         const url = `/api/paper/trade/${encodeURIComponent(tradeId)}/manual-close${sid ? `?session_id=${encodeURIComponent(sid)}` : ""}`;
+        const sym = String(symbol || "").toUpperCase();
+        let exitPrice = toNum(exitPriceHint, NaN);
+        if ((!Number.isFinite(exitPrice) || exitPrice <= 0) && sym) {
+          exitPrice = toNum(state.marketPrices[sym], NaN);
+        }
+        const payload = { note: "dashboard_manual_close" };
+        if (Number.isFinite(exitPrice) && exitPrice > 0) {
+          payload.exit_price = Number(exitPrice);
+        }
         await fetchJson(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ note: "dashboard_manual_close" }),
+          body: JSON.stringify(payload),
         });
         await tick();
       } catch (e) {
@@ -1829,7 +1838,9 @@
       if (!target) return;
       const tradeId = target.getAttribute("data-trade-id");
       const sid = target.getAttribute("data-session-id") || state.sessionId;
-      manualCloseTrade(tradeId, sid);
+      const symbol = target.getAttribute("data-symbol") || "";
+      const px = toNum(target.getAttribute("data-price"), NaN);
+      manualCloseTrade(tradeId, sid, symbol, px);
     });
     window.addEventListener("resize", () => {
       if (state.data) applyData();
