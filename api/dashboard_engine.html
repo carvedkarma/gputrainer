@@ -1157,17 +1157,45 @@
       return out;
     }
 
-    function renderCharts(trades, equityCurve) {
-      const eq = (equityCurve || []).map((p) => toNum(p.equity_r, 0));
-      const dd = (equityCurve || []).map((p) => toNum(p.drawdown_r, 0));
+    function renderCharts(trades, equityCurve, cycles, predictions) {
+      let eq = (equityCurve || []).map((p) => toNum(p.equity_r, 0));
+      let dd = (equityCurve || []).map((p) => toNum(p.drawdown_r, 0));
+      if (!eq.length) {
+        const prices = (cycles || [])
+          .map((c) => toNum(c.price, NaN))
+          .filter((v) => Number.isFinite(v))
+          .slice(-280);
+        if (prices.length >= 2) {
+          const base = Math.max(Math.abs(prices[0]), 1e-9);
+          eq = prices.map((p) => ((p / base) - 1.0) * 10.0);
+          let peak = -Infinity;
+          dd = eq.map((v) => {
+            peak = Math.max(peak, v);
+            return v - peak;
+          });
+        }
+      }
       drawLine("equityCanvas", "equityEmpty", eq, { color: "rgba(98,166,255,.96)", fillTop: "rgba(93,158,255,.28)" });
       drawLine("drawdownCanvas", "drawdownEmpty", dd, { color: "rgba(255,111,143,.95)", fillTop: "rgba(255,111,143,.22)" });
 
       const closed = (trades || []).filter((t) => statusOf(t.status) === "closed");
-      const pnl = closed.slice(-80).map((t) => tradeNetR(t));
+      let pnl = closed.slice(-80).map((t) => tradeNetR(t));
+      if (!pnl.length) {
+        pnl = (predictions || [])
+          .map((p) => toNum(p.edge ?? p.expected_return, NaN))
+          .filter((v) => Number.isFinite(v))
+          .slice(-80);
+      }
       drawBars("pnlCanvas", "pnlEmpty", pnl);
 
-      const wr = rollingWinRate(closed, 20);
+      let wr = rollingWinRate(closed, 20);
+      if (!wr.length) {
+        wr = (predictions || [])
+          .map((p) => toNum(p.confidence ?? p.p_enter, NaN))
+          .filter((v) => Number.isFinite(v))
+          .map((v) => Math.max(0, Math.min(1, v)))
+          .slice(-220);
+      }
       drawLine("qualityCanvas", "qualityEmpty", wr, {
         color: "rgba(100,230,255,.97)",
         fillTop: "rgba(100,230,255,.22)",
@@ -1302,7 +1330,7 @@
       renderSignals(predictions);
       renderTrades(trades);
       renderCycles(cycles);
-      renderCharts(trades, eq);
+      renderCharts(trades, eq, cycles, predictions);
       renderMarketList(collectTrackedSymbols(payload), cycles);
     }
 

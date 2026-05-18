@@ -18,6 +18,7 @@ import sys
 import time
 import json
 import copy
+import os
 import logging
 import traceback
 import requests
@@ -1173,6 +1174,10 @@ class LiveRunner:
         self._web_api_enabled = bool(replit_url) and (not self._exchange_api_url)
         self._web_api_disable_reason = ""
         self._web_api_404_count = 0
+        self._local_dashboard_url = str(
+            os.environ.get("MYTHOS_LOCAL_DASHBOARD_URL", "http://127.0.0.1:8000")
+        ).strip().rstrip("/")
+        self._local_dashboard_enabled = bool(self._local_dashboard_url)
         if self.execution_mode == "paper" and self.record_trades and not self._web_api_enabled:
             self._web_api_disable_reason = "exchange-api-url"
             log.warning(
@@ -1180,6 +1185,13 @@ class LiveRunner:
                 "Running local paper engine without web sync (/api/paper/*, /api/live/*).",
                 replit_url,
             )
+            if self._local_dashboard_enabled:
+                log.info(
+                    "[PAPER_LOCAL] Local dashboard sink enabled at %s",
+                    self._local_dashboard_url,
+                )
+            else:
+                log.warning("[PAPER_LOCAL] Local dashboard sink disabled (MYTHOS_LOCAL_DASHBOARD_URL is empty)")
         self.portfolio = portfolio_manager
         self.execution = execution_module
         self.dry_run = dry_run
@@ -1370,6 +1382,38 @@ class LiveRunner:
                 self._disable_web_api(f"{source} returned HTTP 404 repeatedly")
         else:
             self._web_api_404_count = 0
+
+    def _dashboard_base_urls(self) -> List[str]:
+        urls: List[str] = []
+        if self._web_api_enabled and self.replit_url:
+            urls.append(self.replit_url.rstrip("/"))
+        elif self._local_dashboard_enabled:
+            urls.append(self._local_dashboard_url)
+        return urls
+
+    def _dashboard_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        source: str,
+        success_codes: Tuple[int, ...] = (200,),
+        timeout: float = 12.0,
+        **kwargs,
+    ) -> Optional[requests.Response]:
+        rel_path = path if str(path).startswith("/") else f"/{path}"
+        for base in self._dashboard_base_urls():
+            url = f"{base}{rel_path}"
+            resp = _retry_request(method, url, timeout=timeout, **kwargs)
+            if resp is None:
+                continue
+            if int(resp.status_code) in set(int(c) for c in success_codes):
+                if self._web_api_enabled and base == self.replit_url.rstrip("/"):
+                    self._web_api_404_count = 0
+                return resp
+            if self._web_api_enabled and base == self.replit_url.rstrip("/"):
+                self._note_web_api_status(source, int(resp.status_code))
+        return None
 
     @staticmethod
     def _detect_gpu_self_url() -> Optional[str]:
@@ -1582,14 +1626,17 @@ class LiveRunner:
             log.warning(f"Failed to update trade record {pos.dashboard_trade_id}: {e}")
 
     def _push_prediction(self, prediction: dict):
-        if not self._web_api_enabled:
-            return
-        from quick_start import push_prediction
         if not isinstance(prediction, dict):
             prediction = {}
         prediction.setdefault("session_id", self.paper_session_id)
         prediction.setdefault("engine", self.dashboard_engine)
-        push_prediction(self.replit_url, prediction)
+        self._dashboard_request(
+            "POST",
+            "/api/gpu/push-prediction",
+            source="gpu/push-prediction",
+            json=prediction,
+            success_codes=(200,),
+        )
 
     def _push_cycle_log(self, symbol: str, price: float, p_enter: float,
                         htf: dict, direction: str, decision: str, reasons: list,
@@ -1598,9 +1645,6 @@ class LiveRunner:
                         temperature_used: float = None,
                         decision_stage: str = "candidate",
                         execution_status: Optional[str] = None):
-        if not self._web_api_enabled:
-            return
-        url = f"{self.replit_url.rstrip('/')}/api/live/cycle-log"
         li = lane_info or {}
         stage = str(decision_stage or "candidate").strip().lower()
         if stage not in {"candidate", "execution"}:
@@ -1644,14 +1688,17 @@ class LiveRunner:
             payload["gpu_callback_url"] = self.gpu_self_url
         payload_keys = [k for k, v in payload.items() if v is not None]
         log.debug(f"[CYCLE_PAYLOAD] sym={symbol} fields_present={payload_keys}")
-        _retry_request("POST", url, json=payload)
+        self._dashboard_request(
+            "POST",
+            "/api/live/cycle-log",
+            source="live/cycle-log",
+            json=payload,
+            success_codes=(200,),
+        )
 
     def _push_trade_record(self, symbol: str, side: str, entry_price: float,
                            sl_price: float, tp_price: float, p_enter: float,
                            size_pct: float, lane_info: Optional[dict] = None) -> Optional[int]:
-        if not self._web_api_enabled:
-            return None
-        url = f"{self.replit_url.rstrip('/')}/api/live/trade"
         li = lane_info or {}
         payload = {
             "symbol": symbol,
@@ -1674,7 +1721,13 @@ class LiveRunner:
             "lane_horizon": li.get('lane_horizon', 24),
             "model_name": li.get('model_name', f"{self.dashboard_engine}_runtime"),
         }
-        resp = _retry_request("POST", url, json=payload)
+        resp = self._dashboard_request(
+            "POST",
+            "/api/live/trade",
+            source="live/trade/create",
+            json=payload,
+            success_codes=(200,),
+        )
         if resp and resp.status_code == 200:
             data = resp.json()
             return data.get("id")
@@ -1694,9 +1747,6 @@ class LiveRunner:
                              gross_usd: float = 0.0,
                              cost_usd: float = 0.0,
                              net_usd: float = 0.0):
-        if not self._web_api_enabled:
-            return
-        url = f"{self.replit_url.rstrip('/')}/api/live/trade/{trade_id}"
         payload = {
             "session_id": self.paper_session_id,
             "engine": self.dashboard_engine,
@@ -1725,15 +1775,24 @@ class LiveRunner:
             payload["time_exit"] = time_exit
         if breakeven_moved is not None:
             payload["breakeven_moved"] = breakeven_moved
-        _retry_request("PATCH", url, json=payload)
+        self._dashboard_request(
+            "PATCH",
+            f"/api/live/trade/{trade_id}",
+            source="live/trade/update",
+            json=payload,
+            success_codes=(200,),
+        )
 
     def _update_trade_sl(self, trade_id: int, new_sl: float):
         """Update stop loss on an open trade record in the dashboard."""
-        if not self._web_api_enabled:
-            return
-        url = f"{self.replit_url.rstrip('/')}/api/live/trade/{trade_id}"
         payload = {"stop_loss": new_sl, "session_id": self.paper_session_id}
-        _retry_request("PATCH", url, json=payload)
+        self._dashboard_request(
+            "PATCH",
+            f"/api/live/trade/{trade_id}",
+            source="live/trade/sl",
+            json=payload,
+            success_codes=(200,),
+        )
 
     def _post_trade_manager_action(
         self,
@@ -1741,18 +1800,18 @@ class LiveRunner:
         action: str,
         extra_payload: Optional[Dict[str, object]] = None,
     ) -> Optional[Dict[str, object]]:
-        if not self._web_api_enabled:
-            return None
-        if not self.replit_url or trade_id <= 0:
+        if trade_id <= 0:
             return None
         payload: Dict[str, object] = {"action": str(action)}
         if extra_payload:
             payload.update(extra_payload)
-        resp = _retry_request(
+        resp = self._dashboard_request(
             "POST",
-            f"{self.replit_url.rstrip('/')}/api/paper/trade/{int(trade_id)}/manager-action",
+            f"/api/paper/trade/{int(trade_id)}/manager-action",
+            source="paper/trade/manager-action",
             params={"session_id": self.paper_session_id},
             json=payload,
+            success_codes=(200,),
         )
         if resp is None or resp.status_code != 200:
             return None
@@ -1953,22 +2012,20 @@ class LiveRunner:
         This prevents phantom "portfolio full" blocks caused by stale in-memory
         state after web-app SL/TP closes or trainer restarts.
         """
-        if not self._web_api_enabled:
-            return
-        if not self.replit_url:
+        if not self._dashboard_base_urls():
             return
         try:
-            import requests as _req
-            resp = _req.get(
-                f"{self.replit_url.rstrip('/')}/api/paper/open-positions-summary",
+            resp = self._dashboard_request(
+                "GET",
+                "/api/paper/open-positions-summary",
+                source=f"PortfolioSync/{source}",
                 params={"session_id": self.paper_session_id},
-                timeout=8,
+                success_codes=(200,),
+                timeout=8.0,
             )
-            if resp.status_code != 200:
-                log.warning(f"[PortfolioSync/{source}] HTTP {resp.status_code}")
-                self._note_web_api_status(f"PortfolioSync/{source}", int(resp.status_code))
+            if resp is None:
+                log.warning(f"[PortfolioSync/{source}] dashboard endpoint unavailable")
                 return
-            self._web_api_404_count = 0
 
             data = resp.json()
             web_positions = {p["symbol"]: p for p in data.get("positions", [])}
@@ -2072,17 +2129,16 @@ class LiveRunner:
 
     def _session_equity_live_usd(self, force_refresh: bool = False) -> Optional[float]:
         """Read live paper equity from dashboard state for kill-switch checks."""
-        if not self._web_api_enabled:
-            return self._equity_snapshot_live_usd
-        if not self.replit_url:
+        if not self._dashboard_base_urls():
             return None
         now = time.time()
         if (not force_refresh) and (now - self._equity_snapshot_cache_ts) <= 3.0:
             return self._equity_snapshot_live_usd
         try:
-            import requests as _req
-            resp = _req.get(
-                f"{self.replit_url.rstrip('/')}/api/dashboard/state",
+            resp = self._dashboard_request(
+                "GET",
+                "/api/dashboard/state",
+                source="dashboard/state",
                 params={
                     "session_id": self.paper_session_id,
                     "engine": self.dashboard_engine,
@@ -2090,12 +2146,11 @@ class LiveRunner:
                     "cycles_limit": 1,
                     "trades_limit": 1,
                 },
-                timeout=6,
+                timeout=6.0,
+                success_codes=(200,),
             )
-            if resp.status_code != 200:
-                self._note_web_api_status("dashboard/state", int(resp.status_code))
+            if resp is None:
                 return self._equity_snapshot_live_usd
-            self._web_api_404_count = 0
             data = resp.json() or {}
             summary = data.get("summary", {}) if isinstance(data, dict) else {}
             eq = float(summary.get("equity_live_usd", summary.get("paper_equity_usd", 0.0)))
