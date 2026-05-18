@@ -2622,6 +2622,7 @@ class LiveRunner:
             if id(c) in accepted_ids:
                 continue
             reject_reason = str(c.get("reject_reason") or "portfolio_reject")
+            log.info("  [REJECT] %s %s reason=%s", c.get("symbol", "?"), c.get("side", "?"), reject_reason)
             li = dict(c.get("v5_info") or {})
             li["hold_reason"] = reject_reason
             try:
@@ -3459,18 +3460,19 @@ class LiveRunner:
 
             if not exec_result.executed:
                 skip_reason = str(exec_result.reason or "execution_module_skipped")
-                log.info(f"  {symbol}: execution module skipped trade — {skip_reason}")
                 if self.execution_mode == "paper":
                     # In paper mode we preserve signal-level behavior even when
                     # pullback execution misses, so diagnostics still produce trades.
                     log.info(
-                        "  [PAPER_EXEC_FALLBACK] %s using signal price entry after execution skip",
+                        "  [PAPER_EXEC_FALLBACK] %s execution skip (%s) -> opening at signal price",
                         symbol,
+                        skip_reason,
                     )
                     v5_info["execution_skip_reason"] = skip_reason
                     v5_info["execution_fallback"] = "signal_price"
                     exec_result = None
                 else:
+                    log.info(f"  {symbol}: execution module skipped trade — {skip_reason}")
                     v5_info["hold_reason"] = skip_reason
                     try:
                         self._push_cycle_log(
