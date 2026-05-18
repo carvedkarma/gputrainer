@@ -193,8 +193,11 @@ class MythosRuntimeModel:
         preds = [ex.predict_one(x, regime=regime) for ex in self.experts]
         decision = self.router.select(regime=regime, predictions=preds)
         side_map = {1: "LONG", -1: "SHORT", 0: "NEUTRAL"}
+        expert_side = {str(p.expert_name): int(p.side) for p in preds}
+        candidate_side = int(expert_side.get(str(decision.expert_name), int(decision.side)))
         return {
             "side": side_map.get(int(decision.side), "NEUTRAL"),
+            "candidate_side": side_map.get(candidate_side, "NEUTRAL"),
             "edge": float(decision.expected_r),
             "confidence": float(decision.confidence),
             "uncertainty": float(decision.uncertainty),

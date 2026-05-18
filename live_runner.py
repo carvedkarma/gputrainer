@@ -2853,24 +2853,32 @@ class LiveRunner:
         side_eff = side
         abstain_eff = abstain
         if side_eff not in {"LONG", "SHORT"} and str(reason) == "edge_below_floor":
+            candidate_side = str(pred.get("candidate_side", "")).upper()
+            if candidate_side in {"LONG", "SHORT"}:
+                side_eff = candidate_side
             expert_name = str(pred.get("expert_name", "")).lower()
-            if "short" in expert_name:
+            if side_eff not in {"LONG", "SHORT"} and "short" in expert_name:
                 side_eff = "SHORT"
-            elif "long" in expert_name:
+            elif side_eff not in {"LONG", "SHORT"} and "long" in expert_name:
                 side_eff = "LONG"
         if (
             self.execution_mode == "paper"
-            and streak >= 3
             and abstain_eff
             and str(reason) == "edge_below_floor"
             and side_eff in {"LONG", "SHORT"}
-            and confidence >= conf_floor_eff
+            and confidence >= float(max(0.50, min(conf_floor_eff, 0.55)))
         ):
             abstain_eff = False
             side = side_eff
+            edge_floor_eff = 0.0
+            conf_floor_eff = float(max(0.50, min(conf_floor_eff, 0.55)))
             mythos_info["paper_abstain_override"] = True
-            mythos_info["paper_abstain_override_reason"] = "edge_below_floor_streak_relax"
+            mythos_info["paper_abstain_override_reason"] = "edge_below_floor_recovered_side"
             mythos_info["v5_side"] = side
+            mythos_info["v5_threshold"] = edge_floor_eff
+            mythos_info["threshold_used"] = edge_floor_eff
+            mythos_info["mythos_edge_floor_eff"] = round(edge_floor_eff, 4)
+            mythos_info["mythos_conf_floor_eff"] = round(conf_floor_eff, 4)
 
         if side not in {"LONG", "SHORT"} or abstain_eff or edge < edge_floor_eff or confidence < conf_floor_eff:
             blocks = []
