@@ -1673,7 +1673,9 @@ class LiveRunner:
             "enter_logit": round(float(enter_logit), 4) if enter_logit is not None else None,
             "temperature_used": round(float(temperature_used), 4) if temperature_used is not None else None,
             "v5_score": li.get('v5_score'),
+            "mythos_score": li.get('mythos_score'),
             "v5_threshold": li.get('v5_threshold'),
+            "mythos_threshold": li.get('mythos_threshold'),
             "v5_side": li.get('v5_side'),
             "v5_mfe": li.get('v5_mfe'),
             "v5_mae": li.get('v5_mae'),
@@ -1715,6 +1717,7 @@ class LiveRunner:
             "status": "open",
             "lane": li.get('lane', 'V5'),
             "v5_score": li.get('v5_score'),
+            "mythos_score": li.get('mythos_score'),
             "htf_score": li.get('htf_score'),
             "lane_threshold_used": li.get('threshold_used'),
             "lane_size_mult": li.get('lane_size_mult', 1.0),
@@ -2869,7 +2872,9 @@ class LiveRunner:
             "lane": "MYTHOS",
             "model_name": "mythos_runtime_live",
             "v5_score": round(edge, 4),
+            "mythos_score": round(edge, 4),
             "v5_threshold": edge_floor_eff,
+            "mythos_threshold": edge_floor_eff,
             "v5_side": side,
             "threshold_used": edge_floor_eff,
             "htf_score": htf_score,
@@ -3481,6 +3486,8 @@ class LiveRunner:
         lane_horizon = int(v5_info.get("lane_horizon", 24))
         lane_size_mult = float(v5_info.get("lane_size_mult", 1.0))
         model_name = str(v5_info.get("model_name", "v5_forecaster_live"))
+        score_label = "mythos_score" if str(lane).upper() == "MYTHOS" else "v5_score"
+        score_value = v5_info.get("mythos_score", v5_info.get("v5_score", "?"))
         htf_score = v5_info.get('htf_score', 0)
         lane_sl_mult = float(v5_info.get("sl_mult_used", self.sl_mult))
         lane_tp_mult = float(v5_info.get("tp_mult_used", self.tp_mult))
@@ -3527,7 +3534,7 @@ class LiveRunner:
                 sig_tp = current_price - sig_tp_dist
             no_exec_reason = "SIGNAL_ONLY" if self.execution_mode == "signal_only" else "RECORD_TRADES_OFF"
             log.info(f"  [NO_EXEC] {no_exec_reason} would_open_trade symbol={symbol} side={side} "
-                     f"v5_score={v5_info.get('v5_score','?')} p={p_enter:.4f} "
+                     f"{score_label}={score_value} p={p_enter:.4f} "
                      f"entry={current_price:.2f} sl={sig_sl:.2f} tp={sig_tp:.2f}")
             try:
                 self._push_cycle_log(
@@ -3536,7 +3543,7 @@ class LiveRunner:
                     reasons=[
                         f"would_enter=true",
                         f"side={side} entry={current_price:.2f} sl={sig_sl:.2f} tp={sig_tp:.2f}",
-                        f"v5_score={v5_info.get('v5_score','?')} p={p_enter:.4f}",
+                        f"{score_label}={score_value} p={p_enter:.4f}",
                     ],
                     lane_info=v5_info,
                     decision_stage="execution",
@@ -3565,10 +3572,11 @@ class LiveRunner:
                 if self.execution_mode == "paper":
                     # In paper mode we preserve signal-level behavior even when
                     # pullback execution misses, so diagnostics still produce trades.
+                    skip_reason_clean = skip_reason.replace(" | Trade skipped", "").strip()
                     log.info(
-                        "  [PAPER_EXEC_FALLBACK] %s execution skip (%s) -> opening at signal price",
+                        "  [PAPER_EXEC_FALLBACK] %s entry-improvement skipped (%s) -> opening at signal price",
                         symbol,
-                        skip_reason,
+                        skip_reason_clean,
                     )
                     v5_info["execution_skip_reason"] = skip_reason
                     v5_info["execution_fallback"] = "signal_price"
@@ -3659,6 +3667,7 @@ class LiveRunner:
                     'lane': lane,
                     'htf_score': htf_score,
                     'v5_score': v5_info.get('v5_score'),
+                    'mythos_score': v5_info.get('mythos_score'),
                     'threshold_used': lane_threshold,
                     'lane_size_mult': lane_size_mult,
                     'lane_horizon': lane_horizon,
@@ -3672,14 +3681,14 @@ class LiveRunner:
 
         if self.execution_mode == "paper":
             log.info(f"  [PAPER_OPEN] {lane} {symbol} {side} @ {entry_price:.2f} "
-                     f"| v5_score={v5_info.get('v5_score','?')}")
+                     f"| {score_label}={score_value}")
         elif self.execution_mode == "live":
             if self.execution is not None:
                 log.info(f"  [LIVE_OPEN] real_order_sent {lane} {symbol} {side} @ {entry_price:.2f} "
-                         f"| v5_score={v5_info.get('v5_score','?')}")
+                         f"| {score_label}={score_value}")
             else:
                 log.info(f"  [LIVE_SIGNAL_ONLY] no_adapter_wired {lane} {symbol} {side} @ {entry_price:.2f} "
-                         f"| v5_score={v5_info.get('v5_score','?')} "
+                         f"| {score_label}={score_value} "
                          f"[WARNING: execution_mode=live but no real exchange adapter — no order placed]")
         self._push_prediction(prediction)
         try:

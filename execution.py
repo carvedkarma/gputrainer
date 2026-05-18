@@ -177,7 +177,8 @@ class ExecutionModule:
             improvement_bps = (entry_price - signal_price) / signal_price * 10000
 
         reason = self._build_reason(pullback_hit, confirmation_hit, method)
-        log.info(f"  [EXEC RESULT] {method} | pullback={'HIT' if pullback_hit else 'MISS'} | "
+        method_label = "entry_improvement_missed" if method == "missed" else method
+        log.info(f"  [EXEC RESULT] {method_label} | pullback={'HIT' if pullback_hit else 'MISS'} | "
                  f"confirm={'HIT' if confirmation_hit else 'MISS'} | "
                  f"entry={entry_price:.2f} vs signal={signal_price:.2f} | "
                  f"improvement={improvement_bps:+.1f} bps")
@@ -283,10 +284,11 @@ class ExecutionModule:
 
                 elapsed = time.time() - start_time
                 reason = self._build_reason(pullback_hit, confirmation_hit, method)
+                method_label = "entry_improvement_missed" if method == "missed" else method
                 log.info(
                     "  [EXEC RESULT] %s | pullback=%s | confirm=%s | "
                     "entry=%.2f vs signal=%.2f | improvement=%+.1f bps | elapsed=%.0fs",
-                    method,
+                    method_label,
                     "HIT" if pullback_hit else "MISS",
                     "HIT" if confirmation_hit else "MISS",
                     entry_price,
@@ -382,7 +384,8 @@ class ExecutionModule:
             improvement_bps = (entry_price - signal_price) / signal_price * 10000
 
         reason = self._build_reason(pullback_hit, confirmation_hit, method)
-        log.info(f"  [EXEC RESULT] {method} | pullback={'HIT' if pullback_hit else 'MISS'} | "
+        method_label = "entry_improvement_missed" if method == "missed" else method
+        log.info(f"  [EXEC RESULT] {method_label} | pullback={'HIT' if pullback_hit else 'MISS'} | "
                  f"confirm={'HIT' if confirmation_hit else 'MISS'} | "
                  f"entry={entry_price:.2f} vs signal={signal_price:.2f} | "
                  f"improvement={improvement_bps:+.1f} bps | elapsed={elapsed:.0f}s")
