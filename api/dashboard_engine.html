@@ -1486,8 +1486,16 @@
       const padR = 14;
       const padT = 12;
       const padB = 22;
-      const minLow = Math.min(...candles.map((c) => c.low));
-      const maxHigh = Math.max(...candles.map((c) => c.high));
+      const lineDefs = Array.isArray(opts.lines) ? opts.lines : [];
+      const lineVals = lineDefs
+        .map((line) => toNum(line.value, NaN))
+        .filter((v) => Number.isFinite(v));
+      const minLowRaw = Math.min(...candles.map((c) => c.low), ...(lineVals.length ? lineVals : [Number.POSITIVE_INFINITY]));
+      const maxHighRaw = Math.max(...candles.map((c) => c.high), ...(lineVals.length ? lineVals : [Number.NEGATIVE_INFINITY]));
+      const rangeRaw = Math.max(maxHighRaw - minLowRaw, Math.max(Math.abs(maxHighRaw) * 0.001, 1e-6));
+      const pad = Math.max(rangeRaw * 0.06, Math.abs(maxHighRaw) * 0.0005, 1e-6);
+      const minLow = minLowRaw - pad;
+      const maxHigh = maxHighRaw + pad;
       const span = Math.max(maxHigh - minLow, Math.max(Math.abs(maxHigh) * 0.001, 1e-6));
       const yAt = (v) => padT + ((maxHigh - v) / span) * (h - padT - padB);
       const n = candles.length;
@@ -1523,7 +1531,6 @@
         ctx.fillRect(x - bodyW / 2, bodyTop, bodyW, bodyH);
       });
 
-      const lineDefs = Array.isArray(opts.lines) ? opts.lines : [];
       lineDefs.forEach((line) => {
         const val = toNum(line.value, NaN);
         if (!Number.isFinite(val)) return;
@@ -1719,7 +1726,7 @@
       const guideLines = [];
       if (lastOpen) {
         const entry = toNum(lastOpen.entry_price ?? lastOpen.entryPrice, NaN);
-        const sl = toNum(lastOpen.initial_sl ?? lastOpen.stop_loss ?? lastOpen.stopLoss, NaN);
+        const sl = toNum(lastOpen.stop_loss ?? lastOpen.stopLoss ?? lastOpen.initial_sl, NaN);
         const tp = toNum(lastOpen.take_profit ?? lastOpen.take_profit_price ?? lastOpen.tp2, NaN);
         if (Number.isFinite(entry)) guideLines.push({ value: entry, label: "Entry", color: "rgba(116,214,255,.9)" });
         if (Number.isFinite(sl)) guideLines.push({ value: sl, label: "SL", color: "rgba(255,111,143,.9)" });
