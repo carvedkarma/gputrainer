@@ -1465,6 +1465,7 @@ class LiveRunner:
                 "predictions_limit": 1,
                 "cycles_limit": 1,
                 "trades_limit": 2000,
+                "auto_close": 0,
             },
             success_codes=(200,),
         )
@@ -2099,7 +2100,7 @@ class LiveRunner:
                 "GET",
                 "/api/paper/open-positions-summary",
                 source=f"PortfolioSync/{source}",
-                params={"session_id": self.paper_session_id},
+                params={"session_id": self.paper_session_id, "auto_close": 0},
                 success_codes=(200,),
                 timeout=8.0,
             )
@@ -2111,6 +2112,33 @@ class LiveRunner:
             web_positions = {p["symbol"]: p for p in data.get("positions", [])}
             web_symbols = set(web_positions.keys())
             mem_symbols = set(self.portfolio.open_positions.keys())
+            latest_closed_by_symbol: Dict[str, Dict[str, object]] = {}
+            state_resp = self._dashboard_request(
+                "GET",
+                "/api/dashboard/state",
+                source=f"PortfolioSync/{source}/closed-scan",
+                params={
+                    "session_id": self.paper_session_id,
+                    "engine": self.dashboard_engine,
+                    "predictions_limit": 1,
+                    "cycles_limit": 1,
+                    "trades_limit": 1200,
+                    "auto_close": 0,
+                },
+                success_codes=(200,),
+                timeout=8.0,
+            )
+            if state_resp is not None and state_resp.status_code == 200:
+                try:
+                    rows = state_resp.json().get("trades", [])
+                    for tr in reversed(rows if isinstance(rows, list) else []):
+                        if str(tr.get("status", "open")).lower() != "closed":
+                            continue
+                        sym = str(tr.get("symbol", "")).upper()
+                        if sym and sym not in latest_closed_by_symbol:
+                            latest_closed_by_symbol[sym] = tr
+                except Exception:
+                    latest_closed_by_symbol = {}
 
             # Remove positions the web app no longer tracks as OPEN
             stale = mem_symbols - web_symbols
@@ -2118,7 +2146,26 @@ class LiveRunner:
                 pos = self.portfolio.open_positions.pop(sym, None)
                 if pos:
                     self.trade_manager.clear_position(sym)
-                    log.info(f"[PortfolioSync/{source}] Removed stale in-memory position for {sym} (closed in web app)")
+                    closed_row = latest_closed_by_symbol.get(sym) or {}
+                    eff_r = float(closed_row.get("sized_r", closed_row.get("net_r", 0.0)) or 0.0)
+                    outc = str(closed_row.get("outcome", "WEB_CLOSED"))
+                    exit_px = float(closed_row.get("exit_price", 0.0) or 0.0)
+                    if closed_row:
+                        self._closed_trade_stats.append(
+                            {
+                                "symbol": sym,
+                                "side": str(closed_row.get("side", pos.side)),
+                                "outcome": outc,
+                                "gross_r": float(closed_row.get("gross_r", closed_row.get("net_r", eff_r)) or eff_r),
+                                "cost_r": float(closed_row.get("cost_r", 0.0) or 0.0),
+                                "net_r": eff_r,
+                                "sized_r": eff_r,
+                            }
+                        )
+                    log.info(
+                        f"[PortfolioSync/{source}] Removed stale in-memory position for {sym} "
+                        f"(closed in web app) outcome={outc} exit={exit_px:.2f} net_r={eff_r:+.4f}"
+                    )
 
             # Update existing in-memory positions with latest web stop/TP/risk state.
             shared = mem_symbols & web_symbols
@@ -2225,6 +2272,7 @@ class LiveRunner:
                     "predictions_limit": 1,
                     "cycles_limit": 1,
                     "trades_limit": 1,
+                    "auto_close": 0,
                 },
                 timeout=6.0,
                 success_codes=(200,),

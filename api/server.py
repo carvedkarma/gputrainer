@@ -5804,7 +5804,8 @@ async def _auto_close_open_trades_from_market(state: _DashboardSessionState) -> 
     if not open_rows:
         return []
 
-    price_rows = await _resolve_market_prices(sorted(set(symbols)), force_refresh=False)
+    now_ms = int(time.time() * 1000)
+    price_rows = await _resolve_market_prices(sorted(set(symbols)), force_refresh=True)
     events: List[Dict[str, Any]] = []
     for tid, tr in open_rows:
         if str(tr.get("status", "open")).lower() != "open":
@@ -5815,7 +5816,10 @@ async def _auto_close_open_trades_from_market(state: _DashboardSessionState) -> 
             continue
         try:
             px = float(row.get("price", 0.0))
-            if not np.isfinite(px) or px <= 0.0:
+            src = str(row.get("source", "unknown"))
+            ts_ms = int(row.get("ts", now_ms) or now_ms)
+            fresh = (now_ms - ts_ms) <= 6_000
+            if (not np.isfinite(px)) or px <= 0.0 or (src == "cache" and not fresh):
                 continue
             side = str(tr.get("side", "LONG")).upper()
             sl = float(tr.get("stop_loss") or tr.get("stopLoss") or tr.get("initial_sl") or 0.0)
@@ -6254,9 +6258,13 @@ async def update_paper_settings(payload: Dict[str, Any], session_id: Optional[st
 
 
 @app.get("/api/paper/open-positions-summary")
-async def open_positions_summary(session_id: str = Query(default="default")):
+async def open_positions_summary(
+    session_id: str = Query(default="default"),
+    auto_close: bool = Query(default=False),
+):
     state = _get_dashboard_session(session_id)
-    await _auto_close_open_trades_from_market(state)
+    if bool(auto_close):
+        await _auto_close_open_trades_from_market(state)
     positions: List[Dict[str, Any]] = []
     for tid in state.trade_order:
         tr = state.trades.get(tid)
@@ -6391,9 +6399,11 @@ async def dashboard_state(
     predictions_limit: int = Query(default=250, ge=1, le=5000),
     cycles_limit: int = Query(default=600, ge=1, le=5000),
     trades_limit: int = Query(default=1000, ge=1, le=5000),
+    auto_close: bool = Query(default=False),
 ):
     state = _get_dashboard_session(session_id)
-    await _auto_close_open_trades_from_market(state)
+    if bool(auto_close):
+        await _auto_close_open_trades_from_market(state)
     summary = _session_summary(state)
     engine_filter = _normalize_engine_tag(engine) if engine else None
     if (

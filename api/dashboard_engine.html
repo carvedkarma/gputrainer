@@ -780,7 +780,7 @@
     }
 
     async function fetchStateForSession(sessionId) {
-      const url = `/api/dashboard/state?session_id=${encodeURIComponent(sessionId)}${qEngine()}&predictions_limit=350&cycles_limit=1400&trades_limit=3000`;
+      const url = `/api/dashboard/state?session_id=${encodeURIComponent(sessionId)}${qEngine()}&predictions_limit=350&cycles_limit=1400&trades_limit=3000&auto_close=0`;
       const payload = await fetchJson(url);
       return withSessionRows(payload, sessionId);
     }
