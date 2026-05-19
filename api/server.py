@@ -5446,7 +5446,7 @@ def _assets_snapshot(state: _DashboardSessionState) -> List[Dict[str, Any]]:
             row["open"] += 1
             continue
         row["closed"] += 1
-        net_r = float(tr.get("net_r", tr.get("gross_r", 0.0)) or 0.0)
+        net_r = float(tr.get("sized_r", tr.get("net_r", tr.get("gross_r", 0.0))) or 0.0)
         cost_r = float(tr.get("cost_r", 0.0) or 0.0)
         row["net_r"] += net_r
         row["fees_r"] += cost_r
@@ -5498,6 +5498,7 @@ def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
     short_taken = sum(1 for t in trades if str(t.get("side", "")).upper() == "SHORT")
     long_success = 0
     short_success = 0
+    closed_effective_r: List[float] = []
     for tr in closed_trades:
         side = str(tr.get("side", "")).upper()
         if bool(tr.get("manual_close")):
@@ -5505,11 +5506,13 @@ def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
         gross_r = float(tr.get("gross_r", tr.get("net_r", 0.0)) or 0.0)
         cost_r = float(tr.get("cost_r", 0.0) or 0.0)
         net_r = float(tr.get("net_r", tr.get("gross_r", 0.0)) or 0.0)
+        net_r_effective = float(tr.get("sized_r", net_r) or 0.0)
         total_gross_r += gross_r
         total_fee_r += cost_r
         fee_usd = float(tr.get("pnl_usd_cost", 0.0) or 0.0)
         total_fee_usd += fee_usd
-        total_net_r += net_r
+        total_net_r += net_r_effective
+        closed_effective_r.append(net_r_effective)
         risk_usd = float(tr.get("risk_usd_used", 0.0) or 0.0)
         lev = float(tr.get("leverage", 0.0) or 0.0)
         if lev > 0.0:
@@ -5522,20 +5525,20 @@ def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
         if abs(net_usd) < 1e-9 and abs(net_r) > 1e-9 and risk_usd > 0.0:
             net_usd = net_r * risk_usd
         total_net_usd += net_usd
-        if net_r > 0:
+        if net_r_effective > 0:
             wins += 1
             if side == "LONG":
                 long_success += 1
             elif side == "SHORT":
                 short_success += 1
-        elif net_r < 0:
+        elif net_r_effective < 0:
             losses += 1
     closed_n = len(closed_trades)
     win_rate = float(wins / closed_n) if closed_n > 0 else 0.0
     expectancy = float(total_net_r / closed_n) if closed_n > 0 else 0.0
 
-    gross_profit = sum(max(float(t.get("net_r", t.get("gross_r", 0.0)) or 0.0), 0.0) for t in closed_trades)
-    gross_loss = sum(max(-float(t.get("net_r", t.get("gross_r", 0.0)) or 0.0), 0.0) for t in closed_trades)
+    gross_profit = sum(max(v, 0.0) for v in closed_effective_r)
+    gross_loss = sum(max(-v, 0.0) for v in closed_effective_r)
     profit_factor = float(gross_profit / max(gross_loss, 1e-9)) if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
     if profit_factor == float("inf"):
         profit_factor = 9999.0
@@ -5637,7 +5640,7 @@ def _equity_curve(state: _DashboardSessionState) -> List[Dict[str, Any]]:
         tr = state.trades.get(tid)
         if not tr or str(tr.get("status", "")).lower() != "closed":
             continue
-        net_r = float(tr.get("net_r", tr.get("gross_r", 0.0)) or 0.0)
+        net_r = float(tr.get("sized_r", tr.get("net_r", tr.get("gross_r", 0.0))) or 0.0)
         eq += net_r
         peak = max(peak, eq)
         drawdown = eq - peak

@@ -804,6 +804,8 @@
     }
 
     function tradeNetR(tr) {
+      const sized = Number(tr.sized_r);
+      if (Number.isFinite(sized)) return sized;
       const net = Number(tr.net_r);
       if (Number.isFinite(net)) return net;
       const gross = toNum(tr.gross_r, 0);
@@ -1742,6 +1744,15 @@
         const url = `/api/paper/trade/${encodeURIComponent(tradeId)}/manual-close${sid ? `?session_id=${encodeURIComponent(sid)}` : ""}`;
         const sym = String(symbol || "").toUpperCase();
         let exitPrice = toNum(exitPriceHint, NaN);
+        if (sym) {
+          try {
+            const tickPayload = await fetchJson(`/api/market/ticks?symbols=${encodeURIComponent(sym)}&force_refresh=1`);
+            const p = toNum((tickPayload && tickPayload.prices && tickPayload.prices[sym]), NaN);
+            if (Number.isFinite(p) && p > 0) exitPrice = p;
+          } catch {
+            // keep fallback price paths below
+          }
+        }
         if ((!Number.isFinite(exitPrice) || exitPrice <= 0) && sym) {
           exitPrice = toNum(state.marketPrices[sym], NaN);
         }
