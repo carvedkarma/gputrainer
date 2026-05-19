@@ -5759,6 +5759,8 @@ def _close_open_trade_record(
         {
             "status": "closed",
             "manual_close": bool(manual_close),
+            "close_lock": "manual" if bool(manual_close) else "engine",
+            "close_locked_at": now_ms,
             "exit_time": now_ms,
             "exit_price": round(float(exit_price), 6),
             "outcome": str(outcome),
@@ -5914,7 +5916,33 @@ async def create_live_trade(payload: Dict[str, Any], session_id: Optional[str] =
 @app.patch("/api/live/trade/{trade_id}")
 async def update_live_trade(trade_id: int, payload: Dict[str, Any], session_id: Optional[str] = Query(default=None)):
     state, trade = _resolve_trade_context(int(trade_id), payload=payload, session_id=session_id)
-    trade.update(payload or {})
+    incoming = dict(payload or {})
+    existing_closed = str(trade.get("status", "open")).lower() == "closed"
+    immutable_close_fields = {
+        "status",
+        "manual_close",
+        "exit_time",
+        "exit_price",
+        "outcome",
+        "exit_reason",
+        "gross_r",
+        "cost_r",
+        "net_r",
+        "sized_r",
+        "risk_usd_used",
+        "pnl_usd_gross",
+        "pnl_usd_cost",
+        "pnl_usd",
+        "close_lock",
+        "close_locked_at",
+    }
+    ignored_close_override = False
+    if existing_closed:
+        if any(k in incoming for k in immutable_close_fields):
+            ignored_close_override = True
+            incoming = {k: v for k, v in incoming.items() if k not in immutable_close_fields}
+
+    trade.update(incoming)
     trade["id"] = int(trade_id)
     trade["session_id"] = state.session_id
     trade["engine"] = _infer_engine_from_payload(trade, session_id=state.session_id)
@@ -5944,7 +5972,13 @@ async def update_live_trade(trade_id: int, payload: Dict[str, Any], session_id: 
         trade["pnl_usd"] = round(float(net_usd), 2)
     _refresh_session_engine_hint(state, trade)
     state.updated_at_ms = int(time.time() * 1000)
-    return {"ok": True, "id": int(trade_id), "session_id": state.session_id, "trade": trade}
+    return {
+        "ok": True,
+        "id": int(trade_id),
+        "session_id": state.session_id,
+        "trade": trade,
+        "ignored_close_override": bool(ignored_close_override),
+    }
 
 
 @app.post("/api/paper/trade/{trade_id}/manual-close")
