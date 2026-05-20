@@ -5411,6 +5411,40 @@ def _collect_session_models(state: _DashboardSessionState) -> List[str]:
     return sorted(models)[:40]
 
 
+def _trade_raw_net_r(trade: Dict[str, Any]) -> float:
+    net_r = _safe_float(trade.get("net_r"), float("nan"))
+    if np.isfinite(net_r):
+        return float(net_r)
+    gross_r = _safe_float(trade.get("gross_r"), 0.0)
+    cost_r = _safe_float(trade.get("cost_r"), 0.0)
+    return float(gross_r - cost_r)
+
+
+def _trade_effective_net_r(trade: Dict[str, Any]) -> float:
+    sized_r = _safe_float(trade.get("sized_r"), float("nan"))
+    if np.isfinite(sized_r):
+        return float(sized_r)
+    return _trade_raw_net_r(trade)
+
+
+def _trade_net_usd(trade: Dict[str, Any]) -> float:
+    raw_net_r = _trade_raw_net_r(trade)
+    risk_usd = abs(_safe_float(trade.get("risk_usd_used"), 0.0))
+    derived = float(raw_net_r * risk_usd) if (risk_usd > 0.0 and np.isfinite(raw_net_r)) else None
+
+    stored = _safe_float(trade.get("pnl_usd"), float("nan"))
+    if not np.isfinite(stored):
+        return float(derived or 0.0)
+    if derived is None:
+        return float(stored)
+
+    # Heal stale/inconsistent USD payloads by trusting canonical R * risk_usd.
+    tolerance = max(1.0, abs(derived) * 0.02)
+    if abs(float(stored) - derived) > tolerance:
+        return float(derived)
+    return float(stored)
+
+
 def _assets_snapshot(state: _DashboardSessionState) -> List[Dict[str, Any]]:
     prices = _latest_price_by_symbol(state)
     by_symbol: Dict[str, Dict[str, Any]] = {}
@@ -5446,7 +5480,7 @@ def _assets_snapshot(state: _DashboardSessionState) -> List[Dict[str, Any]]:
             row["open"] += 1
             continue
         row["closed"] += 1
-        net_r = float(tr.get("sized_r", tr.get("net_r", tr.get("gross_r", 0.0))) or 0.0)
+        net_r = _trade_effective_net_r(tr)
         cost_r = float(tr.get("cost_r", 0.0) or 0.0)
         row["net_r"] += net_r
         row["fees_r"] += cost_r
@@ -5505,8 +5539,8 @@ def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
             manual_closes += 1
         gross_r = float(tr.get("gross_r", tr.get("net_r", 0.0)) or 0.0)
         cost_r = float(tr.get("cost_r", 0.0) or 0.0)
-        net_r = float(tr.get("net_r", tr.get("gross_r", 0.0)) or 0.0)
-        net_r_effective = float(tr.get("sized_r", net_r) or 0.0)
+        net_r = _trade_raw_net_r(tr)
+        net_r_effective = _trade_effective_net_r(tr)
         total_gross_r += gross_r
         total_fee_r += cost_r
         fee_usd = float(tr.get("pnl_usd_cost", 0.0) or 0.0)
@@ -5517,13 +5551,7 @@ def _session_summary(state: _DashboardSessionState) -> Dict[str, Any]:
         lev = float(tr.get("leverage", 0.0) or 0.0)
         if lev > 0.0:
             leverage_values.append(lev)
-        net_usd = tr.get("pnl_usd")
-        if net_usd is None:
-            net_usd = net_r * risk_usd
-        net_usd = float(net_usd or 0.0)
-        # Recover missing USD valuation from R if needed.
-        if abs(net_usd) < 1e-9 and abs(net_r) > 1e-9 and risk_usd > 0.0:
-            net_usd = net_r * risk_usd
+        net_usd = _trade_net_usd(tr)
         total_net_usd += net_usd
         if net_r_effective > 0:
             wins += 1
@@ -5961,16 +5989,23 @@ async def update_live_trade(trade_id: int, payload: Dict[str, Any], session_id: 
             risk_usd = float(trade["risk_usd_used"])
         gross_r = float(trade.get("gross_r", trade.get("net_r", 0.0)) or 0.0)
         cost_r = float(trade.get("cost_r", 0.0) or 0.0)
-        net_r = float(trade.get("net_r", gross_r - cost_r) or 0.0)
+        net_r = _trade_raw_net_r(trade)
         gross_usd = float(trade.get("pnl_usd_gross", 0.0) or 0.0)
         cost_usd = float(trade.get("pnl_usd_cost", 0.0) or 0.0)
         net_usd = float(trade.get("pnl_usd", 0.0) or 0.0)
-        if abs(gross_usd) < 1e-9 and abs(gross_r) > 1e-9 and risk_usd > 0.0:
+
+        # Closed-trade USD should always be derived from canonical R math when risk is known.
+        if risk_usd > 0.0:
             gross_usd = gross_r * risk_usd
-        if abs(cost_usd) < 1e-9 and abs(cost_r) > 1e-9 and risk_usd > 0.0:
             cost_usd = cost_r * risk_usd
-        if abs(net_usd) < 1e-9 and abs(net_r) > 1e-9 and risk_usd > 0.0:
             net_usd = net_r * risk_usd
+        else:
+            if abs(gross_usd) < 1e-9 and abs(gross_r) > 1e-9:
+                gross_usd = gross_r * risk_usd
+            if abs(cost_usd) < 1e-9 and abs(cost_r) > 1e-9:
+                cost_usd = cost_r * risk_usd
+            if abs(net_usd) < 1e-9 and abs(net_r) > 1e-9:
+                net_usd = net_r * risk_usd
         trade["pnl_usd_gross"] = round(float(gross_usd), 2)
         trade["pnl_usd_cost"] = round(float(cost_usd), 2)
         trade["pnl_usd"] = round(float(net_usd), 2)

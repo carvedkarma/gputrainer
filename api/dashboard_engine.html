@@ -813,6 +813,31 @@
       return gross - cost;
     }
 
+    function tradeRawNetR(tr) {
+      const net = Number(tr.net_r);
+      if (Number.isFinite(net)) return net;
+      const gross = toNum(tr.gross_r, 0);
+      const cost = toNum(tr.cost_r, 0);
+      return gross - cost;
+    }
+
+    function tradeNetUsd(tr) {
+      const stored = Number(tr.pnl_usd);
+      const rawR = tradeRawNetR(tr);
+      const riskUsd = Math.abs(toNum(tr.risk_usd_used, NaN));
+      const derived = (Number.isFinite(rawR) && Number.isFinite(riskUsd) && riskUsd > 0)
+        ? rawR * riskUsd
+        : NaN;
+      if (Number.isFinite(stored) && Number.isFinite(derived)) {
+        const tolerance = Math.max(1, Math.abs(derived) * 0.02);
+        return Math.abs(stored - derived) > tolerance ? derived : stored;
+      }
+      if (Number.isFinite(stored)) return stored;
+      if (Number.isFinite(derived)) return derived;
+      const nr = tradeNetR(tr);
+      return Number.isFinite(nr) && Number.isFinite(riskUsd) ? nr * riskUsd : 0;
+    }
+
     function buildEquityCurveFromTrades(trades) {
       const closed = (trades || [])
         .filter((t) => statusOf(t.status) === "closed")
@@ -871,7 +896,7 @@
       const avgEqSeed = summarySeeds.length
         ? summarySeeds.reduce((a, s) => a + toNum(s.paper_equity_usd, 0), 0) / summarySeeds.length
         : 0;
-      const equityLive = avgEqSeed + (closed.reduce((a, t) => a + toNum(t.pnl_usd, tradeNetR(t) * toNum(t.risk_usd_used, 0)), 0)) + unrealizedUsd;
+      const equityLive = avgEqSeed + (closed.reduce((a, t) => a + tradeNetUsd(t), 0)) + unrealizedUsd;
       const models = new Set();
       (payloads || []).forEach((p) => (p.models || []).forEach((m) => models.add(String(m))));
       const symbols = new Set((trades || []).map((t) => String(t.symbol || "").toUpperCase()).filter(Boolean));
@@ -1676,7 +1701,7 @@
       const rows = (trades || []).slice().reverse().slice(0, 240);
       $("tradeBody").innerHTML = rows.length ? rows.map((t) => {
         const nr = tradeNetR(t);
-        const nusd = toNum(t.pnl_usd, nr * toNum(t.risk_usd_used, 0));
+        const nusd = tradeNetUsd(t);
         return `
           <tr>
             <td>${t.id ?? "-"}</td>
