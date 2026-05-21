@@ -581,7 +581,7 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>ID</th><th>Session</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Price</th><th>SL</th><th>TP</th><th>Live R</th><th>Live USD</th><th>Action</th></tr>
+              <tr><th>ID</th><th>Session</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Price</th><th>SL</th><th>TP</th><th>Live Net R (est)</th><th>Live Net USD (est)</th><th>Action</th></tr>
             </thead>
             <tbody id="openBody"></tbody>
           </table>
@@ -1644,21 +1644,46 @@
       });
     }
 
-    function calcLiveR(trade, priceMap) {
+    const PAPER_CLOSE_FEE_BPS = 8.0;
+
+    function tradeEntryRiskAbs(trade) {
       const entry = toNum(trade.entry_price ?? trade.entryPrice, NaN);
+      const stored = toNum(trade.entry_risk_abs, NaN);
+      if (Number.isFinite(stored) && stored > 1e-9) return stored;
       const sl = toNum(trade.initial_sl ?? trade.stop_loss ?? trade.stopLoss, NaN);
       const risk = Math.abs(entry - sl);
+      if (Number.isFinite(risk) && risk > 1e-9) return risk;
+      if (!Number.isFinite(entry) || entry <= 0) return NaN;
+      return Math.max(Math.abs(entry) * 0.005, 1e-6);
+    }
+
+    function estimateOpenCostR(trade) {
+      const entry = toNum(trade.entry_price ?? trade.entryPrice, NaN);
+      const risk = tradeEntryRiskAbs(trade);
+      if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(risk) || risk <= 1e-9) return 0;
+      return (PAPER_CLOSE_FEE_BPS / 10000) * 2 / (risk / Math.max(entry, 1e-9));
+    }
+
+    function calcLiveGrossR(trade, priceMap) {
+      const entry = toNum(trade.entry_price ?? trade.entryPrice, NaN);
+      const risk = tradeEntryRiskAbs(trade);
       const symbol = String(trade.symbol || "").toUpperCase();
       const px = toNum(priceMap[symbol], NaN);
-      if (!Number.isFinite(entry) || !Number.isFinite(sl) || !Number.isFinite(px) || risk <= 1e-9) return 0;
+      if (!Number.isFinite(entry) || !Number.isFinite(px) || !Number.isFinite(risk) || risk <= 1e-9) return 0;
       return sideOf(trade.side) === "SHORT" ? (entry - px) / risk : (px - entry) / risk;
+    }
+
+    function calcLiveNetR(trade, priceMap) {
+      return calcLiveGrossR(trade, priceMap) - estimateOpenCostR(trade);
     }
 
     function renderOpenTrades(trades, cycles) {
       const priceMap = buildCyclePriceMap(cycles);
       const rows = (trades || []).filter((t) => statusOf(t.status) === "open").slice().reverse().slice(0, 180);
       $("openBody").innerHTML = rows.length ? rows.map((t) => {
-        const rr = calcLiveR(t, priceMap);
+        const grossR = calcLiveGrossR(t, priceMap);
+        const costR = estimateOpenCostR(t);
+        const rr = grossR - costR;
         const riskUsd = toNum(t.risk_usd_used, NaN);
         const liveUsd = Number.isFinite(riskUsd) && riskUsd > 0 ? rr * riskUsd : NaN;
         const sym = String(t.symbol || "").toUpperCase();
@@ -1674,7 +1699,7 @@
             <td>${Number.isFinite(px) ? fmt.n(px, px > 1000 ? 2 : 4) : "-"}</td>
             <td>${fmt.n(t.stop_loss ?? t.stopLoss ?? t.initial_sl, 4)}</td>
             <td>${fmt.n(t.take_profit ?? t.take_profit_price ?? t.tp2, 4)}</td>
-            <td class="${klass(rr)}">${fmt.r(rr, 3)}</td>
+            <td class="${klass(rr)}" title="gross ${fmt.r(grossR, 3)} - est cost ${fmt.r(costR, 3)}">${fmt.r(rr, 3)}</td>
             <td class="${klass(liveUsd)}">${Number.isFinite(liveUsd) ? fmt.usd(liveUsd) : "-"}</td>
             <td><button class="btn xs close-trade" data-trade-id="${t.id}" data-session-id="${sid}" data-symbol="${sym}" data-price="${Number.isFinite(px) ? px : ""}">Close</button></td>
           </tr>

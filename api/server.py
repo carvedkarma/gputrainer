@@ -5100,6 +5100,7 @@ _MARKET_PRICE_TTL_S = 0.9
 _MARKET_CANDLE_CACHE: Dict[str, Dict[str, Any]] = {}
 _MARKET_CANDLE_TTL_S = 3.0
 _PAPER_MAX_LEVERAGE = 250.0
+_PAPER_CLOSE_FEE_BPS = 8.0
 _COINBASE_PRODUCT_MAP: Dict[str, str] = {
     "BTCUSDT": "BTC-USD",
     "ETHUSDT": "ETH-USD",
@@ -5445,6 +5446,67 @@ def _trade_net_usd(trade: Dict[str, Any]) -> float:
     return float(stored)
 
 
+def _ensure_trade_entry_risk_fields(trade: Dict[str, Any]) -> float:
+    entry = _safe_float(trade.get("entry_price", trade.get("entryPrice")), 0.0)
+    if not np.isfinite(entry) or entry <= 0.0:
+        return 0.0
+
+    stored_risk_abs = _safe_float(trade.get("entry_risk_abs"), float("nan"))
+    if np.isfinite(stored_risk_abs) and stored_risk_abs > 1e-9:
+        trade["entry_risk_abs"] = round(float(stored_risk_abs), 8)
+        initial_sl = _safe_float(trade.get("initial_sl"), float("nan"))
+        if not np.isfinite(initial_sl) or initial_sl <= 0.0:
+            guess_sl = entry - stored_risk_abs
+            trade["initial_sl"] = round(float(guess_sl), 6)
+        return float(stored_risk_abs)
+
+    initial_sl = _safe_float(
+        trade.get("initial_sl", trade.get("stop_loss", trade.get("stopLoss"))),
+        float("nan"),
+    )
+    if np.isfinite(initial_sl) and initial_sl > 0.0:
+        risk_abs = abs(float(entry - initial_sl))
+        if risk_abs > 1e-9:
+            trade["initial_sl"] = round(float(initial_sl), 6)
+            trade["entry_risk_abs"] = round(float(risk_abs), 8)
+            return float(risk_abs)
+    return 0.0
+
+
+def _trade_entry_risk_abs(trade: Dict[str, Any]) -> float:
+    risk_abs = _ensure_trade_entry_risk_fields(trade)
+    if risk_abs > 1e-9:
+        return float(risk_abs)
+
+    entry = _safe_float(trade.get("entry_price", trade.get("entryPrice")), 0.0)
+    fallback = max(abs(float(entry)) * 0.005, 1e-6)
+    trade["entry_risk_abs"] = round(float(fallback), 8)
+    return float(fallback)
+
+
+def _resolve_exit_price_from_payload(
+    payload: Dict[str, Any],
+    *,
+    latest_px: Optional[float],
+    entry_px: float,
+    default_source: str,
+) -> tuple[float, str]:
+    if payload.get("exit_price") is not None:
+        try:
+            px = float(payload.get("exit_price"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="exit_price must be a finite positive number")
+        if not np.isfinite(px) or px <= 0.0:
+            raise HTTPException(status_code=400, detail="exit_price must be a finite positive number")
+        return float(px), "client_payload"
+
+    if latest_px is not None and np.isfinite(float(latest_px)) and float(latest_px) > 0.0:
+        return float(latest_px), str(default_source)
+    if np.isfinite(entry_px) and entry_px > 0.0:
+        return float(entry_px), "entry_fallback"
+    raise HTTPException(status_code=400, detail="Unable to resolve exit price")
+
+
 def _assets_snapshot(state: _DashboardSessionState) -> List[Dict[str, Any]]:
     prices = _latest_price_by_symbol(state)
     by_symbol: Dict[str, Dict[str, Any]] = {}
@@ -5751,17 +5813,18 @@ def _close_open_trade_record(
     exit_price: float,
     outcome: str,
     note: str,
-    fee_bps: float = 8.0,
+    fee_bps: float = _PAPER_CLOSE_FEE_BPS,
     explicit_cost_r: Optional[float] = None,
     manual_close: bool = False,
 ) -> Dict[str, Any]:
     symbol = str(trade.get("symbol", "")).upper()
     entry = float(trade.get("entry_price") or trade.get("entryPrice") or 0.0)
     side = str(trade.get("side", "LONG")).upper()
-    initial_sl = float(trade.get("initial_sl") or trade.get("stop_loss") or trade.get("stopLoss") or entry)
-    risk_abs = abs(entry - initial_sl)
-    if risk_abs <= 1e-9:
-        risk_abs = max(entry * 0.001, 1e-6)
+    risk_abs = _trade_entry_risk_abs(trade)
+    initial_sl = float(
+        trade.get("initial_sl")
+        or (entry - risk_abs if side == "LONG" else entry + risk_abs)
+    )
 
     gross_r = (exit_price - entry) / risk_abs if side == "LONG" else (entry - exit_price) / risk_abs
     if explicit_cost_r is not None:
@@ -5797,6 +5860,8 @@ def _close_open_trade_record(
             "cost_r": round(float(cost_r), 6),
             "net_r": round(float(net_r), 6),
             "sized_r": round(float(net_r * float(trade.get("lane_size_mult", 1.0) or 1.0)), 6),
+            "entry_risk_abs": round(float(risk_abs), 8),
+            "initial_sl": round(float(initial_sl), 6),
             "risk_usd_used": round(float(risk_usd), 2),
             "pnl_usd_gross": gross_usd,
             "pnl_usd_cost": cost_usd,
@@ -5929,6 +5994,7 @@ async def create_live_trade(payload: Dict[str, Any], session_id: Optional[str] =
     trade.setdefault("status", "open")
     trade.setdefault("entry_time", int(time.time() * 1000))
     trade.setdefault("entry_price", trade.get("current_price"))
+    _ensure_trade_entry_risk_fields(trade)
     risk_meta = _resolve_trade_risk_and_leverage(state, trade)
     trade["risk_pct_used"] = round(float(risk_meta["risk_pct_used"]), 4)
     trade["leverage"] = round(float(risk_meta["leverage"]), 4)
@@ -5978,6 +6044,7 @@ async def update_live_trade(trade_id: int, payload: Dict[str, Any], session_id: 
     trade["id"] = int(trade_id)
     trade["session_id"] = state.session_id
     trade["engine"] = _infer_engine_from_payload(trade, session_id=state.session_id)
+    _ensure_trade_entry_risk_fields(trade)
     if str(trade.get("status", "open")).lower() == "closed":
         risk_usd = float(trade.get("risk_usd_used", 0.0) or 0.0)
         if risk_usd <= 0.0:
@@ -6034,15 +6101,20 @@ async def manual_close_paper_trade(
     symbol = str(trade.get("symbol", "")).upper()
     latest_px, price_source = await _resolve_close_price_for_symbol(state, symbol)
     entry = float(trade.get("entry_price") or trade.get("entryPrice") or 0.0)
-    exit_price = float(payload.get("exit_price") or latest_px or entry or 0.0)
-    trade["manual_close_price_source"] = str(price_source)
+    exit_price, used_price_source = _resolve_exit_price_from_payload(
+        payload,
+        latest_px=latest_px,
+        entry_px=entry,
+        default_source=str(price_source),
+    )
+    trade["manual_close_price_source"] = str(used_price_source)
     _close_open_trade_record(
         state=state,
         trade=trade,
         exit_price=exit_price,
         outcome=str(payload.get("outcome") or "MANUAL_CLOSE"),
         note=str(payload.get("note") or "manual_close_dashboard"),
-        fee_bps=float(payload.get("fee_bps", 8.0) or 0.0),
+        fee_bps=float(payload.get("fee_bps", _PAPER_CLOSE_FEE_BPS) or 0.0),
         explicit_cost_r=float(payload.get("cost_r")) if payload.get("cost_r") is not None else None,
         manual_close=True,
     )
@@ -6051,7 +6123,7 @@ async def manual_close_paper_trade(
         "id": int(trade_id),
         "session_id": state.session_id,
         "trade": trade,
-        "close_price_source": str(price_source),
+        "close_price_source": str(used_price_source),
         "close_price_used": round(float(exit_price), 6),
     }
 
@@ -6075,15 +6147,20 @@ async def paper_trade_manager_action(
     now_ms = int(time.time() * 1000)
 
     if action in {"force_close", "close", "manual_close"}:
-        exit_price = float(payload.get("exit_price") or latest_px or entry or 0.0)
-        trade["manual_close_price_source"] = str(price_source)
+        exit_price, used_price_source = _resolve_exit_price_from_payload(
+            payload,
+            latest_px=latest_px,
+            entry_px=entry,
+            default_source=str(price_source),
+        )
+        trade["manual_close_price_source"] = str(used_price_source)
         _close_open_trade_record(
             state=state,
             trade=trade,
             exit_price=exit_price,
             outcome=str(payload.get("outcome") or "FORCE_CLOSE"),
             note=str(payload.get("note") or "manager_force_close"),
-            fee_bps=float(payload.get("fee_bps", 8.0) or 0.0),
+            fee_bps=float(payload.get("fee_bps", _PAPER_CLOSE_FEE_BPS) or 0.0),
             explicit_cost_r=float(payload.get("cost_r")) if payload.get("cost_r") is not None else None,
             manual_close=bool(payload.get("manual_close", True)),
         )
@@ -6093,7 +6170,7 @@ async def paper_trade_manager_action(
             "session_id": state.session_id,
             "trade": trade,
             "action": action,
-            "close_price_source": str(price_source),
+            "close_price_source": str(used_price_source),
             "close_price_used": round(float(exit_price), 6),
         }
 
@@ -6149,13 +6226,15 @@ async def paper_trade_manager_action(
                 "close_pct": close_pct,
             }
 
-        exit_price = float(payload.get("exit_price") or latest_px or entry or 0.0)
-        initial_sl = float(trade.get("initial_sl") or trade.get("stop_loss") or trade.get("stopLoss") or entry)
-        risk_abs = abs(entry - initial_sl)
-        if risk_abs <= 1e-9:
-            risk_abs = max(entry * 0.001, 1e-6)
+        exit_price, _ = _resolve_exit_price_from_payload(
+            payload,
+            latest_px=latest_px,
+            entry_px=entry,
+            default_source=str(price_source),
+        )
+        risk_abs = _trade_entry_risk_abs(trade)
         gross_r = (exit_price - entry) / risk_abs if side == "LONG" else (entry - exit_price) / risk_abs
-        fee_bps = float(payload.get("fee_bps", 8.0) or 0.0)
+        fee_bps = float(payload.get("fee_bps", _PAPER_CLOSE_FEE_BPS) or 0.0)
         cost_r = (
             float(payload.get("cost_r"))
             if payload.get("cost_r") is not None
