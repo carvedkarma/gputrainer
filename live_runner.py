@@ -1237,6 +1237,11 @@ class LiveRunner:
         self.exec_spread_window = int(max(exec_spread_window, 5))
         self.exec_spread_target_slippage_bps = float(max(exec_spread_target_slippage_bps, 0.1))
         self.exec_spread_min_bps = float(max(exec_spread_min_bps, 0.1))
+        try:
+            _paper_lev_cap = float(os.environ.get("MYTHOS_PAPER_MAX_POSITION_LEVERAGE", 12.0))
+        except Exception:
+            _paper_lev_cap = 12.0
+        self.paper_position_leverage_cap = float(max(1.0, _paper_lev_cap))
         self._recent_entry_spread_bps: List[float] = []
         self._recent_entry_slippage_bps: List[float] = []
         self._equity_hard_stop_latched: bool = False
@@ -1322,6 +1327,11 @@ class LiveRunner:
             self.exec_spread_target_slippage_bps,
             self.exec_spread_min_bps,
         )
+        if self.execution_mode == "paper":
+            log.info(
+                "[CONFIG] Paper leverage guard: MYTHOS_PAPER_MAX_POSITION_LEVERAGE=%.2f",
+                self.paper_position_leverage_cap,
+            )
         if self.live_model == "mythos":
             log.info(
                 "[CONFIG] Mythos trade manager: enabled=%s policy=%s scale_out=%s time_adaptive=%s vol_trailing=%s",
@@ -1421,6 +1431,9 @@ class LiveRunner:
             if self._web_api_enabled and base == self.replit_url.rstrip("/"):
                 self._note_web_api_status(source, int(resp.status_code))
         return None
+
+    def _portfolio_sync_enabled(self) -> bool:
+        return bool(self.execution_mode == "paper" and self.record_trades and self._dashboard_base_urls())
 
     def _reset_dashboard_session_state(self) -> bool:
         if not (self.execution_mode == "paper" and self.record_trades):
@@ -2323,7 +2336,7 @@ class LiveRunner:
             if px is None or not np.isfinite(float(px)) or float(px) <= 0.0:
                 continue
             self.portfolio.close_position(sym, float(px), "EQUITY_HARD_STOP")
-        if self.execution_mode == "paper" and self.record_trades and self._web_api_enabled:
+        if self._portfolio_sync_enabled():
             self._sync_portfolio_from_web(source="equity_hard_stop")
         remaining = list(self.portfolio.open_positions.keys())
         if remaining:
@@ -2411,7 +2424,7 @@ class LiveRunner:
         # Restore portfolio state from the web app so the in-memory portfolio
         # reflects any positions that were opened in previous runs or by the
         # web app's paper engine while the trainer was offline.
-        if self.execution_mode == "paper" and self.record_trades and self._web_api_enabled:
+        if self._portfolio_sync_enabled():
             self._sync_portfolio_from_web(source="startup")
 
         if self.dry_run:
@@ -2627,7 +2640,7 @@ class LiveRunner:
                 break
             # Keep in-memory positions in sync with dashboard/manual actions
             # between main cycles so manual closes are reflected quickly.
-            if self.execution_mode == "paper" and self.record_trades and self._web_api_enabled:
+            if self._portfolio_sync_enabled():
                 self._sync_portfolio_from_web(source="wait_loop")
             open_symbols = list(self.portfolio.open_positions.keys())
             if open_symbols:
@@ -2732,7 +2745,7 @@ class LiveRunner:
         # Sync portfolio state from web app every cycle in paper mode so that
         # positions closed by the web app engine (SL/TP) are removed from
         # the in-memory portfolio and don't phantom-block new entries.
-        if self.execution_mode == "paper" and self.record_trades and self._web_api_enabled:
+        if self._portfolio_sync_enabled():
             self._sync_portfolio_from_web(source=f"cycle_{self.cycle_count}")
 
         timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
@@ -2970,6 +2983,8 @@ class LiveRunner:
         unc_n = float(np.clip(1.0 / (1.0 + max(uncertainty, 0.0)), 0.0, 1.0))
         size_quality = float(np.clip(0.45 * conf_n + 0.35 * edge_n + 0.20 * unc_n, 0.0, 1.0))
         lane_size_mult = float(min_lev + (max_lev - min_lev) * size_quality)
+        if self.execution_mode == "paper":
+            lane_size_mult = float(np.clip(lane_size_mult, min_lev, self.paper_position_leverage_cap))
         regime_raw = str(pred.get("regime", "") or "").strip().upper()
         regime_horizon_bias = 0
         if "TREND" in regime_raw or "BREAKOUT" in regime_raw:

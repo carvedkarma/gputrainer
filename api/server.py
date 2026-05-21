@@ -5323,15 +5323,14 @@ def _resolve_trade_risk_and_leverage(state: _DashboardSessionState, trade: Dict[
 
     explicit_lev = trade.get("leverage")
     if explicit_lev is None:
-        for key in ("size_mult", "lane_size_mult", "position_leverage", "model_leverage"):
+        # Keep lane/size multipliers for attribution and R-scaling only.
+        # They are not direct leverage instructions.
+        for key in ("position_leverage", "model_leverage"):
             if trade.get(key) is not None:
                 explicit_lev = trade.get(key)
                 break
     if explicit_lev is not None:
         hinted_lev = _clip(_safe_float(explicit_lev, base_lev), 1.0, _PAPER_MAX_LEVERAGE)
-        if hinted_lev > max_lev:
-            max_lev = hinted_lev
-            state.max_leverage = max(float(state.max_leverage), float(hinted_lev))
         leverage = _clip(hinted_lev, 1.0, max_lev)
     else:
         confidence = _clip(_safe_float(trade.get("p_enter", trade.get("confidence")), 0.0), 0.0, 1.0)
