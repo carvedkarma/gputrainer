@@ -41,6 +41,7 @@ class ExecutionModule:
         pullback_atr_frac: float = 0.20,
         confirm_indicator: str = "vwap",
         allow_market_fallback: bool = False,
+        blocking_window: bool = False,
         fetcher=None,
     ):
         self.exec_tf = exec_tf
@@ -48,6 +49,7 @@ class ExecutionModule:
         self.pullback_atr_frac = pullback_atr_frac
         self.confirm_indicator = confirm_indicator
         self.allow_market_fallback = allow_market_fallback
+        self.blocking_window = bool(blocking_window)
         self.fetcher = fetcher
 
     def _compute_vwap(self, df: pd.DataFrame) -> pd.Series:
@@ -84,6 +86,7 @@ class ExecutionModule:
         log.info(f"  Signal price: {signal_price:.2f} | ATR: {atr:.2f} | p_enter: {p_enter:.4f}")
         log.info(f"  Pullback target: {self.pullback_atr_frac:.2f} ATR = {self.pullback_atr_frac * atr:.2f}")
         log.info(f"  Confirm indicator: {self.confirm_indicator} | Window: {self.exec_window_minutes}min")
+        log.info(f"  Mode: {'BLOCKING_WINDOW' if self.blocking_window else 'SNAPSHOT_NON_BLOCKING'}")
 
         pullback_dist = self.pullback_atr_frac * atr
         if side == "LONG":
@@ -174,7 +177,9 @@ class ExecutionModule:
             improvement_bps = (entry_price - signal_price) / signal_price * 10000
 
         reason = self._build_reason(pullback_hit, confirmation_hit, method)
-        log.info(f"  [EXEC RESULT] {method} | pullback={'HIT' if pullback_hit else 'MISS'} | "
+        method_key = str(method).strip().lower()
+        method_label = "entry_improvement_missed" if method_key == "missed" else method
+        log.info(f"  [EXEC RESULT] {method_label} | pullback={'HIT' if pullback_hit else 'MISS'} | "
                  f"confirm={'HIT' if confirmation_hit else 'MISS'} | "
                  f"entry={entry_price:.2f} vs signal={signal_price:.2f} | "
                  f"improvement={improvement_bps:+.1f} bps")
@@ -204,6 +209,111 @@ class ExecutionModule:
                 method="no_fetcher", cost_improvement_bps=0, elapsed_seconds=0,
                 reason="No data fetcher configured for live execution",
             )
+
+        # Non-blocking snapshot mode (default): evaluate a single fresh lower-TF
+        # snapshot and return immediately so one symbol cannot stall the entire
+        # multi-asset run loop for exec_window_minutes.
+        if not self.blocking_window:
+            try:
+                candles_raw = self.fetcher.fetch_klines_sync(symbol, self.exec_tf, limit=30)
+                if not candles_raw:
+                    return ExecutionResult(
+                        executed=False, entry_price=signal_price, signal_price=signal_price,
+                        side=side, symbol=symbol, pullback_hit=False, confirmation_hit=False,
+                        method="no_data", cost_improvement_bps=0.0,
+                        elapsed_seconds=max(time.time() - start_time, 0.0),
+                        reason="No lower-TF data available for snapshot execution check",
+                    )
+
+                df = pd.DataFrame(candles_raw)
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    if col in df.columns:
+                        df[col] = df[col].astype(float)
+                if len(df) == 0:
+                    return ExecutionResult(
+                        executed=False, entry_price=signal_price, signal_price=signal_price,
+                        side=side, symbol=symbol, pullback_hit=False, confirmation_hit=False,
+                        method="no_data", cost_improvement_bps=0.0,
+                        elapsed_seconds=max(time.time() - start_time, 0.0),
+                        reason="Lower-TF dataframe is empty in snapshot execution check",
+                    )
+
+                if self.confirm_indicator == "vwap":
+                    indicator = self._compute_vwap(df)
+                else:
+                    indicator = self._compute_ema(df['close'], 20)
+
+                latest = df.iloc[-1]
+                candle = {
+                    'open': float(latest['open']),
+                    'high': float(latest['high']),
+                    'low': float(latest['low']),
+                    'close': float(latest['close']),
+                    'volume': float(latest.get('volume', 0)),
+                }
+                ind_val = float(indicator.iloc[-1]) if len(indicator) > 0 else float(candle['close'])
+
+                if side == "LONG":
+                    pullback_hit = self._check_pullback_long(candle, signal_price, pullback_level)
+                else:
+                    pullback_hit = self._check_pullback_short(candle, signal_price, pullback_level)
+
+                confirmation_hit = False
+                if pullback_hit:
+                    if side == "LONG":
+                        confirmation_hit = self._check_confirmation_long(candle, ind_val)
+                    else:
+                        confirmation_hit = self._check_confirmation_short(candle, ind_val)
+
+                entry_price = signal_price
+                if confirmation_hit:
+                    entry_price = float(candle['close'])
+                    method = "pullback_confirm"
+                    executed = True
+                elif self.allow_market_fallback:
+                    entry_price = float(candle['close'])
+                    method = "market_fallback"
+                    executed = True
+                else:
+                    method = "missed"
+                    executed = False
+
+                if side == "LONG":
+                    improvement_bps = (signal_price - entry_price) / signal_price * 10000
+                else:
+                    improvement_bps = (entry_price - signal_price) / signal_price * 10000
+
+                elapsed = time.time() - start_time
+                reason = self._build_reason(pullback_hit, confirmation_hit, method)
+                method_key = str(method).strip().lower()
+                method_label = "entry_improvement_missed" if method_key == "missed" else method
+                log.info(
+                    "  [EXEC RESULT] %s | pullback=%s | confirm=%s | "
+                    "entry=%.2f vs signal=%.2f | improvement=%+.1f bps | elapsed=%.0fs",
+                    method_label,
+                    "HIT" if pullback_hit else "MISS",
+                    "HIT" if confirmation_hit else "MISS",
+                    entry_price,
+                    signal_price,
+                    improvement_bps,
+                    elapsed,
+                )
+                return ExecutionResult(
+                    executed=executed, entry_price=entry_price, signal_price=signal_price,
+                    side=side, symbol=symbol, pullback_hit=bool(pullback_hit),
+                    confirmation_hit=bool(confirmation_hit), method=method,
+                    cost_improvement_bps=float(improvement_bps), elapsed_seconds=float(elapsed),
+                    reason=reason,
+                )
+            except Exception as e:
+                log.warning(f"  Execution snapshot error: {e}")
+                return ExecutionResult(
+                    executed=False, entry_price=signal_price, signal_price=signal_price,
+                    side=side, symbol=symbol, pullback_hit=False, confirmation_hit=False,
+                    method="snapshot_error", cost_improvement_bps=0.0,
+                    elapsed_seconds=max(time.time() - start_time, 0.0),
+                    reason=f"Snapshot execution error: {e}",
+                )
 
         pullback_hit = False
         confirmation_hit = False
@@ -276,7 +386,9 @@ class ExecutionModule:
             improvement_bps = (entry_price - signal_price) / signal_price * 10000
 
         reason = self._build_reason(pullback_hit, confirmation_hit, method)
-        log.info(f"  [EXEC RESULT] {method} | pullback={'HIT' if pullback_hit else 'MISS'} | "
+        method_key = str(method).strip().lower()
+        method_label = "entry_improvement_missed" if method_key == "missed" else method
+        log.info(f"  [EXEC RESULT] {method_label} | pullback={'HIT' if pullback_hit else 'MISS'} | "
                  f"confirm={'HIT' if confirmation_hit else 'MISS'} | "
                  f"entry={entry_price:.2f} vs signal={signal_price:.2f} | "
                  f"improvement={improvement_bps:+.1f} bps | elapsed={elapsed:.0f}s")

@@ -111,7 +111,7 @@ class PortfolioManager:
         self.max_positions_per_symbol = max_positions_per_symbol
         self.risk_cap_total_pct = risk_cap_total_pct
         self.risk_cap_symbol_pct = risk_cap_symbol_pct
-        self.cooldown_bars = cooldown_bars
+        self.cooldown_bars = max(int(cooldown_bars), 0)
         self.block_correlated_same_dir = block_correlated_same_dir
         self.correlated_pairs = correlated_pairs or [("BTCUSDT", "ETHUSDT")]
 
@@ -141,7 +141,7 @@ class PortfolioManager:
 
     def cooldown_ok(self, symbol: str) -> bool:
         last = self.last_trade_bar.get(symbol, -self.cooldown_bars - 1)
-        return (self.current_bar - last) > self.cooldown_bars
+        return (self.current_bar - last) >= self.cooldown_bars
 
     def _correlated_block(self, symbol: str, side: str) -> Optional[str]:
         if not self.block_correlated_same_dir:
@@ -164,7 +164,10 @@ class PortfolioManager:
             return False, f"position already open for {symbol}"
 
         if not self.cooldown_ok(symbol):
-            bars_left = self.cooldown_bars - (self.current_bar - self.last_trade_bar.get(symbol, 0))
+            bars_left = max(
+                self.cooldown_bars - (self.current_bar - self.last_trade_bar.get(symbol, 0)),
+                0,
+            )
             return False, f"cooldown active for {symbol} ({bars_left} bars left)"
 
         if self.total_risk_pct() + risk_pct > self.risk_cap_total_pct:
