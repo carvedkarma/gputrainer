@@ -7018,6 +7018,8 @@ Examples:
                         help="Engine tag propagated to dashboard payloads for isolated model pages")
     parser.add_argument("--live-model", type=str, default="auto", choices=["auto", "v5", "mythos"],
                         help="Model backend for live/paper engine (auto: mythos when --dashboard-engine mythos, else v5)")
+    parser.add_argument("--mythos-runtime-artifact", type=str, default=None,
+                        help="Optional path to a specific Mythos runtime artifact JSON for live/paper mode")
     parser.add_argument("--execution-mode", type=str, default=None,
                         choices=["signal_only", "paper", "live"],
                         help="Explicit execution mode override (default: derived from --paper/--live flags)")
@@ -7277,6 +7279,7 @@ Examples:
             paper_reset_session=args.paper_reset_session,
             dashboard_engine=args.dashboard_engine,
             live_model=resolved_live_model,
+            mythos_artifact_path=args.mythos_runtime_artifact,
             equity_floor_usd=args.equity_floor_usd,
             equity_hard_stop_usd=args.equity_hard_stop_usd,
             mythos_tm_enabled=getattr(args, "mythos_tm_enable", True),

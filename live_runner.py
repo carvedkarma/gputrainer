@@ -116,7 +116,12 @@ def _get_exchange_time_offset() -> float:
         return 0.0
 
 
-def _load_model(device: str, symbol: Optional[str] = None, model_backend: str = "v5"):
+def _load_model(
+    device: str,
+    symbol: Optional[str] = None,
+    model_backend: str = "v5",
+    mythos_artifact_path: Optional[str] = None,
+):
     """Load the trained model, scaler, feature columns, and temperature.
 
     Supports:
@@ -133,6 +138,13 @@ def _load_model(device: str, symbol: Optional[str] = None, model_backend: str = 
         from mythos.runtime import MythosRuntimeModel
 
         candidates = []
+        explicit_path_raw = str(
+            mythos_artifact_path or os.environ.get("MYTHOS_RUNTIME_ARTIFACT", "")
+        ).strip()
+        explicit_path = None
+        if explicit_path_raw:
+            explicit_path = Path(explicit_path_raw).expanduser()
+            candidates.append(explicit_path)
         if symbol:
             sym = str(symbol).upper()
             candidates.extend(
@@ -148,6 +160,13 @@ def _load_model(device: str, symbol: Optional[str] = None, model_backend: str = 
                 Path("checkpoints/mythos_best_BTCUSDT.json"),
             ]
         )
+        if explicit_path is not None and not explicit_path.exists():
+            log.error(
+                "Configured Mythos artifact path does not exist: %s "
+                "(set --mythos-runtime-artifact or MYTHOS_RUNTIME_ARTIFACT correctly)",
+                explicit_path,
+            )
+            sys.exit(1)
         artifact_path = next((p for p in candidates if p.exists()), None)
         if artifact_path is None:
             log.error(
@@ -1147,6 +1166,7 @@ class LiveRunner:
         paper_reset_session: bool = False,
         dashboard_engine: str = "v5",
         live_model: str = "v5",
+        mythos_artifact_path: Optional[str] = None,
         equity_floor_usd: float = 0.0,
         equity_hard_stop_usd: float = 0.0,
         mythos_tm_enabled: bool = True,
@@ -1209,6 +1229,9 @@ class LiveRunner:
         self.paper_session_id = str(paper_session_id or "default").strip() or "default"
         self.paper_reset_session = bool(paper_reset_session)
         self.dashboard_engine = _normalize_dashboard_engine(dashboard_engine)
+        self.mythos_artifact_path = (
+            str(mythos_artifact_path).strip() if mythos_artifact_path is not None else ""
+        )
         raw_live_model = str(live_model or "auto").strip().lower()
         if raw_live_model in {"", "auto"}:
             resolved_live_model = "mythos" if self.dashboard_engine == "mythos" else "v5"
@@ -1221,6 +1244,16 @@ class LiveRunner:
             )
             resolved_live_model = "mythos"
         self.live_model = resolved_live_model
+        if self.live_model == "mythos" and self.mythos_artifact_path:
+            log.info(
+                "[CONFIG] Mythos runtime artifact override: %s",
+                self.mythos_artifact_path,
+            )
+            if self.per_symbol_models:
+                log.warning(
+                    "[MODE_SYNC] --per-symbol-models ignored because --mythos-runtime-artifact is set"
+                )
+                self.per_symbol_models = False
         self.equity_floor_usd = float(max(equity_floor_usd, 0.0))
         self.equity_hard_stop_usd = float(max(equity_hard_stop_usd, 0.0))
         if self.equity_hard_stop_usd > 0.0 and self.equity_floor_usd > 0.0 and self.equity_hard_stop_usd > self.equity_floor_usd:
@@ -1238,10 +1271,29 @@ class LiveRunner:
         self.exec_spread_target_slippage_bps = float(max(exec_spread_target_slippage_bps, 0.1))
         self.exec_spread_min_bps = float(max(exec_spread_min_bps, 0.1))
         try:
-            _paper_lev_cap = float(os.environ.get("MYTHOS_PAPER_MAX_POSITION_LEVERAGE", 12.0))
+            _paper_lev_cap = float(os.environ.get("MYTHOS_PAPER_MAX_POSITION_LEVERAGE", 2.5))
         except Exception:
-            _paper_lev_cap = 12.0
+            _paper_lev_cap = 2.5
         self.paper_position_leverage_cap = float(max(1.0, _paper_lev_cap))
+        try:
+            _paper_min_mult = float(os.environ.get("MYTHOS_PAPER_MIN_SIZE_MULT", 0.5))
+        except Exception:
+            _paper_min_mult = 0.5
+        self.paper_position_min_size_mult = float(
+            np.clip(_paper_min_mult, 0.25, self.paper_position_leverage_cap)
+        )
+        _paper_abstain_raw = str(
+            os.environ.get("MYTHOS_PAPER_ABSTAIN_OVERRIDE_ENABLE", "1")
+        ).strip().lower()
+        self.paper_abstain_override_enable = _paper_abstain_raw not in {
+            "",
+            "0",
+            "false",
+            "no",
+            "off",
+            "disable",
+            "disabled",
+        }
         self._recent_entry_spread_bps: List[float] = []
         self._recent_entry_slippage_bps: List[float] = []
         self._equity_hard_stop_latched: bool = False
@@ -1329,8 +1381,10 @@ class LiveRunner:
         )
         if self.execution_mode == "paper":
             log.info(
-                "[CONFIG] Paper leverage guard: MYTHOS_PAPER_MAX_POSITION_LEVERAGE=%.2f",
+                "[CONFIG] Paper leverage guard: min_size_mult=%.2f max_position_leverage=%.2f abstain_override=%s",
+                self.paper_position_min_size_mult,
                 self.paper_position_leverage_cap,
+                self.paper_abstain_override_enable,
             )
         if self.live_model == "mythos":
             log.info(
@@ -1948,7 +2002,12 @@ class LiveRunner:
         if self.per_symbol_models:
             if symbol not in self.symbol_models:
                 try:
-                    m, e, fc, temp, sm = _load_model(self.device, symbol=symbol, model_backend=self.live_model)
+                    m, e, fc, temp, sm = _load_model(
+                        self.device,
+                        symbol=symbol,
+                        model_backend=self.live_model,
+                        mythos_artifact_path=self.mythos_artifact_path if self.live_model == "mythos" else None,
+                    )
                     self._apply_live_model_runtime_overrides(m, symbol=symbol)
                     self.symbol_models[symbol] = (m, e, fc, temp, sm)
                 except SystemExit:
@@ -1976,6 +2035,42 @@ class LiveRunner:
                     prev,
                     now,
                 )
+            if self.execution_mode == "paper":
+                prev_min = float(getattr(cfg, "min_size_mult", 1.0) or 1.0)
+                prev_max = float(
+                    max(
+                        getattr(cfg, "max_size_mult", prev_min),
+                        getattr(cfg, "max_leverage", prev_min),
+                        prev_min,
+                    )
+                )
+                next_min = float(
+                    np.clip(
+                        self.paper_position_min_size_mult,
+                        0.25,
+                        self.paper_position_leverage_cap,
+                    )
+                )
+                next_max = float(
+                    np.clip(
+                        prev_max,
+                        next_min,
+                        self.paper_position_leverage_cap,
+                    )
+                )
+                cfg.min_size_mult = next_min
+                cfg.max_size_mult = next_max
+                cfg.max_leverage = next_max
+                if abs(prev_min - next_min) > 1e-9 or abs(prev_max - next_max) > 1e-9:
+                    sym = str(symbol or getattr(model, "symbol", "GLOBAL")).upper()
+                    log.info(
+                        "[MYTHOS_RUNTIME_OVERRIDE] symbol=%s size_mult %.3f-%.3f -> %.3f-%.3f (paper safety)",
+                        sym,
+                        prev_min,
+                        prev_max,
+                        next_min,
+                        next_max,
+                    )
         except Exception:
             return
 
@@ -2397,7 +2492,9 @@ class LiveRunner:
         self._start_execution_service()
 
         self.model, self.engineer, self.feature_columns, self.temperature, self.symbol_map = _load_model(
-            self.device, model_backend=self.live_model
+            self.device,
+            model_backend=self.live_model,
+            mythos_artifact_path=self.mythos_artifact_path if self.live_model == "mythos" else None,
         )
         self._apply_live_model_runtime_overrides(self.model)
         if self.live_model == "mythos" and not getattr(self.model, "_is_mythos", False):
@@ -2963,9 +3060,12 @@ class LiveRunner:
         edge_floor_eff = edge_floor
         conf_floor_eff = conf_floor
         streak = int(getattr(self, "_no_candidate_streak", 0))
-        if self.execution_mode == "paper" and streak > 0:
-            edge_floor_eff = float(max(0.0, edge_floor - 0.0025 * float(streak)))
-            conf_floor_eff = float(max(0.50, conf_floor - 0.01 * float(min(streak, 8))))
+        if self.execution_mode == "paper" and streak > 2:
+            relax_steps = float(streak - 2)
+            edge_relax = min(0.0015 * relax_steps, max(edge_floor * 0.5, 0.0))
+            conf_relax = min(0.005 * relax_steps, 0.03)
+            edge_floor_eff = float(max(edge_floor - edge_relax, max(edge_floor * 0.5, 0.003)))
+            conf_floor_eff = float(max(conf_floor - conf_relax, 0.53))
         htf_score = 0
         cfg_obj = getattr(model, "cfg", None)
         min_expected_r = float(max(getattr(cfg_obj, "min_expected_r", 0.01), 1e-6))
@@ -2984,7 +3084,13 @@ class LiveRunner:
         size_quality = float(np.clip(0.45 * conf_n + 0.35 * edge_n + 0.20 * unc_n, 0.0, 1.0))
         lane_size_mult = float(min_lev + (max_lev - min_lev) * size_quality)
         if self.execution_mode == "paper":
-            lane_size_mult = float(np.clip(lane_size_mult, min_lev, self.paper_position_leverage_cap))
+            lane_size_mult = float(
+                np.clip(
+                    lane_size_mult,
+                    self.paper_position_min_size_mult,
+                    self.paper_position_leverage_cap,
+                )
+            )
         regime_raw = str(pred.get("regime", "") or "").strip().upper()
         regime_horizon_bias = 0
         if "TREND" in regime_raw or "BREAKOUT" in regime_raw:
@@ -3068,17 +3174,21 @@ class LiveRunner:
                 side_eff = "LONG"
         if (
             self.execution_mode == "paper"
+            and self.paper_abstain_override_enable
             and abstain_eff
             and str(reason) == "edge_below_floor"
             and side_eff in {"LONG", "SHORT"}
-            and confidence >= float(max(0.50, min(conf_floor_eff, 0.55)))
+            and streak >= 4
+            and edge >= float(max(edge_floor_eff * 0.80, 0.004))
+            and confidence >= float(max(conf_floor_eff + 0.02, 0.56))
+            and uncertainty <= 0.10
         ):
             abstain_eff = False
             side = side_eff
-            edge_floor_eff = 0.0
-            conf_floor_eff = float(max(0.50, min(conf_floor_eff, 0.55)))
+            edge_floor_eff = float(max(edge_floor_eff * 0.80, 0.004))
+            conf_floor_eff = float(max(conf_floor_eff, 0.56))
             mythos_info["paper_abstain_override"] = True
-            mythos_info["paper_abstain_override_reason"] = "edge_below_floor_recovered_side"
+            mythos_info["paper_abstain_override_reason"] = "edge_below_floor_recovered_side_guarded"
             mythos_info["v5_side"] = side
             mythos_info["v5_threshold"] = edge_floor_eff
             mythos_info["threshold_used"] = edge_floor_eff
